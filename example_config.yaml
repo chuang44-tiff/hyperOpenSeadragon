@@ -1,0 +1,78 @@
+# hyperOSD DZI Generator — Example Configuration
+#
+# Two modes per z-level:
+#   mode: "channels" (default) — single-channel images packed 4-per-tile-source
+#   mode: "rgb"                — each image is already RGB/RGBA, 1 image = 1 tile source
+#
+# Channel packing order (mode: channels):
+#   Tile 1: Ch0(R), Ch1(G), Ch2(B), Ch3(A)
+#   Tile 2: Ch4(R), Ch5(G), Ch6(B), Ch7(A)
+#   Tile 3: Ch8(R), Ch9(G), Ch10(B), Ch11(A)
+#   Tile 4: Ch12(R), Ch13(G), Ch14(B), Ch15(A)
+#
+# Paths are relative to this config file's location.
+# Use absolute paths if images are stored elsewhere.
+
+output_dir: ../hyperBlend_SampleData/deepzoom_RGBA_16CH
+pack: rgba   # "rgba" (4ch/tile, PNG, default) or "rgb" (3ch/tile, JPG, smaller)
+
+z_levels:
+  # ---- Example 1: Single-channel mode (default) ----
+  - name: "0.0um"
+    # mode: "channels"  # default, can be omitted
+    channels:
+      # -- Tile source 1 (channels 0-3) --
+      - path: "images/z0_ch01.tif"   # Ch0 -> Tile1.R
+      - path: "images/z0_ch02.tif"   # Ch1 -> Tile1.G
+      - path: "images/z0_ch03.tif"   # Ch2 -> Tile1.B
+      - path: "images/z0_ch04.tif"   # Ch3 -> Tile1.A
+      # -- Tile source 2 (channels 4-7) --
+      - path: "images/z0_ch05.tif"   # Ch4 -> Tile2.R
+      - path: "images/z0_ch06.tif"   # Ch5 -> Tile2.G
+      - path: "images/z0_ch07.tif"   # Ch6 -> Tile2.B
+      - path: "images/z0_ch08.tif"   # Ch7 -> Tile2.A
+      # -- Tile source 3 (channels 8-11) --
+      - path: "images/z0_ch09.tif"   # Ch8  -> Tile3.R
+      - path: "images/z0_ch10.tif"   # Ch9  -> Tile3.G
+      - path: "images/z0_ch11.tif"   # Ch10 -> Tile3.B
+      - path: "images/z0_ch12.tif"   # Ch11 -> Tile3.A
+      # -- Tile source 4 (channels 12-15) --
+      - path: "images/z0_ch13.tif"   # Ch12 -> Tile4.R
+      - path: "images/z0_ch14.tif"   # Ch13 -> Tile4.G
+      - path: "images/z0_ch15.tif"   # Ch14 -> Tile4.B
+      - path: "images/z0_ch16.tif"   # Ch15 -> Tile4.A
+
+  - name: "4.0um"
+    # mode: "channels"
+    channels:
+      # -- Tile source 1 (channels 0-3) --
+      - path: "images/z1_ch01.tif"   # Ch0 -> Tile1.R
+      - path: "images/z1_ch02.tif"   # Ch1 -> Tile1.G
+      - path: "images/z1_ch03.tif"   # Ch2 -> Tile1.B
+      - path: "images/z1_ch04.tif"   # Ch3 -> Tile1.A
+      # -- Tile source 2 (channels 4-7) --
+      - path: "images/z1_ch05.tif"   # Ch4 -> Tile2.R
+      - path: "images/z1_ch06.tif"   # Ch5 -> Tile2.G
+      - path: "images/z1_ch07.tif"   # Ch6 -> Tile2.B
+      - path: "images/z1_ch08.tif"   # Ch7 -> Tile2.A
+      # -- Tile source 3 (channels 8-11) --
+      - path: "images/z1_ch09.tif"   # Ch8  -> Tile3.R
+      - path: "images/z1_ch10.tif"   # Ch9  -> Tile3.G
+      - path: "images/z1_ch11.tif"   # Ch10 -> Tile3.B
+      - path: "images/z1_ch12.tif"   # Ch11 -> Tile3.A
+      # -- Tile source 4 (channels 12-15) --
+      - path: "images/z1_ch13.tif"   # Ch12 -> Tile4.R
+      - path: "images/z1_ch14.tif"   # Ch13 -> Tile4.G
+      - path: "images/z1_ch15.tif"   # Ch14 -> Tile4.B
+      - path: "images/z1_ch16.tif"   # Ch15 -> Tile4.A
+
+# ---- Example 2: RGB mode (uncomment to use) ----
+# If you already have pre-composed RGB or RGBA images, use mode: "rgb".
+# Each image becomes its own tile source (up to 4 per z-level).
+#
+#  - name: "0.0um"
+#    mode: "rgb"
+#    channels:
+#      - path: "images/z0_rgb_tile1.tif"   # -> Tile source 1
+#      - path: "images/z0_rgb_tile2.tif"   # -> Tile source 2
+#      - path: "images/z0_rgb_tile3.tif"   # -> Tile source 3

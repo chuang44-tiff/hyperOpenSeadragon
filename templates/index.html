@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>hyperOpenSeadragon DZI Generator</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: #f0f2f5;
+            color: #333;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 4px;
+            color: #1a1a2e;
+        }
+
+        .subtitle {
+            font-size: 0.85rem;
+            color: #666;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: #fff;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .card h2 {
+            font-size: 1.1rem;
+            margin-bottom: 12px;
+            color: #1a1a2e;
+        }
+
+        label {
+            display: block;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+            color: #555;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        input[type="text"]:focus {
+            border-color: #3b82f6;
+        }
+
+        .input-row {
+            display: flex;
+            gap: 8px;
+            align-items: flex-end;
+        }
+
+        .input-row input {
+            flex: 1;
+        }
+
+        button {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, opacity 0.2s;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-blue {
+            background: #3b82f6;
+            color: #fff;
+        }
+
+        .btn-blue:hover:not(:disabled) {
+            background: #2563eb;
+        }
+
+        .btn-green {
+            background: #10b981;
+            color: #fff;
+        }
+
+        .btn-green:hover:not(:disabled) {
+            background: #059669;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-gray {
+            background: #e5e7eb;
+            color: #374151;
+        }
+
+        .badge-blue {
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
+
+        .badge-green {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .warning-box {
+            background: #fef3c7;
+            border: 1px solid #f59e0b;
+            border-radius: 6px;
+            padding: 10px 14px;
+            margin-bottom: 10px;
+            font-size: 0.85rem;
+            color: #92400e;
+        }
+
+        .error-box {
+            background: #fee2e2;
+            border: 1px solid #ef4444;
+            border-radius: 6px;
+            padding: 10px 14px;
+            margin-bottom: 10px;
+            font-size: 0.85rem;
+            color: #991b1b;
+            white-space: pre-wrap;
+        }
+
+        .success-box {
+            background: #d1fae5;
+            border: 1px solid #10b981;
+            border-radius: 6px;
+            padding: 14px 18px;
+            margin-top: 12px;
+            font-size: 0.9rem;
+            color: #065f46;
+        }
+
+        .success-box strong {
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .z-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            margin-top: 10px;
+        }
+
+        .z-table th {
+            text-align: left;
+            padding: 6px 8px;
+            border-bottom: 2px solid #e5e7eb;
+            color: #555;
+            font-size: 0.8rem;
+        }
+
+        .z-table td {
+            padding: 6px 8px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .z-table input[type="text"] {
+            padding: 4px 8px;
+            font-size: 0.85rem;
+            width: 120px;
+        }
+
+        .meta {
+            color: #888;
+            font-size: 0.8rem;
+        }
+
+        progress {
+            width: 100%;
+            height: 20px;
+            border-radius: 10px;
+            appearance: none;
+            -webkit-appearance: none;
+        }
+
+        progress::-webkit-progress-bar {
+            background: #e5e7eb;
+            border-radius: 10px;
+        }
+
+        progress::-webkit-progress-value {
+            background: #3b82f6;
+            border-radius: 10px;
+            transition: width 0.3s;
+        }
+
+        .progress-text {
+            font-size: 0.85rem;
+            color: #555;
+            margin-top: 6px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .summary-row {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .summary-item {
+            font-size: 0.9rem;
+        }
+
+        .summary-item strong {
+            color: #1a1a2e;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>hyperOpenSeadragon DZI Tool</h1>
+    <p class="subtitle">Generate and view Deep Zoom tiled pyramids for hyperspectral images.</p>
+
+    <!-- Mode Tabs -->
+    <div style="display:flex; gap:4px; margin-bottom:16px;">
+        <button class="btn-blue" id="tabGenerate" onclick="switchTab('generate')" style="flex:1;">Generate</button>
+        <button id="tabReader" onclick="switchTab('reader')"
+            style="flex:1;padding:8px 20px;border:1px solid #ccc;border-radius:6px;font-size:0.9rem;font-weight:600;cursor:pointer;background:#fff;color:#333;">Open
+            Viewer</button>
+    </div>
+
+    <!-- Reader Card -->
+    <div id="readerCard" class="card hidden">
+        <h2>Open Existing Dataset</h2>
+        <label for="readerPath">Path to folder containing viewer HTML + DZI tiles</label>
+        <div class="input-row">
+            <input type="text" id="readerPath" placeholder="/path/to/dataset" />
+            <button class="btn-blue" id="loadBtn" onclick="doLoad()">Load</button>
+        </div>
+        <div id="loadError" class="error-box hidden" style="margin-top:10px;"></div>
+        <div id="viewerList" class="hidden" style="margin-top:12px;"></div>
+    </div>
+
+    <!-- Scan Card -->
+    <div id="scanCard" class="card">
+        <h2>1. Select Dataset Folder</h2>
+        <label for="folderPath">Absolute path to dataset folder</label>
+        <div class="input-row">
+            <input type="text" id="folderPath" placeholder="/path/to/dataset" />
+            <button class="btn-blue" id="scanBtn" onclick="doScan()">Scan</button>
+        </div>
+        <div id="scanError" class="error-box hidden" style="margin-top:10px;"></div>
+    </div>
+
+    <!-- Results Card -->
+    <div id="resultsCard" class="card hidden">
+        <h2>2. Review Scan Results</h2>
+        <div id="warningsArea"></div>
+        <div class="summary-row">
+            <div class="summary-item"><strong>Dataset:</strong> <span id="datasetName"></span></div>
+            <div class="summary-item"><strong>Mode:</strong> <span id="bandModeBadge"></span></div>
+            <div class="summary-item"><strong>Z-levels:</strong> <span id="zCount"></span></div>
+            <div class="summary-item hidden" id="rawDataInfo"></div>
+        </div>
+        <table class="z-table">
+            <thead>
+                <tr>
+                    <th>Folder</th>
+                    <th>Z-Level Name</th>
+                    <th>Images</th>
+                    <th>Dimensions</th>
+                </tr>
+            </thead>
+            <tbody id="zTableBody"></tbody>
+        </table>
+    </div>
+
+    <!-- Generate Card -->
+    <div id="generateCard" class="card hidden">
+        <h2>3. Generate DZI Tiles</h2>
+        <p style="font-size:0.85rem; color:#666; margin-bottom:12px;">
+            Output will be written to <code id="outputPath"></code>
+        </p>
+        <div style="margin-bottom:12px;">
+            <label for="pixelSize" style="font-size:0.85rem;color:#555;">
+                Pixel size (&micro;m/px) &mdash; leave blank to omit scale bar
+            </label>
+            <input type="text" id="pixelSize" placeholder="0.258"
+                style="width:120px;margin-top:4px;" />
+        </div>
+        <button class="btn-green" id="generateBtn" onclick="doGenerate()">Generate DZI Tiles</button>
+
+        <div id="progressArea" class="hidden" style="margin-top: 16px;">
+            <progress id="progressBar" value="0" max="100"></progress>
+            <div class="progress-text" id="progressText">Preparing...</div>
+        </div>
+
+        <div id="doneArea" class="hidden"></div>
+    </div>
+
+    <script>
+        var scanData = null;
+        var currentTab = 'generate';
+
+        function switchTab(tab) {
+            currentTab = tab;
+            var genBtn = document.getElementById('tabGenerate');
+            var readBtn = document.getElementById('tabReader');
+            if (tab === 'generate') {
+                genBtn.className = 'btn-blue';
+                genBtn.style.cssText = 'flex:1;';
+                readBtn.className = '';
+                readBtn.style.cssText = 'flex:1;padding:8px 20px;border:1px solid #ccc;border-radius:6px;font-size:0.9rem;font-weight:600;cursor:pointer;background:#fff;color:#333;';
+                show('scanCard');
+                hide('readerCard');
+            } else {
+                readBtn.className = 'btn-blue';
+                readBtn.style.cssText = 'flex:1;';
+                genBtn.className = '';
+                genBtn.style.cssText = 'flex:1;padding:8px 20px;border:1px solid #ccc;border-radius:6px;font-size:0.9rem;font-weight:600;cursor:pointer;background:#fff;color:#333;';
+                hide('scanCard');
+                hide('resultsCard');
+                hide('generateCard');
+                show('readerCard');
+            }
+        }
+
+        document.getElementById('folderPath').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') doScan();
+        });
+        document.getElementById('readerPath').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') doLoad();
+        });
+
+        function doScan() {
+            var path = document.getElementById('folderPath').value.trim();
+            if (!path) return;
+
+            var btn = document.getElementById('scanBtn');
+            btn.disabled = true;
+            btn.textContent = 'Scanning...';
+            hide('scanError');
+            hide('resultsCard');
+            hide('generateCard');
+
+            fetch('/scan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: path })
+            })
+                .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+                .then(function (res) {
+                    btn.disabled = false;
+                    btn.textContent = 'Scan';
+
+                    if (!res.ok) {
+                        var errMsg = (res.data.error || 'Scan failed') +
+                            '\n\nExpected folder structure:\n' +
+                            'dataset/\n' +
+                            '├── openseadragon/\n' +
+                            '├── raw_data/\n' +
+                            '│   ├── 0.0um/\n' +
+                            '│   │   ├── ch01.tif ... (or single TIFF stack)\n' +
+                            '│   └── 4.0um/\n' +
+                            '│       └── ...\n' +
+                            'Or z-level folders directly in dataset root.';
+                        showError('scanError', errMsg);
+                        return;
+                    }
+
+                    scanData = res.data;
+                    renderResults(scanData);
+                })
+                .catch(function (err) {
+                    btn.disabled = false;
+                    btn.textContent = 'Scan';
+                    showError('scanError', 'Request failed: ' + err.message);
+                });
+        }
+
+        function renderResults(data) {
+            // OSD missing = blocking error
+            var wArea = document.getElementById('warningsArea');
+            wArea.innerHTML = '';
+            if (data.osd_status === 'missing') {
+                // No openseadragon/ found anywhere — block generate
+                var errDiv = document.createElement('div');
+                errDiv.className = 'error-box';
+                var errHtml = '<strong>openseadragon/ not found</strong><br>' +
+                    'Required JS files not found in dataset folder or next to dzi_app.py.';
+                if (data.osd_missing_files && data.osd_missing_files.length > 0) {
+                    errHtml += '<br>Missing:<ul style="margin:4px 0 0 18px;">';
+                    data.osd_missing_files.forEach(function (f) {
+                        errHtml += '<li><code>' + escHtml(f) + '</code></li>';
+                    });
+                    errHtml += '</ul>';
+                }
+                errHtml += 'Place the <code>openseadragon/</code> folder in your dataset root or next to <code>dzi_app.py</code>.';
+                errDiv.innerHTML = errHtml;
+                wArea.appendChild(errDiv);
+            } else if (data.osd_status === 'app_fallback') {
+                // Found next to dzi_app.py but not in dataset — yellow warning
+                var warnDiv = document.createElement('div');
+                warnDiv.className = 'warning-box';
+                warnDiv.innerHTML = '<strong>openseadragon/ not in dataset folder</strong><br>' +
+                    'Using fallback from app directory. The in-app viewer will work, but the ' +
+                    'standalone HTML file will not work without copying <code>openseadragon/</code> ' +
+                    'into <code>' + escHtml(data.root) + '/</code>.';
+                wArea.appendChild(warnDiv);
+            }
+
+            // Warnings
+            (data.warnings || []).forEach(function (w) {
+                var div = document.createElement('div');
+                div.className = 'warning-box';
+                div.textContent = w;
+                wArea.appendChild(div);
+            });
+
+            // Summary
+            document.getElementById('datasetName').textContent = data.dataset_name;
+            document.getElementById('zCount').textContent = data.z_levels.length;
+            var rawInfo = document.getElementById('rawDataInfo');
+            if (data.using_raw_data) {
+                rawInfo.innerHTML = '<strong>Source:</strong> <span class="badge badge-blue">raw_data/</span>';
+                rawInfo.style.display = '';
+            } else {
+                rawInfo.style.display = 'none';
+            }
+
+            var badgeEl = document.getElementById('bandModeBadge');
+            var mode = data.band_mode || 'unknown';
+            var badgeClass = mode === 'grayscale' ? 'badge-gray' : (mode === 'rgba' ? 'badge-green' : 'badge-blue');
+            if (mode === 'tiff_stack') badgeClass = 'badge-blue';
+            var badgeLabel = mode === 'tiff_stack' ? 'TIFF Stack' : mode;
+            badgeEl.innerHTML = '<span class="badge ' + badgeClass + '">' + badgeLabel + '</span>';
+
+            // Z-level table
+            var tbody = document.getElementById('zTableBody');
+            tbody.innerHTML = '';
+            data.z_levels.forEach(function (z, i) {
+                var tr = document.createElement('tr');
+                var imgs = z.images || [];
+                var dims = imgs.length > 0 ? (imgs[0].width + ' x ' + imgs[0].height) : '-';
+                var imgCol;
+                if (z.tiff_stack) {
+                    imgCol = '1 file (' + z.n_channels + ' pages)';
+                } else {
+                    imgCol = '' + imgs.length;
+                }
+                tr.innerHTML =
+                    '<td>' + escHtml(z.folder) + '</td>' +
+                    '<td><input type="text" data-idx="' + i + '" class="z-name-input" value="' + escHtml(z.name) + '" /></td>' +
+                    '<td>' + imgCol + '</td>' +
+                    '<td class="meta">' + dims + '</td>';
+                tbody.appendChild(tr);
+            });
+
+            show('resultsCard');
+
+            // Generate card
+            document.getElementById('outputPath').textContent = data.root + '/deepzoom_RGBA/';
+            var genBtn = document.getElementById('generateBtn');
+            var osdReady = data.osd_status !== 'missing';
+            genBtn.disabled = !osdReady;
+            genBtn.title = osdReady ? '' : 'openseadragon/ with required JS files not found';
+            hide('progressArea');
+            hide('doneArea');
+            show('generateCard');
+        }
+
+        function doGenerate() {
+            if (!scanData) return;
+
+            // Read z-level names from inputs
+            var nameInputs = document.querySelectorAll('.z-name-input');
+            var zLevels = scanData.z_levels.map(function (z, i) {
+                return {
+                    folder: z.folder,
+                    name: nameInputs[i] ? nameInputs[i].value.trim() || z.folder : z.folder
+                };
+            });
+
+            var pixelSize = document.getElementById('pixelSize').value.trim();
+
+            var btn = document.getElementById('generateBtn');
+            btn.disabled = true;
+            show('progressArea');
+            hide('doneArea');
+
+            var bar = document.getElementById('progressBar');
+            var text = document.getElementById('progressText');
+            bar.value = 0;
+            text.textContent = 'Starting...';
+
+            fetch('/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: scanData.root, image_root: scanData.image_root, z_levels: zLevels, um_per_pixel: pixelSize || null })
+            })
+                .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+                .then(function (res) {
+                    if (!res.ok) {
+                        btn.disabled = false;
+                        text.textContent = 'Error: ' + (res.data.error || 'Generation failed');
+                        return;
+                    }
+                    // Start SSE progress stream
+                    var es = new EventSource('/progress');
+                    es.onmessage = function (ev) {
+                        var p = JSON.parse(ev.data);
+                        if (p.total > 0) {
+                            bar.max = p.total;
+                            bar.value = p.step;
+                        }
+                        text.textContent = p.message || '';
+
+                        if (p.error) {
+                            es.close();
+                            btn.disabled = false;
+                            var doneArea = document.getElementById('doneArea');
+                            doneArea.innerHTML = '<div class="error-box">' + escHtml(p.error) + '</div>';
+                            show('doneArea');
+                        } else if (p.done) {
+                            es.close();
+                            bar.value = bar.max;
+                            var doneArea = document.getElementById('doneArea');
+                            doneArea.innerHTML =
+                                '<div class="success-box">' +
+                                '<strong>Generation complete!</strong>' +
+                                'Viewer file: <code>' + escHtml(p.viewer_path || '') + '</code><br>' +
+                                '<a href="/view" target="_blank" rel="noopener noreferrer" ' +
+                                'style="display:inline-block;margin-top:8px;padding:8px 20px;' +
+                                'background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;' +
+                                'font-weight:600;font-size:0.9rem;">Open Viewer</a>' +
+                                '</div>';
+                            show('doneArea');
+                        }
+                    };
+                    es.onerror = function () {
+                        es.close();
+                        btn.disabled = false;
+                        text.textContent = 'Connection lost.';
+                    };
+                })
+                .catch(function (err) {
+                    btn.disabled = false;
+                    text.textContent = 'Request failed: ' + err.message;
+                });
+        }
+
+        function doLoad() {
+            var path = document.getElementById('readerPath').value.trim();
+            if (!path) return;
+
+            var btn = document.getElementById('loadBtn');
+            btn.disabled = true;
+            btn.textContent = 'Loading...';
+            hide('loadError');
+            hide('viewerList');
+
+            fetch('/load', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: path })
+            })
+                .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+                .then(function (res) {
+                    btn.disabled = false;
+                    btn.textContent = 'Load';
+
+                    if (!res.ok) {
+                        showError('loadError', res.data.error || 'Load failed');
+                        return;
+                    }
+
+                    var data = res.data;
+                    var listDiv = document.getElementById('viewerList');
+
+                    if (data.viewers.length === 0) {
+                        listDiv.innerHTML = '<div class="warning-box">No viewer HTML files found in this folder.' +
+                            (!data.has_tiles ? ' No DZI tile folders (deepzoom_*) detected either.' : '') +
+                            '</div>';
+                        show('viewerList');
+                        return;
+                    }
+
+                    var html = '<strong style="font-size:0.85rem;color:#555;">Found ' + data.viewers.length + ' viewer(s):</strong>';
+                    html += '<div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">';
+                    data.viewers.forEach(function (v) {
+                        html += '<a href="/view/' + encodeURIComponent(v) + '" target="_blank" rel="noopener noreferrer" ' +
+                            'style="display:inline-flex;align-items:center;gap:8px;padding:8px 14px;' +
+                            'background:#f0f2f5;border:1px solid #ddd;border-radius:6px;text-decoration:none;color:#333;' +
+                            'font-size:0.85rem;transition:background 0.2s;"' +
+                            'onmouseover="this.style.background=\'#e0e3e8\'" onmouseout="this.style.background=\'#f0f2f5\'">' +
+                            '<span style="font-weight:600;">' + escHtml(v) + '</span>' +
+                            '<span class="btn-blue" style="margin-left:auto;padding:4px 12px;font-size:0.8rem;border-radius:4px;">Open</span>' +
+                            '</a>';
+                    });
+                    html += '</div>';
+                    listDiv.innerHTML = html;
+                    show('viewerList');
+                })
+                .catch(function (err) {
+                    btn.disabled = false;
+                    btn.textContent = 'Load';
+                    showError('loadError', 'Request failed: ' + err.message);
+                });
+        }
+
+        function show(id) { document.getElementById(id).classList.remove('hidden'); }
+        function hide(id) { document.getElementById(id).classList.add('hidden'); }
+        function showError(id, msg) {
+            var el = document.getElementById(id);
+            el.textContent = msg;
+            el.classList.remove('hidden');
+        }
+        function escHtml(s) {
+            var d = document.createElement('div');
+            d.appendChild(document.createTextNode(s));
+            return d.innerHTML;
+        }
+    </script>
+</body>
+
+</html>
