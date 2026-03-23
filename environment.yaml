@@ -3,8 +3,8 @@ channels:
   - conda-forge
 dependencies:
   - python=3.11
-  - pyvips
   - pyyaml
   - pip
   - pip:
-    - flask
+    - flask>=2.0.0
+    - pyvips
