@@ -1,0 +1,200 @@
+/*
+This software was developed at the National Institute of Standards and
+Technology by employees of the Federal Government in the course of
+their official duties. Pursuant to title 17 Section 105 of the United
+States Code this software is not subject to copyright protection and is
+in the public domain. This software is an experimental system. NIST assumes
+no responsibility whatsoever for its use by other parties, and makes no
+guarantees, expressed or implied, about its quality, reliability, or
+any other characteristic. We would appreciate acknowledgement if the
+software is used.
+*/
+.demo {
+    line-height: normal;
+}
+
+.demo h3 {
+    margin-top: 5px;
+    margin-bottom: 5px;
+}
+
+#openseadragon {
+    width: 100%;
+    height: 1200px;
+    background-color: white;
+}
+
+.wdzt-table-layout {
+    display: table;
+}
+
+.wdzt-row-layout {
+    display: table-row;
+}
+
+.wdzt-cell-layout {
+    display: table-cell;
+}
+
+.wdzt-full-width {
+    width: 100%;
+}
+
+.wdzt-menu-slider {
+    margin-left: 10px;
+    margin-right: 10px;
+}
+
+.column-2 {
+    width: 90%;
+    vertical-align: top;
+    padding: 3px;
+}
+
+.flex-container{
+	display:flex;
+	flex-direction: row;
+}
+
+#available {
+    list-style-type: none;
+}
+
+ul {
+    padding: 0;
+}
+
+#available, #selected {
+    border: 1px solid black;
+    min-height: 25px;
+}
+
+li {
+    padding: 3px;
+}
+
+#selected {
+    list-style-type: none;
+}
+
+.button {
+    cursor: pointer;
+    vertical-align: text-top;
+}
+
+.filterLabel {
+    min-width: 120px;
+}
+
+#selected .filterLabel {
+    cursor: move;
+}
+
+#rotationSlider, #zlevel {
+    margin: 8px 0;
+    padding: 0;
+    width: 100%;
+    box-sizing: border-box;
+    height: 1.4em;
+}
+
+#rotationSlider .ui-slider-handle,
+#zlevel .ui-slider-handle {
+    height: 1.8em;
+    width: 1.2em;
+    top: -0.3em;
+}
+
+#custom-zhandle {
+    width: 3.5em !important;
+    height: 2.2em;
+    text-align: center;
+    line-height: 2.2em;
+    font-size: 0.85em;
+    top: -0.5em;
+}
+
+#overlayMode {
+	height: 50px;
+	width: 100px;
+	text-align: center;
+	background-color: #c2cbf0;
+}
+
+#savePathology {
+	height: 50px;
+	width: 200px;
+	text-align: center;
+	background-color: #f2fbf0;
+}
+
+#loadPathology {
+	height: 50px;
+	width: 200px;
+	text-align: center;
+	background-color: #e0a2a8;
+}
+
+/* Extra spacing before z-level section (last section in panel) */
+#filterWindow h3:last-of-type {
+    margin-top: 20px;
+}
+
+/* Save Image filename input — dynamic width */
+#filterWindow #saveFilename {
+    width: calc(100% - 20px);
+    max-width: 100%;
+    box-sizing: border-box;
+    margin-top: 4px;
+}
+
+/* Responsive filter content when panel is resized */
+#filterWindow .wdzt-table-layout {
+    width: 100%;
+    table-layout: fixed;
+}
+
+#filterWindow .wdzt-cell-layout {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#filterWindow .wdzt-cell-layout input[type="text"] {
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+/* Spinners scale with panel width */
+#filterWindow .ui-spinner {
+    width: 100%;
+    box-sizing: border-box;
+    display: inline-block;
+}
+
+#filterWindow .ui-spinner input.ui-spinner-input {
+    width: calc(100% - 2em) !important;
+    box-sizing: border-box;
+}
+
+/* Make spinner wrapper spans fill their flex cell */
+#filterWindow .wdzt-cell-layout > span {
+    display: block;
+    width: 100%;
+}
+
+/* Hue and Gain spinner cells (3rd+ children) grow to fill row */
+#filterWindow .wdzt-row-layout > .wdzt-cell-layout:nth-child(n+3) {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* Prevent spinner/content overflow from panel */
+#filterWindow .wdzt-row-layout {
+    overflow: hidden;
+    max-width: 100%;
+}
+
+#selected {
+    overflow: hidden;
+}

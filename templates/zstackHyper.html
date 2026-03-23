@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en" style="height:100%">
+
+<head>
+	<link rel="icon" href="data:,">
+	<script src="https://code.jquery.com/jquery-2.2.0.min.js"></script>
+	<script src="https://code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
+	<link rel="stylesheet" href="https://code.jquery.com/ui/1.11.4/themes/smoothness/jquery-ui.css">
+	<link rel="stylesheet" href="openseadragon/style.css">
+	<meta charset="UTF-8">
+	<title>hyperOSD Multi-Channel Blending</title>
+	<link rel="stylesheet" href="openseadragon/static/css/NISTStyle.css">
+	<link rel="stylesheet" href="openseadragon/static/css/NISTPages.css">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<style>
+		#filterWindow h3 {
+			font-size: 0.85em;
+			margin: 8px 0 4px 0;
+			padding: 0;
+		}
+
+		#filterWindow ul,
+		#filterWindow > div:not(#rotationSlider):not(#zlevel) {
+			padding-left: 10px;
+			margin: 4px 0;
+			list-style: none;
+		}
+
+		#filterWindow .ui-slider {
+			width: 100%;
+			margin: 5px 0;
+		}
+	</style>
+</head>
+
+<body>
+	<section class="demo">
+		<div style="display:flex; width:100%; height:90vh;">
+			<div style="flex:1; min-width:0;">
+				<div id="openseadragon" style="width:100%; height:100%; background-color:black;"></div>
+			</div>
+			<div id="filterWindow"
+				style="width:400px; min-width:250px; max-height:90vh; overflow-y:auto; overflow-x:hidden; padding:0 10px; box-sizing:border-box;">
+				<h3>Save Image</h3>
+				<div>
+					<input type="text" id="saveFilename" placeholder="hyperblend_capture"
+						style="padding:3px 6px; margin-bottom:4px;"><br>
+					<button id="saveImageBtn" style="padding:4px 12px; cursor:pointer;">Save Current View</button><br>
+					<label><input type="checkbox" id="includeScalebar" checked> Include scale bar</label>
+				</div>
+				<ul id="selected"></ul>
+				<h3>Post-Processing</h3>
+				<div>
+					<label><input type="checkbox" id="heToggle"> H&amp;E (hematoxylin &amp; eosin)</label><br>
+					<label><input type="checkbox" id="trichromeToggle"> Masson Trichrome</label><br>
+					<label><input type="checkbox" id="reinhardToggle"> Reinhard tone mapping</label>
+				</div>
+				<h3>Rotation</h3>
+				<div id="rotationSlider"></div>
+				<h3>z level (um)</h3>
+				<div id="zlevel">
+					<div id="custom-zhandle" class="ui-slider-handle"></div>
+				</div>
+				<!-- Hidden: NIST bundle appends filter entries here; toggle via checkboxes above -->
+				<ul id="available" style="display:none;"></ul>
+			</div>
+		</div>
+	</section>
+
+	<hr>
+	<!-- Phase 1: Load OSD 6.0.2 -->
+	<script src="openseadragon/openseadragon-bin-6.0.2/openseadragon.js"></script>
+
+	<!-- Phase 2: Snapshot OSD 6.0.2 properties before the filter bundle's
+	     embedded OSD 2.1.0 clobbers them. The bundle's "||" guard only
+	     protects the top-level function, but its IIFEs still overwrite
+	     constructors (Viewer, Tile, TiledImage, etc.) on the same object. -->
+	<script type="text/javascript">
+		var imagePath = 'openseadragon/images';
+		window.__osd602 = { props: {}, viewerProto: {} };
+		(function () {
+			var osd = window.OpenSeadragon;
+			Object.getOwnPropertyNames(osd).forEach(function (key) {
+				window.__osd602.props[key] = Object.getOwnPropertyDescriptor(osd, key);
+			});
+			if (osd.Viewer) {
+				Object.getOwnPropertyNames(osd.Viewer.prototype).forEach(function (key) {
+					window.__osd602.viewerProto[key] = Object.getOwnPropertyDescriptor(osd.Viewer.prototype, key);
+				});
+			}
+		})();
+	</script>
+
+	<!-- Phase 3: Load filter bundle (OSD 2.1.0 clobbers, filter plugin adds Filters/FilterPlugin/setFilterOptions) -->
+	<script src="openseadragon/openseadragon-filtering-nistfuncs-12ch.js"></script>
+
+	<!-- Phase 4: Restore OSD 6.0.2 properties, keeping filter plugin additions -->
+	<script type="text/javascript">
+		(function () {
+			var osd = window.OpenSeadragon;
+			var snap = window.__osd602;
+
+			// Save filter plugin additions before restoring 6.0.2
+			var savedFilters = osd.Filters;
+			var savedFilterPlugin = osd.FilterPlugin;
+			var savedSetFilterOptions = osd.Viewer && osd.Viewer.prototype.setFilterOptions;
+
+			// Restore all 6.0.2 own properties (overwrites 2.1.0 clobbers)
+			Object.keys(snap.props).forEach(function (key) {
+				Object.defineProperty(osd, key, snap.props[key]);
+			});
+			// Restore 6.0.2 Viewer.prototype methods
+			if (osd.Viewer) {
+				Object.keys(snap.viewerProto).forEach(function (key) {
+					Object.defineProperty(osd.Viewer.prototype, key, snap.viewerProto[key]);
+				});
+			}
+
+			// Re-apply filter plugin additions onto restored 6.0.2
+			osd.Filters = savedFilters;
+			osd.FilterPlugin = savedFilterPlugin;
+			if (savedSetFilterOptions) {
+				osd.Viewer.prototype.setFilterOptions = savedSetFilterOptions;
+			}
+
+			delete window.__osd602;
+			console.log("[hyperOSD] OSD " + osd.version.versionStr + " restored with NIST filter plugin.");
+		})();
+	</script>
+
+	<!-- Phase 4b: Suppress OSD 6.0.2 deprecation warnings from the NIST filter bundle -->
+	<script type="text/javascript">
+		(function () {
+			var osdConsole = OpenSeadragon.console;
+			var origError = osdConsole.error;
+			var origWarn = osdConsole.warn;
+			osdConsole.error = function () {
+				if (arguments[0] && typeof arguments[0] === 'string' && arguments[0].indexOf('deprecated') !== -1) return;
+				origError.apply(osdConsole, arguments);
+			};
+			osdConsole.warn = function () {
+				if (arguments[0] && typeof arguments[0] === 'string' && arguments[0].indexOf('deprecated') !== -1) return;
+				origWarn.apply(osdConsole, arguments);
+			};
+		})();
+	</script>
+
+	<!-- Phase 5: Load HyperBlend WebGL drawer (registers as 'hyperblend-webgl' on OpenSeadragon) -->
+	<script src="openseadragon/hyperblend-webgl.js"></script>
+
+	<!-- Phase 6: Load scalebar plugin (DOM overlay, safe after OSD 6.0.2 restore) -->
+	<script src="openseadragon/openseadragon-scalebar.js"></script>
+
+	<script type="text/javascript">
+		// Detect whether to use WebGL blending or CPU fallback
+		var useWebGLBlend = (typeof HyperBlendWebGLDrawer !== 'undefined') && HyperBlendWebGLDrawer.isSupported();
+		console.log("[hyperOSD] WebGL blending " + (useWebGLBlend ? "ENABLED" : "DISABLED (CPU fallback)"));
+
+		// ===== DATASET CONFIGURATION =====
+		// Edit these variables to configure for your dataset.
+		var umPerPixel = 0.258;          // micrometers per pixel at full resolution
+		var zLevelCount = 2;             // number of z-planes
+		var zLevelValues = [0, 4];       // z-level labels in micrometers
+		var channelsPerImage = 3;        // 3 = RGB (alpha slots locked), 4 = RGBA (all channels active)
+		var defaultChannels = [1, 2, 3]; // 1-based channel numbers to enable on startup (matches Nch labels; [] for none)
+		var imageSources = [             // DZI tile source paths (grouped by z-level)
+			// RGBA 12ch
+			// "hyperBlend_SampleData/deepzoom_RGBA_12CH/0.0um/1/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_12CH/0.0um/2/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_12CH/0.0um/3/stitch.xml",
+			// RGBA 16ch
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/4/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/1/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/2/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/3/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/4/stitch.xml",
+			// JPGE
+			"hyperBlend_SampleData/deepzoom_RGB_12CH/0.0um/1/stitch.xml",
+			"hyperBlend_SampleData/deepzoom_RGB_12CH/0.0um/2/stitch.xml",
+			"hyperBlend_SampleData/deepzoom_RGB_12CH/0.0um/3/stitch.xml",
+			"hyperBlend_SampleData/deepzoom_RGB_12CH/0.0um/4/stitch.xml",
+		];
+		// ===== END DATASET CONFIGURATION =====
+
+		// Derive channel mode from channelsPerImage and expose globally for WebGL drawer
+		if (channelsPerImage === 3) {
+			window.__hyperBlendChannelMode = 'rgb';
+		}
+
+		var viewer = new OpenSeadragon({
+			id: 'openseadragon',
+			preserveViewport: true,
+			showRotationControl: true,
+			showNavigator: false,
+			maxZoomPixelRatio: 15,
+			prefixUrl: "openseadragon/openseadragon-bin-6.0.2/",
+			crossOriginPolicy: 'Anonymous',
+			// 4 tile sources × 2 z-levels × many zoom levels easily exceeds
+			// OSD's default cache of 200 tiles, causing fine tiles to be evicted
+			// and replaced by blurry coarse fallbacks after zoom/pan.
+			maxImageCacheCount: 200,
+			// Use WebGL HyperBlend drawer if supported, otherwise fall back to canvas
+			// (canvas mode uses the NIST filter bundle for CPU-based blending)
+			drawer: useWebGLBlend ? ['hyperblend-webgl', 'canvas'] : 'canvas'
+		});
+
+		$('#filterWindow').resizable({
+			handles: 'w',
+			minWidth: 250,
+			maxWidth: 800,
+			resize: function (event, ui) {
+				ui.position.left = ui.originalPosition.left;
+			}
+		});
+
+		// ---- Save Image button ----
+		$('#saveImageBtn').on('click', function () {
+			var canvas = viewer.drawer.canvas;
+			if (!canvas) { alert('Canvas not available'); return; }
+			viewer.forceRedraw();
+			requestAnimationFrame(function () {
+				var outCanvas = document.createElement('canvas');
+				outCanvas.width = canvas.width;
+				outCanvas.height = canvas.height;
+				var ctx = outCanvas.getContext('2d');
+				ctx.drawImage(canvas, 0, 0);
+
+				// Composite a bigger scalebar on bottom-right of saved image
+				var includeBar = document.getElementById('includeScalebar');
+				if (includeBar && includeBar.checked && viewer.scalebarInstance && viewer.scalebarInstance.getAsCanvas) {
+					var sbCanvas = viewer.scalebarInstance.getAsCanvas();
+					var scale = 2.0;
+					var sw = sbCanvas.width * scale;
+					var sh = sbCanvas.height * scale;
+					var margin = 20;
+					var dx = outCanvas.width - sw - margin;
+					var dy = outCanvas.height - sh - margin;
+					ctx.drawImage(sbCanvas, 0, 0, sbCanvas.width, sbCanvas.height, dx, dy, sw, sh);
+				}
+
+				outCanvas.toBlob(function (blob) {
+					if (!blob) { alert('Screenshot failed'); return; }
+					var url = URL.createObjectURL(blob);
+					var a = document.createElement('a');
+					a.href = url;
+					var rawName = (document.getElementById('saveFilename').value || '').trim();
+					var fname;
+					if (rawName) {
+						fname = rawName.replace(/[<>:"/\\|?*]/g, '_');
+						if (!/\.png$/i.test(fname)) fname += '.png';
+					} else {
+						var ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+						fname = 'hyperblend_capture_' + ts + '.png';
+					}
+					a.download = fname;
+					document.body.appendChild(a);
+					a.click();
+					document.body.removeChild(a);
+					setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+				}, 'image/png');
+			});
+		});
+
+		// ---- Scale bar ----
+		if (umPerPixel > 0) {
+			viewer.scalebar({
+				type: OpenSeadragon.ScalebarType.MICROSCOPY,
+				pixelsPerMeter: 1e6 / umPerPixel,
+				location: OpenSeadragon.ScalebarLocation.BOTTOM_RIGHT,
+				xOffset: 10,
+				yOffset: 10,
+				stayInsideImage: false,
+				color: 'black',
+				fontColor: 'black',
+				backgroundColor: 'rgba(255, 255, 255, 0.8)',
+				fontSize: '14px',
+				barThickness: 3
+			});
+		}
+
+		// Derive layer count from the source array
+		var imagesPerZ = imageSources.length / zLevelCount;
+		if (imagesPerZ !== Math.floor(imagesPerZ) || imagesPerZ < 1 || imagesPerZ > 4) {
+			alert("[hyperOSD] Configuration error: imageSources.length (" + imageSources.length +
+				") must be evenly divisible by zLevelCount (" + zLevelCount + "), with 1-4 images per z-level.");
+			throw new Error("Invalid dataset configuration");
+		}
+		window.imagesPerZ = imagesPerZ;  // expose for WebGL drawer
+		var currentZIndex = 0;
+		window.currentZIndex = 0;
+		var allLayers = []; // allLayers[zIdx][layerIdx] = TiledImage
+		window.allLayers = allLayers;
+		var totalToLoad = imageSources.length;
+		var totalLoaded = 0;
+
+		// Initialize the 2D array
+		for (var z = 0; z < zLevelCount; z++) {
+			allLayers[z] = [];
+		}
+
+		// ---- Event-driven initialization flags ----
+		var _imagesLoaded = false;
+		var _bundleReady = false;
+		document.addEventListener('hyperblend-ready', function () {
+			_bundleReady = true;
+			if (_imagesLoaded) initBlendingLogic();
+		});
+		if (window.__hyperBlendReady) {
+			_bundleReady = true;
+		}
+
+		// Load all images
+		imageSources.forEach(function (src, idx) {
+			var zIdx = Math.floor(idx / imagesPerZ);
+			var layerIdx = idx % imagesPerZ;
+			viewer.addTiledImage({
+				tileSource: src,
+				// In WebGL mode all layers for the current z need to be rendered
+				// by OSD (tiles loaded). We use opacity 0.01 for non-primary layers
+				// so OSD still loads their tiles.
+				opacity: (zIdx === 0) ? (layerIdx === 0 ? 1 : 0.01) : 0.01,
+				// preload=true ensures OSD 6.0.2 updates tiles even for low-opacity layers
+				preload: true,
+				success: function (event) {
+					allLayers[zIdx][layerIdx] = event.item;
+					totalLoaded++;
+					console.log("[hyperOSD] z=" + zIdx + " image " + layerIdx + " loaded: " + src);
+					if (totalLoaded === totalToLoad) {
+						console.log("[hyperOSD] All " + totalToLoad + " images loaded (" + imagesPerZ + " per z-level).");
+						_imagesLoaded = true;
+						if (_bundleReady) initBlendingLogic();
+					}
+				},
+				error: function (event) {
+					console.error("[hyperOSD] FAILED to load z=" + zIdx + " layer " + layerIdx + ": " + src);
+					allLayers[zIdx][layerIdx] = null;
+					totalLoaded++;
+					if (totalLoaded === totalToLoad) {
+						_imagesLoaded = true;
+						if (_bundleReady) initBlendingLogic();
+					}
+				}
+			});
+		});
+
+		$("#rotationSlider").slider({
+			min: -180,
+			max: 180,
+			slide: function (event, ui) {
+				viewer.viewport.setRotation(ui.value);
+			}
+		});
+
+		var zHandle = $("#custom-zhandle");
+		$("#zlevel").slider({
+			min: 0,
+			max: zLevelCount - 1,
+			orientation: "horizontal",
+			create: function () {
+				zHandle.text(zLevelValues[0] + "um");
+			},
+			slide: function (event, ui) {
+				switchZLevel(ui.value);
+				zHandle.text(zLevelValues[ui.value] + "um");
+			}
+		});
+
+		function switchZLevel(newZIndex) {
+			if (newZIndex === currentZIndex) return;
+			currentZIndex = newZIndex;
+			window.currentZIndex = newZIndex;
+
+			// Update opacities for all layers — start with minimum opacity,
+			// then let _updateOSDLayerVisibility refine based on enabled channels
+			for (var z = 0; z < zLevelCount; z++) {
+				for (var l = 0; l < imagesPerZ; l++) {
+					if (!allLayers[z][l]) continue;
+					if (z === newZIndex) {
+						allLayers[z][l].setOpacity(l === 0 ? 1 : 0.01);
+					} else {
+						allLayers[z][l].setOpacity(0.01);
+					}
+				}
+			}
+
+			// Refine active z-level layer opacities based on which channels are enabled
+			_updateOSDLayerVisibility();
+
+			// In WebGL mode, invalidate textures (z-level changed) and redraw
+			if (useWebGLBlend && viewer.drawer && viewer.drawer.invalidateTextures) {
+				viewer.drawer.invalidateTextures();
+				viewer.forceRedraw();
+			}
+			// In canvas (CPU) mode, re-run the filter pipeline
+			if (typeof window.updateHyperFilters === 'function') {
+				window.updateHyperFilters();
+			}
+		}
+
+		// Track current drawer mode so we only switch when needed
+		var currentDrawerMode = useWebGLBlend ? 'webgl' : 'canvas';
+
+		function initBlendingLogic() {
+			// Detect layer count from loaded tiles
+			var layerCount = allLayers[0].filter(Boolean).length;
+			window.channelCount = layerCount * 4; // total UI slots (incl. locked alpha slots in RGB mode)
+			console.log("[hyperOSD] Detected " + layerCount + " layers, " + window.channelCount + " channels");
+
+			// Adapt channel UI to actual layer count:
+			// 1) Reassign hue spread (0.66 → wrap → 0.80) across active channels
+			// 2) Hide and disable unused channel rows
+			_adaptChannelUI(window.channelCount);
+
+			// Enable default channels on load.
+			// defaultChannels uses 1-based visible channel numbers (matching "Nch" labels).
+			// Convert to 0-based internal indices, skipping alpha slots in RGB mode.
+			var _alphaSlots = new Set();
+			if (typeof channelsPerImage !== 'undefined' && channelsPerImage === 3) {
+				for (var _a = 0; _a < 4; _a++) _alphaSlots.add(_a * 4 + 3);
+			}
+			var _visibleMap = [];
+			for (var _vi = 0; _vi < window.channelCount; _vi++) {
+				if (!_alphaSlots.has(_vi)) _visibleMap.push(_vi);
+			}
+			defaultChannels.forEach(function (userNum) {
+				var idx = _visibleMap[userNum - 1];
+				if (typeof idx !== 'undefined') {
+					$('input[type="checkbox"][id^="en-' + idx + '-"]').prop('checked', true).trigger('change');
+				}
+			});
+
+			if (useWebGLBlend) {
+				_hookChannelUIForWebGL();
+			}
+
+			// Monitor the selected-filters list for changes.
+			// When a filter is added/removed, check if we need to switch drawers.
+			_observeFilterChanges();
+		}
+
+		/**
+		 * Adapt the HyperBlend channel UI to the actual number of loaded layers.
+		 * - Reassign hue defaults with full spread (0.66 → wrap → 0.80) across active channels
+		 * - Hide and disable channel rows beyond the active count
+		 * @param {number} channelCount - Number of active channels (layerCount * 4)
+		 */
+		function _adaptChannelUI(channelCount) {
+			window.__hyperBlendSuppressUpdates = true;
+			// Build list of visible channel indices (skip alpha slots in RGB mode)
+			var alphaSlots = new Set();
+			if (typeof channelsPerImage !== 'undefined' && channelsPerImage === 3) {
+				for (var layer = 0; layer < 4; layer++) alphaSlots.add(layer * 4 + 3);
+			}
+
+			var visibleChannels = [];
+			for (var i = 0; i < 16; i++) {
+				if (i < channelCount && !alphaSlots.has(i)) {
+					visibleChannels.push(i);
+				}
+			}
+			var visibleCount = visibleChannels.length;
+
+			// Reassign hue spread across visible channels only
+			for (var vi = 0; vi < visibleChannels.length; vi++) {
+				var idx = visibleChannels[vi];
+				var hue = visibleCount > 1
+					? ((0.66 - vi * (0.86 / (visibleCount - 1))) % 1.0 + 1.0) % 1.0
+					: 0.66;
+				hue = Math.round(hue * 100) / 100;
+				$('span[id^="h-' + idx + '-"] input').val(hue).trigger('change');
+
+				// Relabel: sequential number (1-based) instead of internal index
+				var $row = $('input[type="checkbox"][id^="en-' + idx + '-"]').closest('.wdzt-row-layout');
+				$row.find('.wdzt-cell-layout b').first().text((vi + 1) + 'ch');
+			}
+
+			// Hide alpha slots and channels beyond channelCount
+			for (var i = 0; i < 16; i++) {
+				if (i >= channelCount || alphaSlots.has(i)) {
+					$('input[type="checkbox"][id^="en-' + i + '-"]').prop('checked', false).trigger('change');
+					$('input[type="checkbox"][id^="en-' + i + '-"]').closest('.wdzt-row-layout').hide();
+				}
+			}
+
+			window.__hyperBlendSuppressUpdates = false;
+			if (typeof window.updateHyperFilters === 'function') {
+				window.updateHyperFilters();
+			}
+			console.log("[hyperOSD] Channel UI adapted: " + visibleCount + " visible channels, " +
+				(16 - visibleCount) + " hidden" + (alphaSlots.size > 0 ? " (" + alphaSlots.size + " alpha slots locked)" : ""));
+		}
+
+		/**
+		 * Watch #selected (the active filter list) for DOM mutations.
+		 * When filters change, auto-switch between WebGL (HyperBlend only)
+		 * and canvas (legacy filters: H&E, MassonTrichrome, etc.).
+		 */
+		function _observeFilterChanges() {
+			if (!useWebGLBlend) return;
+
+			var selectedList = document.getElementById('selected');
+			if (!selectedList) return;
+
+			// Only watch direct children (filter add/remove), NOT subtree
+			// (subtree:true fires on spinner DOM changes → excessive calls)
+			var observer = new MutationObserver(function () {
+				_autoSwitchDrawer();
+			});
+			observer.observe(selectedList, { childList: true });
+		}
+
+		function _autoSwitchDrawer() {
+			var filterNames = [];
+			$('#selected li .filterLabel').each(function () {
+				filterNames.push($(this).text().trim());
+			});
+
+			// WebGL-compatible combinations:
+			// - HyperBlend only (no post-process)
+			// - HyperBlend + H&E (Beer's law 2-stain)
+			// - HyperBlend + MassonTrichrome (Beer's law 3-stain)
+			var hasHyperBlend = filterNames.indexOf('HyperBlend') !== -1;
+			var webglPostFilters = ['H&E', 'MassonTrichrome'];
+			var otherFilters = filterNames.filter(function (name) {
+				return name !== 'HyperBlend' && webglPostFilters.indexOf(name) === -1;
+			});
+			var needsWebGL = hasHyperBlend && otherFilters.length === 0;
+
+			if (needsWebGL && currentDrawerMode !== 'webgl') {
+				console.log("[hyperOSD] Switching to WebGL drawer");
+				var success = viewer.requestDrawer('hyperblend-webgl', { mainDrawer: true });
+				if (success) {
+					currentDrawerMode = 'webgl';
+					_hookChannelUIForWebGL();
+				}
+			} else if (!needsWebGL && currentDrawerMode !== 'canvas') {
+				console.log("[hyperOSD] Switching to canvas drawer for unsupported filter combo");
+				viewer.requestDrawer('canvas', { mainDrawer: true });
+				currentDrawerMode = 'canvas';
+			}
+
+			// Update post-process state based on stacked filters
+			if (currentDrawerMode === 'webgl') {
+				var postFilter = null;
+				for (var i = 0; i < webglPostFilters.length; i++) {
+					if (filterNames.indexOf(webglPostFilters[i]) !== -1) {
+						postFilter = webglPostFilters[i];
+						break;
+					}
+				}
+				_updatePostProcessState(postFilter);
+			}
+		}
+
+		/**
+		 * Enable/disable post-processing based on which stacked filter is active.
+		 * @param {string|null} filterName - 'H&E', 'MassonTrichrome', or null
+		 */
+		function _updatePostProcessState(filterName) {
+			if (!viewer || !viewer.drawer || viewer.drawer.getType() !== 'hyperblend-webgl') return;
+			if (!viewer.drawer.updatePostProcessConfig) return;
+
+			if (!filterName) {
+				viewer.drawer.updatePostProcessConfig({ active: false, filterType: 'none' });
+				return;
+			}
+
+			var config = { active: true };
+			if (filterName === 'H&E') {
+				config.filterType = 'he';
+				config.mode = 0.0;  // H&E: nuclei=B, stroma=G
+				config.colGain = 0.0;
+				config.unmix = 0.1;
+			} else if (filterName === 'MassonTrichrome') {
+				config.filterType = 'trichrome';
+				config.mode = 1.0;  // Trichrome: nuclei=G, stroma=R, collagen=B
+				config.colGain = 1.0;
+				config.unmix = 0.0;
+			}
+			viewer.drawer.updatePostProcessConfig(config);
+
+			// Also push current slider values
+			_pushPostProcessConfigToDrawer();
+		}
+
+		// Store reference to the unwrapped NIST updateFilters for clean re-hooking
+		var _nistUpdateFilters = null;
+
+		/**
+		 * Hook into channel UI changes to push config to the WebGL drawer.
+		 *
+		 * The NIST bundle's spinner arrow clicks call a LOCAL updateFilters closure
+		 * (captured before our wrapper is installed), so wrapping window.updateHyperFilters
+		 * and listening for DOM spin events both fail to intercept arrow clicks.
+		 *
+		 * Instead, we wrap viewer.setFilterOptions() — the one external call that
+		 * the local updateFilters always makes. This catches ALL spinner changes
+		 * (arrows, Enter key, checkboxes) regardless of how they were triggered.
+		 */
+		function _hookChannelUIForWebGL() {
+			if (!_nistUpdateFilters) {
+				_nistUpdateFilters = window.updateHyperFilters;
+			}
+
+			window.updateHyperFilters = function () {
+				if (_nistUpdateFilters) {
+					try { _nistUpdateFilters(); } catch (e) { }
+				}
+				_pushChannelConfigToDrawer();
+			};
+
+			// Shared helper: push channel + post-process config to the WebGL drawer
+			function _syncDrawerState() {
+				if (window.__hyperBlendSuppressUpdates) return;
+				_pushChannelConfigToDrawer();
+				_updateOSDLayerVisibility();
+				if (viewer.drawer && viewer.drawer._postProcessConfig && viewer.drawer._postProcessConfig.active) {
+					_pushPostProcessConfigToDrawer();
+				}
+			}
+
+			// Wrap viewer.setFilterOptions to intercept spinner arrow clicks.
+			// The NIST bundle's local updateFilters() calls viewer.setFilterOptions()
+			// on every spinner change — this is the only reliable interception point.
+			if (!viewer._setFilterOptionsWrapped) {
+				var _origSetFilterOptions = viewer.setFilterOptions.bind(viewer);
+				viewer.setFilterOptions = function (options) {
+					_origSetFilterOptions(options);
+					// Use setTimeout(0) so DOM values are fully updated before reading
+					setTimeout(_syncDrawerState, 0);
+				};
+				viewer._setFilterOptionsWrapped = true;
+			}
+
+			// Delegate 'change' for checkboxes AND all inputs (catches spinner Enter key)
+			$('#selected').off('change.hyperblend').on('change.hyperblend', 'input', function () {
+				_syncDrawerState();
+			});
+
+			// Reinhard toggle checkbox
+			$('#reinhardToggle').off('change.hyperblend').on('change.hyperblend', function () {
+				if (viewer.drawer && viewer.drawer.setToneMappingMode) {
+					viewer.drawer.setToneMappingMode($(this).is(':checked') ? 'reinhard' : 'knee');
+					viewer.forceRedraw();
+				}
+			});
+
+			// H&E / Trichrome toggle checkboxes — programmatically click NIST +/- buttons
+			function _togglePostProcessFilter(filterName, enable) {
+				if (enable) {
+					// Click the NIST "+" button to add the filter (creates spinner DOM in #selected)
+					$('#available img.button').each(function () {
+						var $plus = $(this);
+						var liText = $plus.parent().text().trim();
+						if (liText === filterName) {
+							$plus.trigger('click');
+							// Hide all spinner controls — params are managed by defaults
+							$('#selected li').each(function () {
+								var $li = $(this);
+								if ($li.find('.filterLabel').text().trim() === filterName) {
+									$li.find('.wdzt-full-width').hide();
+									$li.find('img[id^="minus_"]').parent().hide();
+								}
+							});
+							return false; // break
+						}
+					});
+				} else {
+					// Find the filter in #selected by its .filterLabel and click its minus button
+					$('#selected li').each(function () {
+						var $li = $(this);
+						var label = $li.find('.filterLabel').text().trim();
+						if (label === filterName) {
+							$li.find('img[id^="minus_"]').trigger('click');
+							return false; // break
+						}
+					});
+				}
+			}
+
+			$('#heToggle').off('change.hyperblend').on('change.hyperblend', function () {
+				var checked = $(this).is(':checked');
+				if (checked) {
+					// Mutual exclusion: uncheck Trichrome
+					$('#trichromeToggle').prop('checked', false);
+					_togglePostProcessFilter('MassonTrichrome', false);
+				}
+				_togglePostProcessFilter('H&E', checked);
+			});
+
+			$('#trichromeToggle').off('change.hyperblend').on('change.hyperblend', function () {
+				var checked = $(this).is(':checked');
+				if (checked) {
+					// Mutual exclusion: uncheck H&E
+					$('#heToggle').prop('checked', false);
+					_togglePostProcessFilter('H&E', false);
+				}
+				_togglePostProcessFilter('MassonTrichrome', checked);
+			});
+
+			// Apply initial state of checkboxes (handles pre-checked defaults)
+			if ($('#reinhardToggle').is(':checked') && viewer.drawer && viewer.drawer.setToneMappingMode) {
+				viewer.drawer.setToneMappingMode('reinhard');
+			}
+
+			_pushChannelConfigToDrawer();
+		}
+
+		/**
+		 * Update OSD layer opacities based on which channels are enabled.
+		 * Layers with at least one active channel get opacity 1.0, others 0.01.
+		 */
+		function _updateOSDLayerVisibility() {
+			if (!allLayers || (typeof currentZIndex === 'undefined') || !allLayers[currentZIndex]) return;
+			var layers = allLayers[currentZIndex];
+			for (var l = 0; l < window.imagesPerZ; l++) {
+				if (!layers[l]) continue;
+				var anyEnabled = false;
+				for (var ch = 0; ch < 4; ch++) {
+					var chIdx = l * 4 + ch;
+					if ($('input[type="checkbox"][id^="en-' + chIdx + '-"]').is(':checked')) {
+						anyEnabled = true;
+						break;
+					}
+				}
+				layers[l].setOpacity(anyEnabled ? 1.0 : 0.01);
+			}
+		}
+
+		/**
+		 * Read current channel H/S/V/Gain/Enabled values from the filter bundle's
+		 * DOM spinners and push them to the WebGL drawer.
+		 *
+		 * The filter bundle creates jQuery UI spinners inside <span> elements with
+		 * IDs like "h-{ch}-{idIncrement}", "s-{ch}-{idIncrement}", etc.
+		 * Each <span> contains an <input> whose .val() holds the current value.
+		 * Checkboxes have IDs "en-{ch}-{idIncrement}".
+		 * We use attribute-starts-with selectors since we don't know idIncrement.
+		 */
+		function _pushChannelConfigToDrawer() {
+			if (!viewer || !viewer.drawer || viewer.drawer.getType() !== 'hyperblend-webgl') {
+				return;
+			}
+
+			var config = [];
+			for (var i = 0; i < 16; i++) {
+				var enabled = false;
+				var h = 0, gain = 1;
+
+				// Checkbox
+				$('input[type="checkbox"][id^="en-' + i + '-"]').each(function () {
+					enabled = $(this).is(':checked');
+				});
+				// H spinner: <span id="h-{i}-N"> contains <input> with the value
+				$('span[id^="h-' + i + '-"] input').each(function () {
+					var val = parseFloat($(this).val());
+					if (!isNaN(val)) h = val;
+				});
+				// Gain spinner
+				$('span[id^="g-' + i + '-"] input').each(function () {
+					var val = parseFloat($(this).val());
+					if (!isNaN(val)) gain = val;
+				});
+
+				config.push({ h: h, gain: gain, enabled: enabled });
+			}
+
+			viewer.drawer.updateChannelConfig(config);
+		}
+
+		/**
+		 * Convert HSV to RGB using the same formula as the NIST filter bundle.
+		 * The bundle applies a 0.5 hue offset: h = (hue + 0.5) % 1
+		 */
+		function _hsvToRgb(hue, sat, val) {
+			var h = (hue + 0.5) % 1;
+			var i = Math.floor(h * 6);
+			var f = h * 6 - i;
+			var p = val * (1 - sat);
+			var q = val * (1 - f * sat);
+			var t = val * (1 - (1 - f) * sat);
+			var r, g, b;
+			switch (i % 6) {
+				case 0: r = val; g = t; b = p; break;
+				case 1: r = q; g = val; b = p; break;
+				case 2: r = p; g = val; b = t; break;
+				case 3: r = p; g = q; b = val; break;
+				case 4: r = t; g = p; b = val; break;
+				case 5: r = val; g = p; b = q; break;
+			}
+			return [r, g, b];
+		}
+
+		/**
+		 * Read H&E/Trichrome slider values from the DOM and push to the WebGL drawer.
+		 * The NIST bundle creates spinners with IDs like "kSpinner-{idIncrement}",
+		 * "unMixSpinner-{idIncrement}", "nucGainSpinner-{idIncrement}", etc.
+		 * Each <span> contains an <input> whose .val() holds the current value.
+		 * Spectral absorption uses HSV spinners converted to RGB.
+		 */
+		function _pushPostProcessConfigToDrawer() {
+			if (!viewer || !viewer.drawer || viewer.drawer.getType() !== 'hyperblend-webgl') return;
+			if (!viewer.drawer.updatePostProcessConfig) return;
+
+			var config = {};
+
+			// Read k (absorption coefficient)
+			$('span[id^="kSpinner-"] input').each(function () {
+				var val = parseFloat($(this).val());
+				if (!isNaN(val)) config.k = val;
+			});
+			// Read unmix (spectral unmixing, H&E only)
+			$('span[id^="unMixSpinner-"] input').each(function () {
+				var val = parseFloat($(this).val());
+				if (!isNaN(val)) config.unmix = val;
+			});
+			// Read per-stain gains
+			$('span[id^="nucGainSpinner-"] input').each(function () {
+				var val = parseFloat($(this).val());
+				if (!isNaN(val)) config.nucGain = val;
+			});
+			$('span[id^="strGainSpinner-"] input').each(function () {
+				var val = parseFloat($(this).val());
+				if (!isNaN(val)) config.strGain = val;
+			});
+			$('span[id^="colGainSpinner-"] input').each(function () {
+				var val = parseFloat($(this).val());
+				if (!isNaN(val)) config.colGain = val;
+			});
+
+			// Read spectral absorption HSV spinners and convert to RGB
+			// (matches NIST bundle's (hue + 0.5) % 1 conversion)
+			var nH = null, nS = null, nV = null;
+			$('span[id^="nucHueSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) nH = v; });
+			$('span[id^="nucSatSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) nS = v; });
+			$('span[id^="nucValSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) nV = v; });
+			if (nH !== null && nS !== null && nV !== null) {
+				config.nucRGB = _hsvToRgb(nH, nS, nV);
+			}
+
+			var sH = null, sS = null, sV = null;
+			$('span[id^="strHueSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) sH = v; });
+			$('span[id^="strSatSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) sS = v; });
+			$('span[id^="strValSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) sV = v; });
+			if (sH !== null && sS !== null && sV !== null) {
+				config.strRGB = _hsvToRgb(sH, sS, sV);
+			}
+
+			var cH = null, cS = null, cV = null;
+			$('span[id^="colHueSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) cH = v; });
+			$('span[id^="colSatSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) cS = v; });
+			$('span[id^="colValSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) cV = v; });
+			if (cH !== null && cS !== null && cV !== null) {
+				config.colRGB = _hsvToRgb(cH, cS, cV);
+			}
+
+			viewer.drawer.updatePostProcessConfig(config);
+		}
+
+	</script>
+</body>
+
+</html>
