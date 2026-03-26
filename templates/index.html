@@ -247,6 +247,24 @@
         .summary-item strong {
             color: #1a1a2e;
         }
+
+        .viewer-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            background: #f0f2f5;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            text-decoration: none;
+            color: #333;
+            font-size: 0.85rem;
+            transition: background 0.2s;
+        }
+
+        .viewer-link:hover {
+            background: #e0e3e8;
+        }
     </style>
 </head>
 
@@ -256,8 +274,8 @@
 
     <!-- Mode Tabs -->
     <div style="display:flex; gap:4px; margin-bottom:16px;">
-        <button class="btn-blue" id="tabGenerate" onclick="switchTab('generate')" style="flex:1;">Generate</button>
-        <button id="tabReader" onclick="switchTab('reader')"
+        <button class="btn-blue" id="tabGenerate" style="flex:1;">Generate</button>
+        <button id="tabReader"
             style="flex:1;padding:8px 20px;border:1px solid #ccc;border-radius:6px;font-size:0.9rem;font-weight:600;cursor:pointer;background:#fff;color:#333;">Open
             Viewer</button>
     </div>
@@ -268,10 +286,10 @@
         <label for="readerPath">Path to folder containing viewer HTML + DZI tiles</label>
         <div class="input-row">
             <input type="text" id="readerPath" placeholder="/path/to/dataset" />
-            <button class="btn-blue" id="loadBtn" onclick="doLoad()">Load</button>
+            <button class="btn-blue" id="loadBtn">Load</button>
         </div>
-        <div id="loadError" class="error-box hidden" style="margin-top:10px;"></div>
-        <div id="viewerList" class="hidden" style="margin-top:12px;"></div>
+        <div id="loadError" class="error-box hidden" style="margin-top:10px;" aria-live="polite"></div>
+        <div id="viewerList" class="hidden" style="margin-top:12px;" aria-live="polite"></div>
     </div>
 
     <!-- Scan Card -->
@@ -280,15 +298,15 @@
         <label for="folderPath">Absolute path to dataset folder</label>
         <div class="input-row">
             <input type="text" id="folderPath" placeholder="/path/to/dataset" />
-            <button class="btn-blue" id="scanBtn" onclick="doScan()">Scan</button>
+            <button class="btn-blue" id="scanBtn">Scan</button>
         </div>
-        <div id="scanError" class="error-box hidden" style="margin-top:10px;"></div>
+        <div id="scanError" class="error-box hidden" style="margin-top:10px;" aria-live="polite"></div>
     </div>
 
     <!-- Results Card -->
     <div id="resultsCard" class="card hidden">
         <h2>2. Review Scan Results</h2>
-        <div id="warningsArea"></div>
+        <div id="warningsArea" aria-live="polite"></div>
         <div class="summary-row">
             <div class="summary-item"><strong>Dataset:</strong> <span id="datasetName"></span></div>
             <div class="summary-item"><strong>Mode:</strong> <span id="bandModeBadge"></span></div>
@@ -321,14 +339,21 @@
             <input type="text" id="pixelSize" placeholder="0.258"
                 style="width:120px;margin-top:4px;" />
         </div>
-        <button class="btn-green" id="generateBtn" onclick="doGenerate()">Generate DZI Tiles</button>
+        <div style="margin-bottom:12px;">
+            <label for="matrixFile" style="font-size:0.85rem;color:#555;">
+                Unmixing matrix file (optional) &mdash; tab/comma/space-separated .txt
+            </label>
+            <input type="file" id="matrixFile" accept=".txt"
+                style="margin-top:4px;font-size:0.85rem;" />
+        </div>
+        <button class="btn-green" id="generateBtn">Generate DZI Tiles</button>
 
-        <div id="progressArea" class="hidden" style="margin-top: 16px;">
+        <div id="progressArea" class="hidden" style="margin-top: 16px;" aria-live="polite">
             <progress id="progressBar" value="0" max="100"></progress>
             <div class="progress-text" id="progressText">Preparing...</div>
         </div>
 
-        <div id="doneArea" class="hidden"></div>
+        <div id="doneArea" class="hidden" aria-live="polite"></div>
     </div>
 
     <script>
@@ -526,10 +551,19 @@
             bar.value = 0;
             text.textContent = 'Starting...';
 
+            var fd = new FormData();
+            fd.append('path', scanData.root);
+            fd.append('image_root', scanData.image_root);
+            fd.append('z_levels', JSON.stringify(zLevels));
+            fd.append('um_per_pixel', pixelSize || '');
+            var matrixInput = document.getElementById('matrixFile');
+            if (matrixInput && matrixInput.files.length > 0) {
+                fd.append('matrix_file', matrixInput.files[0]);
+            }
+
             fetch('/generate', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: scanData.root, image_root: scanData.image_root, z_levels: zLevels, um_per_pixel: pixelSize || null })
+                body: fd
             })
                 .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
                 .then(function (res) {
@@ -622,10 +656,7 @@
                     html += '<div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">';
                     data.viewers.forEach(function (v) {
                         html += '<a href="/view/' + encodeURIComponent(v) + '" target="_blank" rel="noopener noreferrer" ' +
-                            'style="display:inline-flex;align-items:center;gap:8px;padding:8px 14px;' +
-                            'background:#f0f2f5;border:1px solid #ddd;border-radius:6px;text-decoration:none;color:#333;' +
-                            'font-size:0.85rem;transition:background 0.2s;"' +
-                            'onmouseover="this.style.background=\'#e0e3e8\'" onmouseout="this.style.background=\'#f0f2f5\'">' +
+                            'class="viewer-link">' +
                             '<span style="font-weight:600;">' + escHtml(v) + '</span>' +
                             '<span class="btn-blue" style="margin-left:auto;padding:4px 12px;font-size:0.8rem;border-radius:4px;">Open</span>' +
                             '</a>';
@@ -653,6 +684,13 @@
             d.appendChild(document.createTextNode(s));
             return d.innerHTML;
         }
+
+        // Bind click handlers (moved from inline onclick attributes)
+        document.getElementById('tabGenerate').addEventListener('click', function () { switchTab('generate'); });
+        document.getElementById('tabReader').addEventListener('click', function () { switchTab('reader'); });
+        document.getElementById('loadBtn').addEventListener('click', doLoad);
+        document.getElementById('scanBtn').addEventListener('click', doScan);
+        document.getElementById('generateBtn').addEventListener('click', doGenerate);
     </script>
 </body>
 

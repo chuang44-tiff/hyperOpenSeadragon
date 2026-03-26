@@ -1,6 +1,6 @@
 # hyperOpenSeadragon — Multi-Channel Fluorescence & Hyperspectral Image Viewer
 
-![hyperOpenSeadragon Screenshot](image.png)
+![hyperOpenSeadragon Logo](image.png)
 
 hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and hyperspectral microscopy images. It lets you blend up to 16 channels in real time, assign custom colors to each channel, and adjust gain — all from a single web page with no software to install.
 
@@ -12,6 +12,8 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 - **Tone mapping** — Choose between a knee-curve (preserves intensity ratios) or Reinhard (smooth compression for publication figures).
 - **Save snapshots** — Export the current view as a PNG with an optional scale bar.
 - **Pan, zoom, and rotate** — Explore your full-resolution image at any magnification, just like a digital slide scanner.
+## New feature in 2.0
+- **Linear spectral unmixing** — Load a spectral unmixing matrix to decompose overlapping fluorescence spectra into pure component channels. The matrix editor is built into the viewer.
 
 ## How It Works
 
@@ -26,8 +28,8 @@ The image was acquired using our custom high-speed silicon photomultiplier array
 
 ```bash
 # Using conda (recommended):
-conda env create -f dziGeneration/environment.yaml
-conda activate dzi
+conda env create -f environment.yaml
+conda activate hyperOSD
 
 # Or with pip:
 pip install flask "pyvips[binary]" pyyaml
@@ -38,7 +40,7 @@ pip install flask "pyvips[binary]" pyyaml
 A **tile generator web app** is included — no command line experience needed:
 
 ```bash
-python dziGeneration/dzi_app.py
+python dzi_app.py
 ```
 
 Open the URL shown in your terminal (typically `http://127.0.0.1:5000`). The app has two modes:
@@ -71,16 +73,16 @@ For scripting or batch workflows, a command-line tool is also available:
 
 ```bash
 # Single-channel grayscale TIFFs (up to 16 channels):
-python dziGeneration/generate_dzi.py --channels ch0.tif ch1.tif ch2.tif ch3.tif -o output_dir
+python generate_dzi.py --channels ch0.tif ch1.tif ch2.tif ch3.tif -o output_dir
 
 # Pre-composed RGB images:
-python dziGeneration/generate_dzi.py --rgb image1.tif image2.tif -o output_dir
+python generate_dzi.py --rgb image1.tif image2.tif -o output_dir
 
 # Multi-z-level dataset via YAML config:
-python dziGeneration/generate_dzi.py --config dziGeneration/example_config.yaml
+python generate_dzi.py --config example_config.yaml
 ```
 
-See `dziGeneration/README.md` for full CLI options including RGBA vs RGB packing modes.
+See the `example_config.yaml` file for full configuration options including RGBA vs RGB packing modes.
 
 ### 4. Configure the viewer (manual setup only)
 
@@ -109,11 +111,21 @@ Open the viewer HTML in Chrome, Firefox, or Edge. No server required — it runs
 | Channel checkboxes | Show/hide individual channels |
 | H (hue) spinner | Set the display color for a channel |
 | G (gain) spinner | Adjust brightness of a channel |
+| Unmixing matrix | Load or edit a spectral unmixing matrix for linear unmixing |
 | H&E / Trichrome checkbox | Apply virtual histology staining |
 | Reinhard checkbox | Switch to smooth tone mapping for figures |
 | Rotation slider | Rotate the image |
 | z level slider | Switch between focal planes |
 | Save Current View | Download a PNG snapshot (with optional scale bar) |
+
+## Linear Spectral Unmixing
+
+hyperOpenSeadragon includes a built-in linear unmixing pipeline for hyperspectral datasets. To use it:
+
+1. Prepare a spectral unmixing matrix as a plain-text file (whitespace-separated, one row per output channel).
+2. Set `matrixFileName` in the DATASET CONFIGURATION block to the path of your matrix file (relative to the viewer HTML).
+3. The viewer loads the matrix automatically on startup. If the file is not found, the matrix table is shown empty (zero-filled).
+4. You can edit the matrix directly in the viewer and save changes using the **Save Matrix** button (uses the File System Access API in supported browsers, or a download fallback).
 
 ## Requirements
 
