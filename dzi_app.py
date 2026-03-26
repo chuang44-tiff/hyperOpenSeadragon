@@ -58,6 +58,7 @@ REQUIRED_OSD_FILES = [
 _state_lock = threading.Lock()
 _dataset_root = None
 _osd_serve_dir = None  # resolved openseadragon/ path (dataset root or app fallback)
+_scan_channel_count = None  # total channels derived from last /scan (for matrix validation)
 
 
 def _check_osd_dir(osd_dir):
@@ -125,9 +126,10 @@ def load():
     dataset_osd_ok, _ = _check_osd_dir(dataset_osd)
     app_osd_ok, _ = _check_osd_dir(app_osd)
 
-    global _dataset_root, _osd_serve_dir
+    global _dataset_root, _osd_serve_dir, _scan_channel_count
     with _state_lock:
         _dataset_root = folder
+        _scan_channel_count = None  # invalidate — new dataset needs fresh /scan
         if dataset_osd_ok:
             _osd_serve_dir = dataset_osd
         elif app_osd_ok:
@@ -337,6 +339,20 @@ def scan():
                 "Each z-level should have the same number of images."
             )
 
+    # Cache channel count for matrix validation in /generate
+    # grayscale/tiff_stack pack 4 channels per RGBA tile source, so round up
+    global _scan_channel_count
+    if band_mode == "tiff_stack":
+        n = z_levels[0].get("n_channels", 16)
+        _scan_channel_count = min(((n + 3) // 4) * 4, 16)
+    elif band_mode == "grayscale":
+        n = len(z_levels[0]["images"])
+        _scan_channel_count = min(((n + 3) // 4) * 4, 16)
+    elif band_mode == "rgb":
+        _scan_channel_count = min(len(z_levels[0]["images"]) * 3, 12)
+    else:  # rgba or N-band
+        _scan_channel_count = min(len(z_levels[0]["images"]) * 4, 16)
+
     return jsonify({
         "root": scan_path,
         "image_root": image_root,
@@ -383,21 +399,42 @@ def _check_sequential_naming(images, folder, warnings):
 @app.route("/generate", methods=["POST"])
 def generate():
     """Start DZI generation in a background thread."""
-    data = request.get_json(force=True)
-    root_path = data.get("path", "").strip()
-    image_root = data.get("image_root", "").strip() or root_path
-    z_levels = data.get("z_levels", [])
-    um_per_pixel = data.get("um_per_pixel")
+    root_path = request.form.get("path", "").strip()
+    image_root = request.form.get("image_root", "").strip() or root_path
+    um_per_pixel = request.form.get("um_per_pixel") or None
+
+    z_levels_raw = request.form.get("z_levels", "[]")
+    try:
+        z_levels = json.loads(z_levels_raw)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid z_levels format"}), 400
 
     if not root_path or not os.path.isdir(root_path):
         return jsonify({"error": "Invalid path"}), 400
     if not z_levels:
         return jsonify({"error": "No z-levels provided"}), 400
 
+    # Handle optional matrix file upload
+    matrix_content = None
+    matrix_file = request.files.get("matrix_file")
+    if matrix_file and matrix_file.filename:
+        matrix_content = matrix_file.read().decode("utf-8", errors="replace")
+
+    # Validate matrix file if provided
+    if matrix_content is not None:
+        expected_channels = _scan_channel_count
+        if expected_channels is None:
+            return jsonify({"error": "Cannot determine channel count — run Scan first"}), 400
+        err = validate_unmix_matrix(matrix_content, expected_channels)
+        if err:
+            return jsonify({"error": err}), 400
+
     _reset_progress()
 
     thread = threading.Thread(
-        target=_generate_worker, args=(root_path, image_root, z_levels, um_per_pixel), daemon=True
+        target=_generate_worker,
+        args=(root_path, image_root, z_levels, um_per_pixel, matrix_content),
+        daemon=True,
     )
     thread.start()
 
@@ -480,10 +517,60 @@ def serve_dataset(filepath):
 
 
 # ---------------------------------------------------------------------------
+# Unmixing matrix validation
+# ---------------------------------------------------------------------------
+
+def validate_unmix_matrix(file_content, expected_channels):
+    """Validate an unmixing matrix file.
+
+    Args:
+        file_content: raw text content of the matrix file
+        expected_channels: number of input channels the dataset has
+
+    Returns:
+        None if valid, or an error message string if invalid.
+    """
+    lines = [line.strip() for line in file_content.splitlines() if line.strip()]
+    if not lines:
+        return "Matrix file is empty"
+
+    rows = []
+    for i, line in enumerate(lines):
+        values = re.split(r"[\t,\s]+", line)
+        values = [v for v in values if v]  # drop empty strings from leading/trailing delimiters
+        try:
+            floats = [float(v) for v in values]
+        except ValueError:
+            return f"Matrix file contains non-numeric values on line {i + 1}"
+        for f in floats:
+            if math.isnan(f) or math.isinf(f):
+                return "Matrix file contains NaN or infinite values"
+        rows.append(floats)
+
+    # Check row count (1–8 output components)
+    if len(rows) < 1 or len(rows) > 8:
+        return f"Matrix has {len(rows)} rows — must be 1 to 8 output components"
+
+    # Check consistent column count
+    col_count = len(rows[0])
+    for i, row in enumerate(rows[1:], start=2):
+        if len(row) != col_count:
+            return (f"Matrix file has inconsistent column counts "
+                    f"(line {i} has {len(row)}, expected {col_count})")
+
+    # Check column count matches dataset channels
+    if col_count != expected_channels:
+        return (f"Matrix has {col_count} columns but dataset has "
+                f"{expected_channels} channels")
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Background generation worker
 # ---------------------------------------------------------------------------
 
-def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
+def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None, matrix_content=None):
     """Run DZI generation in background thread.
 
     root_path: dataset root (output goes here)
@@ -496,6 +583,12 @@ def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
         dataset_name = os.path.basename(root_path)
         output_dir = os.path.join(root_path, "deepzoom_RGBA")
         os.makedirs(output_dir, exist_ok=True)
+
+        # Write matrix file if provided
+        if matrix_content is not None:
+            matrix_path = os.path.join(root_path, "unmix_matrix.txt")
+            with open(matrix_path, "w", encoding="utf-8") as f:
+                f.write(matrix_content)
         pack_mode = "rgba"
 
         # Determine band mode from first image in first z-level
@@ -802,12 +895,19 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
         f"\t\tvar imageSources = [             // DZI tile source paths (grouped by z-level)\n"
         f"\t\t\t{sources_js},\n"
         f"\t\t];\n"
+        f"\t\tvar matrixFileName = 'unmix_matrix.txt';  // relative to HTML file, same format as imageSources\n"
         f"\t\t// ===== END DATASET CONFIGURATION ====="
     )
 
     # Replace configuration block
     pattern = r"// ===== DATASET CONFIGURATION =====.*?// ===== END DATASET CONFIGURATION ====="
     html = re.sub(pattern, config_block, html, flags=re.DOTALL)
+
+    # Set browser tab title to dataset name
+    html = html.replace(
+        "<title>hyperOSD Multi-Channel Blending</title>",
+        f"<title>{dataset_name} — hyperOSD</title>"
+    )
 
     # Set Reinhard toggle to checked (only if not already checked)
     if 'id="reinhardToggle" checked' not in html:
@@ -832,5 +932,9 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+    auto_open_browser = os.environ.get("HYPEROSG_NO_BROWSER", "").lower() not in {
+        "1", "true", "yes",
+    }
+    if auto_open_browser:
+        threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
     app.run(host="127.0.0.1", port=port, debug=False)

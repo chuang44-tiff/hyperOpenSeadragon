@@ -90,28 +90,70 @@ li {
     cursor: move;
 }
 
+/* ── View Controls (Rotation + Z Level) ── */
+.vc-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 0;
+    margin: 0;
+}
+
+.vc-label {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    color: #908d85;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    min-width: 62px;
+    flex-shrink: 0;
+}
+
+.vc-slider-wrap {
+    flex: 1;
+    min-width: 0;
+}
+
 #rotationSlider, #zlevel {
-    margin: 8px 0;
+    margin: 0;
     padding: 0;
     width: 100%;
     box-sizing: border-box;
-    height: 1.4em;
+    height: 8px;
+    border: 1px solid #ccc9c0 !important;
+    border-radius: 4px !important;
+    background: #e0ddd6 !important;
 }
 
 #rotationSlider .ui-slider-handle,
 #zlevel .ui-slider-handle {
-    height: 1.8em;
-    width: 1.2em;
-    top: -0.3em;
+    height: 18px;
+    width: 12px;
+    top: -6px;
+    border-radius: 2px;
+    border: 1px solid #4a7c8a !important;
+    background: #fff !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+    cursor: pointer;
+}
+
+#rotationSlider .ui-slider-handle:hover,
+#zlevel .ui-slider-handle:hover {
+    background: #f0ede6 !important;
+    border-color: #3a6270 !important;
 }
 
 #custom-zhandle {
-    width: 3.5em !important;
-    height: 2.2em;
+    width: 3em !important;
+    height: 20px;
     text-align: center;
-    line-height: 2.2em;
-    font-size: 0.85em;
-    top: -0.5em;
+    line-height: 20px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    color: #1a1917;
+    top: -7px;
 }
 
 #overlayMode {
@@ -135,10 +177,7 @@ li {
 	background-color: #e0a2a8;
 }
 
-/* Extra spacing before z-level section (last section in panel) */
-#filterWindow h3:last-of-type {
-    margin-top: 20px;
-}
+/* Remove extra spacing — z-level is now inside View Controls panel */
 
 /* Save Image filename input — dynamic width */
 #filterWindow #saveFilename {
@@ -197,4 +236,847 @@ li {
 
 #selected {
     overflow: hidden;
+}
+
+/* ── Channel Selector (new two-zone UI) ── */
+
+#channelSelector {
+    margin: 4px 0;
+    border: 1px solid #c8c5bc;
+    border-radius: 4px;
+    overflow: visible;
+    background: #f2f1ee;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.04);
+}
+
+/* Shared panel header (used by all instrument-panel sections) */
+.cs-header {
+    background: #d8d5cd;
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-radius: 4px 4px 0 0;
+    border-bottom: 1px solid #c0bdb5;
+}
+
+.cs-header .cs-indicator {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #5cab5e;
+    box-shadow: 0 0 4px rgba(92,171,94,0.5);
+}
+
+.cs-header h3 {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: #3a3832;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin: 0;
+}
+
+#channelSelector .cs-header .cs-count {
+    margin-left: auto;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    color: #8a8880;
+    letter-spacing: 0.5px;
+}
+
+#channelSelector .cs-dropdown-zone {
+    padding: 10px 12px;
+    border-bottom: 1px solid #ddd9d0;
+    position: relative;
+}
+
+#channelSelector .cs-dropdown-trigger {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 10px;
+    background: #ffffff;
+    border: 1px solid #ccc9c0;
+    border-radius: 3px;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    transition: border-color 0.15s;
+    user-select: none;
+    font: inherit;
+    text-align: left;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    outline: none;
+    box-sizing: border-box;
+}
+
+#channelSelector .cs-dropdown-trigger:focus-visible {
+    border-color: #4a7c8a;
+    box-shadow: 0 0 0 2px rgba(74,124,138,0.3);
+}
+
+#channelSelector .cs-dropdown-trigger:hover {
+    border-color: #4a7c8a;
+}
+
+#channelSelector .cs-dropdown-trigger.open {
+    border-color: #4a7c8a;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    box-shadow: none;
+}
+
+#channelSelector .cs-dropdown-trigger .cs-label {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    color: #3a3832;
+    letter-spacing: 0.5px;
+}
+
+#channelSelector .cs-dropdown-trigger .cs-arrow {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s ease;
+}
+
+#channelSelector .cs-dropdown-trigger.open .cs-arrow {
+    transform: rotate(180deg);
+}
+
+#channelSelector .cs-dropdown-trigger .cs-arrow svg {
+    width: 10px;
+    height: 10px;
+    fill: none;
+    stroke: #3a3832;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+#channelSelector .cs-dropdown-menu {
+    display: none;
+    background: #ffffff;
+    border: 1px solid #4a7c8a;
+    border-top: none;
+    border-radius: 0 0 3px 3px;
+    max-height: 240px;
+    overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+#channelSelector .cs-dropdown-menu.open {
+    display: block;
+}
+
+#channelSelector .cs-dropdown-menu::-webkit-scrollbar {
+    width: 6px;
+}
+#channelSelector .cs-dropdown-menu::-webkit-scrollbar-track {
+    background: #e8e5de;
+}
+#channelSelector .cs-dropdown-menu::-webkit-scrollbar-thumb {
+    background: #d8d5cd;
+    border-radius: 3px;
+}
+
+#channelSelector .cs-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    transition: background 0.1s;
+    border-bottom: 1px solid rgba(0,0,0,0.04);
+    user-select: none;
+}
+
+#channelSelector .cs-dropdown-item:last-child {
+    border-bottom: none;
+}
+
+#channelSelector .cs-dropdown-item:hover,
+#channelSelector .cs-dropdown-item:focus-visible {
+    background: #eae8e3;
+}
+
+#channelSelector .cs-dropdown-item:focus-visible {
+    outline: 2px solid #4a7c8a;
+    outline-offset: -2px;
+}
+
+#channelSelector .cs-dropdown-item .cs-check-box {
+    width: 15px;
+    height: 15px;
+    border: 1.5px solid #ccc9c0;
+    border-radius: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.15s;
+    background: #ffffff;
+}
+
+#channelSelector .cs-dropdown-item.checked .cs-check-box {
+    background: #3d7c3f;
+    border-color: #3d7c3f;
+}
+
+#channelSelector .cs-dropdown-item .cs-check-box svg {
+    width: 10px;
+    height: 10px;
+    fill: none;
+    stroke: white;
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0;
+    transform: scale(0.5);
+    transition: all 0.15s;
+}
+
+#channelSelector .cs-dropdown-item.checked .cs-check-box svg {
+    opacity: 1;
+    transform: scale(1);
+}
+
+#channelSelector .cs-dropdown-item .cs-ch-label {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 12px;
+    font-weight: 400;
+    color: #3a3832;
+    letter-spacing: 0.3px;
+}
+
+#channelSelector .cs-dropdown-item.checked .cs-ch-label {
+    font-weight: 500;
+    color: #1a1917;
+}
+
+#channelSelector .cs-controls-zone {
+    padding: 6px 0;
+    min-height: 32px;
+}
+
+#channelSelector .cs-controls-empty {
+    padding: 16px 12px;
+    text-align: center;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    color: #a09d95;
+    letter-spacing: 0.5px;
+}
+
+#channelSelector .cs-channel-control {
+    display: flex;
+    align-items: center;
+    padding: 6px 12px;
+    gap: 8px;
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+    animation: csSlideIn 0.2s ease;
+}
+
+#channelSelector .cs-channel-control:last-child {
+    border-bottom: none;
+}
+
+@keyframes csSlideIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+#channelSelector .cs-ch-tag {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: #1a1917;
+    min-width: 32px;
+    letter-spacing: 0.3px;
+}
+
+#channelSelector .cs-control-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+}
+
+#channelSelector .cs-ctrl-label {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 9px;
+    font-weight: 600;
+    color: #908d85;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    min-width: 14px;
+}
+
+#channelSelector .cs-hue-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+    border: 1px solid rgba(0,0,0,0.15);
+    flex-shrink: 0;
+    transition: background-color 0.2s;
+}
+
+#channelSelector .cs-spinner {
+    display: flex;
+    align-items: stretch;
+    border: 1px solid #ccc9c0;
+    border-radius: 3px;
+    overflow: hidden;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+    height: 26px;
+    flex: 1;
+    max-width: 80px;
+}
+
+#channelSelector .cs-spinner input {
+    width: 100%;
+    min-width: 0;
+    border: none;
+    padding: 0 4px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: #1a1917;
+    text-align: center;
+    background: #ffffff;
+    outline: none;
+    -moz-appearance: textfield;
+}
+
+#channelSelector .cs-spinner input::-webkit-inner-spin-button,
+#channelSelector .cs-spinner input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+}
+
+#channelSelector .cs-spinner input:focus {
+    background: #fefdf8;
+}
+
+#channelSelector .cs-spinner-btns {
+    display: flex;
+    flex-direction: column;
+    width: 18px;
+    flex-shrink: 0;
+    border-left: 1px solid #ccc9c0;
+}
+
+#channelSelector .cs-spinner-btns button {
+    flex: 1;
+    border: none;
+    background: #d8d5cd;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: background 0.1s;
+}
+
+#channelSelector .cs-spinner-btns button:first-child {
+    border-bottom: 1px solid #ccc9c0;
+}
+
+#channelSelector .cs-spinner-btns button:hover {
+    background: #c0bdb5;
+}
+
+#channelSelector .cs-spinner-btns button:active {
+    background: #a8a59d;
+}
+
+#channelSelector .cs-spinner-btns button svg {
+    width: 8px;
+    height: 8px;
+    fill: none;
+    stroke: #3a3832;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+#channelSelector .cs-footer {
+    padding: 8px 12px;
+    border-top: 1px solid #ddd9d0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+#channelSelector .cs-footer .cs-status {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 9px;
+    color: #a09d95;
+    letter-spacing: 0.5px;
+}
+
+#channelSelector .cs-footer .cs-btn-clear {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 9px;
+    font-weight: 500;
+    color: #3a6270;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    background: none;
+    border: 1px solid #4a7c8a;
+    border-radius: 3px;
+    padding: 3px 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+#channelSelector .cs-footer .cs-btn-clear:hover {
+    background: #4a7c8a;
+    color: white;
+}
+
+/* ── Post-Processing Section (unified instrument-panel look) ── */
+
+#postProcessSection {
+    margin: 4px 0;
+    border: 1px solid #c8c5bc;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #f2f1ee;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.04);
+}
+
+.pp-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0;
+    cursor: pointer;
+    user-select: none;
+}
+
+.pp-toggle input[type="checkbox"] {
+    accent-color: #3d7c3f;
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+}
+
+.pp-toggle span {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: #3a3832;
+    letter-spacing: 0.3px;
+}
+
+.pp-label {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    color: #908d85;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    min-width: 90px;
+}
+
+.pp-info {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    color: #3a3832;
+    background: #fff;
+    border: 1px solid #ccc9c0;
+    border-radius: 3px;
+    padding: 3px 8px;
+}
+
+.pp-select {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: #3a3832;
+    background: #fff;
+    border: 1px solid #ccc9c0;
+    border-radius: 3px;
+    padding: 3px 8px;
+    cursor: pointer;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.06);
+}
+
+.pp-textarea {
+    width: 100%;
+    min-height: 100px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #1a1917;
+    background: #fff;
+    border: 1px solid #ccc9c0;
+    border-radius: 3px;
+    padding: 6px 8px;
+    resize: vertical;
+    box-sizing: border-box;
+    tab-size: 8;
+}
+
+.pp-textarea:focus {
+    outline: none;
+    border-color: #4a7c8a;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.08), 0 0 0 2px rgba(74,124,138,0.15);
+}
+
+.pp-btn {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.pp-btn-apply {
+    background: #3d7c3f;
+    color: white;
+    border: 1px solid #2d6030;
+}
+.pp-btn-apply:hover { background: #2d6030; }
+
+.pp-btn-clear {
+    background: none;
+    color: #3a6270;
+    border: 1px solid #4a7c8a;
+}
+.pp-btn-clear:hover { background: #4a7c8a; color: white; }
+
+/* ── Save Image Section ── */
+#saveImageSection {
+    margin: 4px 0;
+    border: 1px solid #c8c5bc;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #f2f1ee;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.04);
+}
+
+#filterWindow #saveImageBtn {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 5px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    background: #3d7c3f;
+    color: white;
+    border: 1px solid #2d6030;
+    transition: background 0.15s;
+}
+#filterWindow #saveImageBtn:hover { background: #2d6030; }
+
+#filterWindow #saveFilename {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    color: #3a3832;
+    border: 1px solid #ccc9c0;
+    border-radius: 3px;
+    padding: 4px 8px;
+    background: #fff;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.06);
+}
+
+#filterWindow #includeScalebar {
+    accent-color: #3d7c3f;
+}
+
+#filterWindow label {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    color: #3a3832;
+}
+
+/* ── Style NIST H&E/Trichrome spinners to match instrument panel ── */
+#selected .filterLabel {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: #1a1917;
+    letter-spacing: 0.3px;
+}
+
+#selected .wdzt-cell-layout label {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    color: #908d85;
+    letter-spacing: 0.5px;
+}
+
+#selected .ui-spinner {
+    border: 1px solid #ccc9c0 !important;
+    border-radius: 3px !important;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.08) !important;
+    height: 26px !important;
+    overflow: hidden !important;
+}
+
+#selected .ui-spinner input.ui-spinner-input {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    color: #1a1917 !important;
+    border: none !important;
+    padding: 2px 4px !important;
+    background: #fff !important;
+}
+
+#selected .ui-spinner .ui-spinner-button {
+    background: #d8d5cd !important;
+    border: none !important;
+    border-left: 1px solid #ccc9c0 !important;
+    width: 18px !important;
+}
+
+#selected .ui-spinner .ui-spinner-button:hover {
+    background: #c0bdb5 !important;
+}
+
+#selected .ui-spinner .ui-spinner-button .ui-icon {
+    background-color: transparent !important;
+}
+
+/* NIST checkbox styling */
+#selected input[type="checkbox"] {
+    accent-color: #3d7c3f;
+    width: 15px;
+    height: 15px;
+}
+
+/* Section headings in filterWindow */
+#filterWindow h3 {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: #3a3832;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+/* ── Unmixing Matrix Editor (scoped to #unmixPanel) ── */
+
+#unmixPanel {
+    margin: 4px 0;
+    border: 1px solid #c8c5bc;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #f2f1ee;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.04);
+}
+
+#unmixPanel .unmix-dim-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 14px;
+    border-bottom: 1px solid #c8c5bc;
+    background: #d8d5cd;
+}
+
+#unmixPanel .unmix-dim-label {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    color: #908d85;
+}
+
+#unmixPanel .unmix-dim-label strong {
+    color: #3a3832;
+    font-weight: 600;
+}
+
+#unmixPanel .unmix-input-zone {
+    padding: 6px 14px 4px;
+}
+
+#unmixPanel .unmix-autoload-msg {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 9.5px;
+    color: #908d85;
+}
+
+#unmixPanel .unmix-status-wrap {
+    padding: 0 14px 3px;
+}
+
+#unmixPanel .unmix-status-msg {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    color: #a09d95;
+    white-space: nowrap;
+    transition: color 0.2s;
+}
+
+#unmixPanel .unmix-btn-row {
+    display: flex;
+    gap: 8px;
+    padding: 0 14px 6px;
+    align-items: center;
+}
+
+#unmixPanel .unmix-editor-zone {
+    border-top: 1px solid #c8c5bc;
+    display: none;
+    animation: unmixSlideIn 0.25s ease-out;
+}
+
+@keyframes unmixSlideIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+#unmixPanel .unmix-editor-zone.visible {
+    display: block;
+}
+
+#unmixPanel .unmix-editor-header {
+    display: flex;
+    align-items: center;
+    padding: 5px 14px;
+    gap: 6px;
+    background: #d8d5cd;
+    border-bottom: 1px solid #c0bdb5;
+}
+
+#unmixPanel .unmix-editor-header span {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #3a3832;
+}
+
+#unmixPanel .unmix-pinv-tag {
+    font-size: 9px;
+    font-weight: 500;
+    color: #3d7c3f;
+    background: rgba(61, 124, 63, 0.12);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid rgba(61, 124, 63, 0.2);
+    letter-spacing: 0.4px;
+}
+
+#unmixPanel .unmix-dirty-tag {
+    font-size: 9px;
+    font-weight: 500;
+    color: #b8922e;
+    background: rgba(184, 146, 46, 0.12);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid rgba(184, 146, 46, 0.2);
+    letter-spacing: 0.4px;
+    display: none;
+}
+
+#unmixPanel .unmix-dirty-tag.visible {
+    display: inline;
+}
+
+#unmixPanel .unmix-table-scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 6px 0 6px;
+    scrollbar-width: thin;
+    scrollbar-color: #c8c5bc transparent;
+}
+
+#unmixPanel .unmix-table-scroll::-webkit-scrollbar { height: 5px; }
+#unmixPanel .unmix-table-scroll::-webkit-scrollbar-track { background: transparent; }
+#unmixPanel .unmix-table-scroll::-webkit-scrollbar-thumb {
+    background: #c8c5bc;
+    border-radius: 3px;
+}
+
+#unmixPanel .unmix-matrix-table {
+    border-collapse: separate;
+    border-spacing: 1px;
+    margin: 0 8px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 9.5px;
+    white-space: nowrap;
+}
+
+#unmixPanel .unmix-matrix-table th {
+    font-weight: 500;
+    color: #908d85;
+    padding: 3px 2px;
+    text-align: center;
+    font-size: 8.5px;
+    letter-spacing: 0.3px;
+    position: sticky;
+    background: #eae8e3;
+}
+
+#unmixPanel .unmix-matrix-table th.unmix-row-hdr {
+    text-align: right;
+    padding-right: 6px;
+    left: 0;
+    z-index: 2;
+    background: #eae8e3;
+}
+
+#unmixPanel .unmix-matrix-table th.unmix-corner {
+    left: 0;
+    z-index: 3;
+    background: #eae8e3;
+}
+
+#unmixPanel .unmix-matrix-table th.unmix-col-hdr {
+    top: 0;
+    z-index: 1;
+}
+
+#unmixPanel .unmix-matrix-table td {
+    padding: 0;
+    min-width: 40px;
+    border-radius: 2px;
+    position: relative;
+}
+
+#unmixPanel .unmix-matrix-table td input {
+    width: 100%;
+    min-width: 40px;
+    padding: 3px 2px;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: #1a1917;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 9.5px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    cursor: text;
+}
+
+#unmixPanel .unmix-matrix-table td input:focus {
+    background: rgba(74, 124, 138, 0.12);
+    outline: 1px solid #4a7c8a;
+    border-radius: 2px;
+    z-index: 5;
+    position: relative;
+}
+
+#unmixPanel .unmix-matrix-table td:hover {
+    outline: 1px solid #908d85;
+    z-index: 1;
 }

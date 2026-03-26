@@ -56,6 +56,8 @@
         'uniform float uChannelGain[16];',
         'uniform float uChannelEnabled[16];',
         'uniform float uToneMode;',
+        'uniform float uUnmixEnabled;',
+        'uniform float uUnmixMatrix[128];',
         '',
         'void main() {',
         '    // Pre-sample all 4 layer textures once (4 fetches total, not 16)',
@@ -66,32 +68,62 @@
         '    vec4 L2 = texture2D(uLayer2, vTexCoord);',
         '    vec4 L3 = texture2D(uLayer3, vTexCoord);',
         '',
+        '    // Extract 16 raw channel values',
+        '    float r0=L0.r, r1=L0.g, r2=L0.b, r3=L0.a;',
+        '    float r4=L1.r, r5=L1.g, r6=L1.b, r7=L1.a;',
+        '    float r8=L2.r, r9=L2.g, r10=L2.b, r11=L2.a;',
+        '    float r12=L3.r, r13=L3.g, r14=L3.b, r15=L3.a;',
+        '',
+        '    // Compute blend-input channels: unmixed outputs or raw passthrough',
+        '    float ch0, ch1, ch2, ch3, ch4, ch5, ch6, ch7;',
+        '    float ch8, ch9, ch10, ch11, ch12, ch13, ch14, ch15;',
+        '',
+        '    if (uUnmixEnabled > 0.5) {',
+        '        // 16x8 matrix multiply: out[j] = sum_i(raw[i] * M[i*8+j])',
+        '        ch0 = r0*uUnmixMatrix[0] + r1*uUnmixMatrix[8] + r2*uUnmixMatrix[16] + r3*uUnmixMatrix[24] + r4*uUnmixMatrix[32] + r5*uUnmixMatrix[40] + r6*uUnmixMatrix[48] + r7*uUnmixMatrix[56] + r8*uUnmixMatrix[64] + r9*uUnmixMatrix[72] + r10*uUnmixMatrix[80] + r11*uUnmixMatrix[88] + r12*uUnmixMatrix[96] + r13*uUnmixMatrix[104] + r14*uUnmixMatrix[112] + r15*uUnmixMatrix[120];',
+        '        ch1 = r0*uUnmixMatrix[1] + r1*uUnmixMatrix[9] + r2*uUnmixMatrix[17] + r3*uUnmixMatrix[25] + r4*uUnmixMatrix[33] + r5*uUnmixMatrix[41] + r6*uUnmixMatrix[49] + r7*uUnmixMatrix[57] + r8*uUnmixMatrix[65] + r9*uUnmixMatrix[73] + r10*uUnmixMatrix[81] + r11*uUnmixMatrix[89] + r12*uUnmixMatrix[97] + r13*uUnmixMatrix[105] + r14*uUnmixMatrix[113] + r15*uUnmixMatrix[121];',
+        '        ch2 = r0*uUnmixMatrix[2] + r1*uUnmixMatrix[10] + r2*uUnmixMatrix[18] + r3*uUnmixMatrix[26] + r4*uUnmixMatrix[34] + r5*uUnmixMatrix[42] + r6*uUnmixMatrix[50] + r7*uUnmixMatrix[58] + r8*uUnmixMatrix[66] + r9*uUnmixMatrix[74] + r10*uUnmixMatrix[82] + r11*uUnmixMatrix[90] + r12*uUnmixMatrix[98] + r13*uUnmixMatrix[106] + r14*uUnmixMatrix[114] + r15*uUnmixMatrix[122];',
+        '        ch3 = r0*uUnmixMatrix[3] + r1*uUnmixMatrix[11] + r2*uUnmixMatrix[19] + r3*uUnmixMatrix[27] + r4*uUnmixMatrix[35] + r5*uUnmixMatrix[43] + r6*uUnmixMatrix[51] + r7*uUnmixMatrix[59] + r8*uUnmixMatrix[67] + r9*uUnmixMatrix[75] + r10*uUnmixMatrix[83] + r11*uUnmixMatrix[91] + r12*uUnmixMatrix[99] + r13*uUnmixMatrix[107] + r14*uUnmixMatrix[115] + r15*uUnmixMatrix[123];',
+        '        ch4 = r0*uUnmixMatrix[4] + r1*uUnmixMatrix[12] + r2*uUnmixMatrix[20] + r3*uUnmixMatrix[28] + r4*uUnmixMatrix[36] + r5*uUnmixMatrix[44] + r6*uUnmixMatrix[52] + r7*uUnmixMatrix[60] + r8*uUnmixMatrix[68] + r9*uUnmixMatrix[76] + r10*uUnmixMatrix[84] + r11*uUnmixMatrix[92] + r12*uUnmixMatrix[100] + r13*uUnmixMatrix[108] + r14*uUnmixMatrix[116] + r15*uUnmixMatrix[124];',
+        '        ch5 = r0*uUnmixMatrix[5] + r1*uUnmixMatrix[13] + r2*uUnmixMatrix[21] + r3*uUnmixMatrix[29] + r4*uUnmixMatrix[37] + r5*uUnmixMatrix[45] + r6*uUnmixMatrix[53] + r7*uUnmixMatrix[61] + r8*uUnmixMatrix[69] + r9*uUnmixMatrix[77] + r10*uUnmixMatrix[85] + r11*uUnmixMatrix[93] + r12*uUnmixMatrix[101] + r13*uUnmixMatrix[109] + r14*uUnmixMatrix[117] + r15*uUnmixMatrix[125];',
+        '        ch6 = r0*uUnmixMatrix[6] + r1*uUnmixMatrix[14] + r2*uUnmixMatrix[22] + r3*uUnmixMatrix[30] + r4*uUnmixMatrix[38] + r5*uUnmixMatrix[46] + r6*uUnmixMatrix[54] + r7*uUnmixMatrix[62] + r8*uUnmixMatrix[70] + r9*uUnmixMatrix[78] + r10*uUnmixMatrix[86] + r11*uUnmixMatrix[94] + r12*uUnmixMatrix[102] + r13*uUnmixMatrix[110] + r14*uUnmixMatrix[118] + r15*uUnmixMatrix[126];',
+        '        ch7 = r0*uUnmixMatrix[7] + r1*uUnmixMatrix[15] + r2*uUnmixMatrix[23] + r3*uUnmixMatrix[31] + r4*uUnmixMatrix[39] + r5*uUnmixMatrix[47] + r6*uUnmixMatrix[55] + r7*uUnmixMatrix[63] + r8*uUnmixMatrix[71] + r9*uUnmixMatrix[79] + r10*uUnmixMatrix[87] + r11*uUnmixMatrix[95] + r12*uUnmixMatrix[103] + r13*uUnmixMatrix[111] + r14*uUnmixMatrix[119] + r15*uUnmixMatrix[127];',
+        '        // Clamp unmixed outputs to [0,1]',
+        '        ch0 = clamp(ch0, 0.0, 1.0); ch1 = clamp(ch1, 0.0, 1.0);',
+        '        ch2 = clamp(ch2, 0.0, 1.0); ch3 = clamp(ch3, 0.0, 1.0);',
+        '        ch4 = clamp(ch4, 0.0, 1.0); ch5 = clamp(ch5, 0.0, 1.0);',
+        '        ch6 = clamp(ch6, 0.0, 1.0); ch7 = clamp(ch7, 0.0, 1.0);',
+        '        // Unused output slots are zero',
+        '        ch8 = 0.0; ch9 = 0.0; ch10 = 0.0; ch11 = 0.0;',
+        '        ch12 = 0.0; ch13 = 0.0; ch14 = 0.0; ch15 = 0.0;',
+        '    } else {',
+        '        // Bypass: raw channels pass through unchanged',
+        '        ch0=r0; ch1=r1; ch2=r2; ch3=r3;',
+        '        ch4=r4; ch5=r5; ch6=r6; ch7=r7;',
+        '        ch8=r8; ch9=r9; ch10=r10; ch11=r11;',
+        '        ch12=r12; ch13=r13; ch14=r14; ch15=r15;',
+        '    }',
+        '',
         '    // Additive blend with pre-computed RGB colors and tone mapping.',
-        '    // uChannelColor[i] is pre-computed on the CPU from HSV (once per config change).',
-        '    // Eliminates 16 per-pixel hsvToRgb calls per frame.',
         '    vec3 sum = vec3(0.0);',
         '',
-        '    // Process each layer\'s 4 channels (R,G,B,A) inline — no dynamic array indexing',
-        '    // Layer 0: channels 0-3',
-        '    if (uChannelEnabled[0]  > 0.5) { sum += uChannelColor[0]  * L0.r * uChannelGain[0];  }',
-        '    if (uChannelEnabled[1]  > 0.5) { sum += uChannelColor[1]  * L0.g * uChannelGain[1];  }',
-        '    if (uChannelEnabled[2]  > 0.5) { sum += uChannelColor[2]  * L0.b * uChannelGain[2];  }',
-        '    if (uChannelEnabled[3]  > 0.5) { sum += uChannelColor[3]  * L0.a * uChannelGain[3];  }',
-        '    // Layer 1: channels 4-7',
-        '    if (uChannelEnabled[4]  > 0.5) { sum += uChannelColor[4]  * L1.r * uChannelGain[4];  }',
-        '    if (uChannelEnabled[5]  > 0.5) { sum += uChannelColor[5]  * L1.g * uChannelGain[5];  }',
-        '    if (uChannelEnabled[6]  > 0.5) { sum += uChannelColor[6]  * L1.b * uChannelGain[6];  }',
-        '    if (uChannelEnabled[7]  > 0.5) { sum += uChannelColor[7]  * L1.a * uChannelGain[7];  }',
-        '    // Layer 2: channels 8-11',
-        '    if (uChannelEnabled[8]  > 0.5) { sum += uChannelColor[8]  * L2.r * uChannelGain[8];  }',
-        '    if (uChannelEnabled[9]  > 0.5) { sum += uChannelColor[9]  * L2.g * uChannelGain[9];  }',
-        '    if (uChannelEnabled[10] > 0.5) { sum += uChannelColor[10] * L2.b * uChannelGain[10]; }',
-        '    if (uChannelEnabled[11] > 0.5) { sum += uChannelColor[11] * L2.a * uChannelGain[11]; }',
-        '    // Layer 3: channels 12-15',
-        '    if (uChannelEnabled[12] > 0.5) { sum += uChannelColor[12] * L3.r * uChannelGain[12]; }',
-        '    if (uChannelEnabled[13] > 0.5) { sum += uChannelColor[13] * L3.g * uChannelGain[13]; }',
-        '    if (uChannelEnabled[14] > 0.5) { sum += uChannelColor[14] * L3.b * uChannelGain[14]; }',
-        '    if (uChannelEnabled[15] > 0.5) { sum += uChannelColor[15] * L3.a * uChannelGain[15]; }',
+        '    // Blend channels via ch0-ch15 (raw passthrough or unmixed outputs)',
+        '    if (uChannelEnabled[0]  > 0.5) { sum += uChannelColor[0]  * ch0  * uChannelGain[0];  }',
+        '    if (uChannelEnabled[1]  > 0.5) { sum += uChannelColor[1]  * ch1  * uChannelGain[1];  }',
+        '    if (uChannelEnabled[2]  > 0.5) { sum += uChannelColor[2]  * ch2  * uChannelGain[2];  }',
+        '    if (uChannelEnabled[3]  > 0.5) { sum += uChannelColor[3]  * ch3  * uChannelGain[3];  }',
+        '    if (uChannelEnabled[4]  > 0.5) { sum += uChannelColor[4]  * ch4  * uChannelGain[4];  }',
+        '    if (uChannelEnabled[5]  > 0.5) { sum += uChannelColor[5]  * ch5  * uChannelGain[5];  }',
+        '    if (uChannelEnabled[6]  > 0.5) { sum += uChannelColor[6]  * ch6  * uChannelGain[6];  }',
+        '    if (uChannelEnabled[7]  > 0.5) { sum += uChannelColor[7]  * ch7  * uChannelGain[7];  }',
+        '    if (uChannelEnabled[8]  > 0.5) { sum += uChannelColor[8]  * ch8  * uChannelGain[8];  }',
+        '    if (uChannelEnabled[9]  > 0.5) { sum += uChannelColor[9]  * ch9  * uChannelGain[9];  }',
+        '    if (uChannelEnabled[10] > 0.5) { sum += uChannelColor[10] * ch10 * uChannelGain[10]; }',
+        '    if (uChannelEnabled[11] > 0.5) { sum += uChannelColor[11] * ch11 * uChannelGain[11]; }',
+        '    if (uChannelEnabled[12] > 0.5) { sum += uChannelColor[12] * ch12 * uChannelGain[12]; }',
+        '    if (uChannelEnabled[13] > 0.5) { sum += uChannelColor[13] * ch13 * uChannelGain[13]; }',
+        '    if (uChannelEnabled[14] > 0.5) { sum += uChannelColor[14] * ch14 * uChannelGain[14]; }',
+        '    if (uChannelEnabled[15] > 0.5) { sum += uChannelColor[15] * ch15 * uChannelGain[15]; }',
         '',
         '    // Tone mapping: uToneMode selects the algorithm.',
         '    // 0 = Knee curve (default): linear below 0.8, soft shoulder above.',
@@ -244,6 +276,7 @@
             this._tileCacheCap = 300;
             this._evictionInterval = 60;    // check eviction every N frames
             this._evictionMaxAge = 240;     // evict tiles unused for N frames (~4s at 60fps)
+            this._inactiveSettleInterval = 30; // settle inactive layers every N frames (not every frame)
             this._blitPosBuffer = null;
             this._clipData = new Float32Array(8);  // pre-allocated for tile blit (avoids per-tile GC)
             this._corners = new Float32Array(8);   // pre-allocated for tile corner computation
@@ -264,6 +297,7 @@
             this._lastCanvasH = 0;
             this._lastTileCounts = [];     // per-layer tile count for lightweight change detection
             this._lastTileChecksums = [];  // per-layer XOR checksum of cacheKey hashes
+            this._lastTileSumChecksums = [];  // per-layer additive checksum (collision resistance)
 
             // Post-process (Beer's law) state
             this._postProcessConfig = {
@@ -293,6 +327,11 @@
             this._uEnabled = new Float32Array(16);
             this._precomputeChannelColors();  // initialize _uColor from default config
 
+            // Linear unmixing state
+            this._unmixEnabled = false;
+            this._unmixMatrix = new Float32Array(128);  // 16 inputs x 8 outputs, zero-padded
+            this._numOutputs = 0;
+
             try {
                 this._initWebGL();
             } catch (e) {
@@ -321,6 +360,7 @@
                 self._fboHeight = 0;
                 self._lastTileCounts = [];
                 self._lastTileChecksums = [];
+                self._lastTileSumChecksums = [];
                 self._lastViewportHash = '';
                 self._lastLayerTileHashes = [];
                 self._texturesValid = false;
@@ -539,11 +579,12 @@
             var tileDropRejected = false;
             if (!viewportChanged && !zChanged && !sizeChanged) {
                 var totalNow = 0, totalPrev = 0;
-                var newCounts = [], newChecksums = [];
+                var newCounts = [], newChecksums = [], newSumChecksums = [];
                 for (var thi = 0; thi < activeLayers.length; thi++) {
                     var ti = activeLayers[thi];
                     var count = 0;
                     var checksum = 0;
+                    var sumChecksum = 0;
                     if (ti && ti._tilesToDraw) {
                         for (var thj = 0; thj < ti._tilesToDraw.length; thj++) {
                             var levelTiles = ti._tilesToDraw[thj];
@@ -551,7 +592,9 @@
                                 for (var thk = 0; thk < levelTiles.length; thk++) {
                                     if (levelTiles[thk] && levelTiles[thk].tile) {
                                         count++;
-                                        checksum = (checksum ^ this._hashCacheKey(levelTiles[thk].tile.cacheKey)) | 0;
+                                        var h = this._hashCacheKey(levelTiles[thk].tile.cacheKey);
+                                        checksum = (checksum ^ h) | 0;
+                                        sumChecksum = (sumChecksum + h) | 0;
                                     }
                                 }
                             }
@@ -561,7 +604,8 @@
                     totalPrev += (this._lastTileCounts[thi] || 0);
                     newCounts.push(count);
                     newChecksums.push(checksum);
-                    if (count !== (this._lastTileCounts[thi] || 0) || checksum !== (this._lastTileChecksums[thi] || 0)) {
+                    newSumChecksums.push(sumChecksum);
+                    if (count !== (this._lastTileCounts[thi] || 0) || checksum !== (this._lastTileChecksums[thi] || 0) || sumChecksum !== (this._lastTileSumChecksums[thi] || 0)) {
                         tilesChanged = true;
                     }
                 }
@@ -576,6 +620,7 @@
                 } else if (tilesChanged) {
                     this._lastTileCounts = newCounts;
                     this._lastTileChecksums = newChecksums;
+                    this._lastTileSumChecksums = newSumChecksums;
                 }
             }
 
@@ -618,12 +663,15 @@
                             gl.clearColor(0, 0, 0, 0);
                             gl.clear(gl.COLOR_BUFFER_BIT);
                         }
-                        this._lastLayerTileHashes[li] = '';
+                        this._lastLayerTileHashes[li] = null;
                         continue;
                     }
                     // Skip layers where all 4 channels are disabled
                     // (only when textures are already valid — initial composite must run for all layers)
-                    if (this._texturesValid) {
+                    // IMPORTANT: When unmixing is active, ALL layers must be composited
+                    // because the shader reads all 16 raw inputs for the matrix multiply,
+                    // regardless of which output channels are enabled.
+                    if (this._texturesValid && !this._unmixEnabled) {
                         var layerBase = li * 4;
                         var anyEnabled = false;
                         for (var ce = layerBase; ce < layerBase + 4; ce++) {
@@ -639,20 +687,25 @@
                                 gl.clearColor(0, 0, 0, 0);
                                 gl.clear(gl.COLOR_BUFFER_BIT);
                             }
-                            this._lastLayerTileHashes[li] = '';
+                            this._lastLayerTileHashes[li] = null;
                             continue;
                         }
                     }
-                    // Check if this layer's tiles actually changed
-                    var layerHash = '';
-                    for (var lhi = 0; lhi < layerTileInfos[li].length; lhi++) {
-                        layerHash += layerTileInfos[li][lhi].tile.cacheKey + ';';
+                    // Check if this layer's tiles actually changed (integer count+checksum, no GC)
+                    var lhCount = layerTileInfos[li].length;
+                    var lhChecksum = 0;
+                    var lhSumChecksum = 0;
+                    for (var lhi = 0; lhi < lhCount; lhi++) {
+                        var lhHash = this._hashCacheKey(layerTileInfos[li][lhi].tile.cacheKey);
+                        lhChecksum = (lhChecksum ^ lhHash) | 0;
+                        lhSumChecksum = (lhSumChecksum + lhHash) | 0;
                     }
-                    if (!forceAll && layerHash === this._lastLayerTileHashes[li]) {
+                    var prev = this._lastLayerTileHashes[li];
+                    if (!forceAll && prev && prev.count === lhCount && prev.checksum === lhChecksum && prev.sumChecksum === lhSumChecksum) {
                         continue;  // skip — this layer's FBO is still valid
                     }
                     this._compositeTilesToFBO(activeLayers[li], layerTileInfos[li], li, canvasW, canvasH, forceAll);
-                    this._lastLayerTileHashes[li] = layerHash;
+                    this._lastLayerTileHashes[li] = { count: lhCount, checksum: lhChecksum, sumChecksum: lhSumChecksum };
                 }
                 gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
                 gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
@@ -683,11 +736,15 @@
                 if (forceAll) {
                     this._lastTileCounts = [];
                     this._lastTileChecksums = [];
-                    this._lastLayerTileHashes = [];
+                    this._lastTileSumChecksums = [];
+                    // Note: _lastLayerTileHashes are already set per-layer in the
+                    // compositing loop above — do NOT reset them here or the next
+                    // non-forceAll frame would re-composite all layers unnecessarily.
                     for (var rti = 0; rti < layerTileInfos.length; rti++) {
                         var stats = this._computeLayerTileStats(layerTileInfos[rti]);
                         this._lastTileCounts.push(stats.count);
                         this._lastTileChecksums.push(stats.checksum);
+                        this._lastTileSumChecksums.push(stats.sumChecksum);
                     }
                 }
                 // An empty composite is valid — FBOs are in correct state (cleared).
@@ -710,14 +767,17 @@
                 }
             }
 
-            // Call getTilesToDraw() for inactive TiledImages so OSD's
-            // setDrawn() sees non-empty _lastDrawn and stops re-triggering
-            // the render loop. On composite frames, active layers had this
-            // called during FBO compositing; on fast-path frames, their
-            // _lastDrawn persists from prior composite frames.
-            for (var iAll = 0; iAll < tiledImages.length; iAll++) {
-                if (activeLayers.indexOf(tiledImages[iAll]) === -1) {
-                    tiledImages[iAll].getTilesToDraw();
+            // Settle inactive TiledImages so OSD's setDrawn() sees non-empty
+            // _lastDrawn and stops re-triggering the render loop.
+            // Throttled: only runs every _inactiveSettleInterval frames to
+            // avoid per-frame CPU cost that scales with total z-level count.
+            // Once settled, _lastDrawn persists and setDrawn() returns false
+            // until OSD invalidates the layer (z-switch, tile load, etc.).
+            if (this._frameCount % this._inactiveSettleInterval === 0) {
+                for (var iAll = 0; iAll < tiledImages.length; iAll++) {
+                    if (activeLayers.indexOf(tiledImages[iAll]) === -1) {
+                        tiledImages[iAll].getTilesToDraw();
+                    }
                 }
             }
 
@@ -758,6 +818,12 @@
             gl.uniform1fv(loc.uChannelGain, gArr);
             gl.uniform1fv(loc.uChannelEnabled, eArr);
             gl.uniform1f(loc.uToneMode, this._toneMode);
+
+            // Unmixing uniforms
+            gl.uniform1f(loc.uUnmixEnabled, this._unmixEnabled ? 1.0 : 0.0);
+            if (this._unmixEnabled) {
+                gl.uniform1fv(loc.uUnmixMatrix, this._unmixMatrix);
+            }
 
             // Draw full-screen quad (Pass 1)
             var aPos = this._attribLocations.aPosition;
@@ -882,6 +948,45 @@
         }
 
         /**
+         * Capture the current WebGL canvas content via readPixels.
+         * Works without preserveDrawingBuffer — forces a synchronous
+         * draw + readPixels within the same GPU frame.
+         * Returns a 2D canvas with the captured image.
+         */
+        captureCanvas() {
+            var gl = this._gl;
+            if (!gl) return null;
+            var w = this.canvas.width;
+            var h = this.canvas.height;
+            // Force a synchronous draw so the framebuffer has current content
+            if (this.viewer && this.viewer.world) {
+                var tiledImages = [];
+                for (var i = 0; i < this.viewer.world.getItemCount(); i++) {
+                    tiledImages.push(this.viewer.world.getItemAt(i));
+                }
+                this.draw(tiledImages);
+            }
+            // Read pixels from the default framebuffer (immediately after draw,
+            // before the browser can clear it)
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            var pixels = new Uint8Array(w * h * 4);
+            gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+            // Create a 2D canvas and flip vertically (WebGL is bottom-up)
+            var out = document.createElement('canvas');
+            out.width = w;
+            out.height = h;
+            var ctx = out.getContext('2d');
+            var imgData = ctx.createImageData(w, h);
+            for (var row = 0; row < h; row++) {
+                var srcOff = (h - 1 - row) * w * 4;
+                var dstOff = row * w * 4;
+                imgData.data.set(pixels.subarray(srcOff, srcOff + w * 4), dstOff);
+            }
+            ctx.putImageData(imgData, 0, 0);
+            return out;
+        }
+
+        /**
          * Pre-compute RGB colors from channel H into _uColor Float32Array(48).
          * S is hardcoded to 1.0 (full saturation). V was redundant with Gain and is removed.
          * Matches hsvToRgb(h, 1.0, 1.0) — NO 0.5 hue offset.
@@ -900,12 +1005,15 @@
         _computeLayerTileStats(tileInfos) {
             var count = tileInfos.length;
             var checksum = 0;
+            var sumChecksum = 0;
             for (var i = 0; i < tileInfos.length; i++) {
                 if (tileInfos[i] && tileInfos[i].tile) {
-                    checksum = (checksum ^ this._hashCacheKey(tileInfos[i].tile.cacheKey)) | 0;
+                    var h = this._hashCacheKey(tileInfos[i].tile.cacheKey);
+                    checksum = (checksum ^ h) | 0;
+                    sumChecksum = (sumChecksum + h) | 0;
                 }
             }
-            return { count: count, checksum: checksum };
+            return { count: count, checksum: checksum, sumChecksum: sumChecksum };
         }
 
         _precomputeChannelColors() {
@@ -953,6 +1061,35 @@
             }
         }
 
+        /**
+         * Update linear unmixing configuration.
+         * @param {Object} config - { active: bool, matrix: Float32Array(128), numOutputs: int }
+         */
+        updateUnmixConfig(config) {
+            if (!config) return;
+            if (typeof config.active !== 'undefined') {
+                var wasEnabled = this._unmixEnabled;
+                this._unmixEnabled = !!config.active;
+                // Unmixing toggle requires full FBO re-composite: when enabling,
+                // layers 1-3 may have been cleared (their channels were "disabled");
+                // when disabling, we need to restore raw channel FBO state.
+                if (wasEnabled !== this._unmixEnabled) {
+                    this._texturesValid = false;
+                }
+            }
+            if (config.matrix) {
+                this._unmixMatrix.set(config.matrix);
+                // Matrix is consumed as a uniform in the final shader pass —
+                // no layer FBO recomposition needed, just a redraw.
+            }
+            if (typeof config.numOutputs !== 'undefined') {
+                this._numOutputs = config.numOutputs;
+            }
+            if (this.viewer) {
+                this.viewer.forceRedraw();
+            }
+        }
+
         // =====================================================================
         //  WEBGL INITIALIZATION (_initWebGL)
         //  Acquires a WebGL context on the main canvas, compiles and links the
@@ -966,12 +1103,12 @@
             // Get a WebGL context on a hidden off-screen canvas.
             // We render to this, then draw the result to the visible canvas.
             // Actually, we can get WebGL directly on the main canvas.
-            var gl = this.canvas.getContext('webgl2', { premultipliedAlpha: false, preserveDrawingBuffer: true });
+            var gl = this.canvas.getContext('webgl2', { premultipliedAlpha: false });
             if (!gl) {
-                gl = this.canvas.getContext('webgl', { premultipliedAlpha: false, preserveDrawingBuffer: true });
+                gl = this.canvas.getContext('webgl', { premultipliedAlpha: false });
             }
             if (!gl) {
-                gl = this.canvas.getContext('experimental-webgl', { premultipliedAlpha: false, preserveDrawingBuffer: true });
+                gl = this.canvas.getContext('experimental-webgl', { premultipliedAlpha: false });
             }
             if (!gl) {
                 $.console.error('[HyperBlendWebGLDrawer] Could not create WebGL context.');
@@ -1009,7 +1146,9 @@
                 uChannelColor: gl.getUniformLocation(program, 'uChannelColor[0]'),
                 uChannelGain: gl.getUniformLocation(program, 'uChannelGain[0]'),
                 uChannelEnabled: gl.getUniformLocation(program, 'uChannelEnabled[0]'),
-                uToneMode: gl.getUniformLocation(program, 'uToneMode')
+                uToneMode: gl.getUniformLocation(program, 'uToneMode'),
+                uUnmixEnabled: gl.getUniformLocation(program, 'uUnmixEnabled'),
+                uUnmixMatrix: gl.getUniformLocation(program, 'uUnmixMatrix[0]')
             };
 
             // Validate uniform locations
