@@ -291,13 +291,18 @@
 
             // Optimization: skip tile compositing when only uniforms changed
             this._texturesValid = false;   // true when layer textures are up-to-date
-            this._lastViewportHash = '';   // detect viewport changes
+            this._lastVpX = NaN;
+            this._lastVpY = NaN;
+            this._lastVpW = NaN;
+            this._lastVpRot = NaN;
+            this._lastFlip = -1;
             this._lastZIndex = -1;         // detect z-level changes
             this._lastCanvasW = 0;
             this._lastCanvasH = 0;
             this._lastTileCounts = [];     // per-layer tile count for lightweight change detection
             this._lastTileChecksums = [];  // per-layer XOR checksum of cacheKey hashes
             this._lastTileSumChecksums = [];  // per-layer additive checksum (collision resistance)
+            this._tileDropRejectedAge = 0;    // frames since last tile-drop rejection; escape hatch at 60
 
             // Post-process (Beer's law) state
             this._postProcessConfig = {
@@ -327,9 +332,13 @@
             this._uEnabled = new Float32Array(16);
             this._precomputeChannelColors();  // initialize _uColor from default config
 
+            // Context-loss banner
+            this._contextBanner = null;
+
             // Linear unmixing state
             this._unmixEnabled = false;
             this._unmixMatrix = new Float32Array(128);  // 16 inputs x 8 outputs, zero-padded
+            this._unmixMatrixDirty = true;
             this._numOutputs = 0;
 
             try {
@@ -347,10 +356,21 @@
                 e.preventDefault();  // required to allow restoration
                 self._contextLost = true;
                 $.console.warn('[HyperBlendWebGLDrawer] WebGL context lost');
+                if (self.viewer && self.viewer.element) {
+                    if (!self._contextBanner) {
+                        self._contextBanner = document.createElement('div');
+                        self._contextBanner.style.cssText = 'position:absolute;top:0;left:0;right:0;padding:12px 16px;z-index:10000;background:#d32f2f;color:#fff;font:bold 14px/1.4 sans-serif;text-align:center;pointer-events:none;';
+                        self.viewer.element.style.position = self.viewer.element.style.position || 'relative';
+                        self.viewer.element.appendChild(self._contextBanner);
+                    }
+                    self._contextBanner.textContent = 'WebGL context lost \u2014 recovering GPU resources\u2026';
+                    self._contextBanner.style.display = 'block';
+                }
             });
             this.canvas.addEventListener('webglcontextrestored', function() {
                 $.console.log('[HyperBlendWebGLDrawer] WebGL context restored, reinitializing');
                 self._contextLost = false;
+                if (self._contextBanner) self._contextBanner.style.display = 'none';
                 self._tileCache.clear();
                 self._layerFBOs = [];
                 self._layerFBOTextures = [];
@@ -361,9 +381,14 @@
                 self._lastTileCounts = [];
                 self._lastTileChecksums = [];
                 self._lastTileSumChecksums = [];
-                self._lastViewportHash = '';
+                self._lastVpX = NaN;
+                self._lastVpY = NaN;
+                self._lastVpW = NaN;
+                self._lastVpRot = NaN;
+                self._lastFlip = -1;
                 self._lastLayerTileHashes = [];
                 self._texturesValid = false;
+                self._unmixMatrixDirty = true;
                 try {
                     self._initWebGL();
                     if (self.viewer) self.viewer.forceRedraw();
@@ -481,6 +506,10 @@
         }
 
         destroy() {
+            if (this._contextBanner && this._contextBanner.parentNode) {
+                this._contextBanner.parentNode.removeChild(this._contextBanner);
+                this._contextBanner = null;
+            }
             var gl = this._gl;
             if (gl) {
                 // Layer FBOs
@@ -554,15 +583,19 @@
             this._frameCount++;
             var zIdx = (typeof window.currentZIndex !== 'undefined') ? window.currentZIndex : 0;
             var vpBounds = this.viewport.getBounds(true);
-            var vpHash = vpBounds.x.toFixed(6) + ',' + vpBounds.y.toFixed(6) + ',' +
-                         vpBounds.width.toFixed(6) + ',' + this.viewport.getRotation(true).toFixed(2) +
-                         ',' + (this.viewport.getFlip() ? '1' : '0');
+            var vpX = Math.round(vpBounds.x * 1e6);
+            var vpY = Math.round(vpBounds.y * 1e6);
+            var vpW = Math.round(vpBounds.width * 1e6);
+            var vpRot = Math.round(this.viewport.getRotation(true) * 100);
+            var vpFlip = this.viewport.getFlip() ? 1 : 0;
 
             // Check if tiles changed (new tiles loaded, tiles unloaded, etc.)
             // NOTE: Do NOT include _needsDraw in the hash — forceRedraw() sets it
             // on every slider change, which would defeat the fast path entirely.
             var activeLayers = this._getActiveLayers(tiledImages);
-            var viewportChanged = (vpHash !== this._lastViewportHash);
+            var viewportChanged = (vpX !== this._lastVpX || vpY !== this._lastVpY ||
+                                    vpW !== this._lastVpW || vpRot !== this._lastVpRot ||
+                                    vpFlip !== this._lastFlip);
             var zChanged = (zIdx !== this._lastZIndex);
             var sizeChanged = (canvasW !== this._lastCanvasW || canvasH !== this._lastCanvasH);
 
@@ -614,13 +647,36 @@
                 // Keep existing FBO content (which has the fine tiles from GPU cache).
                 // Do NOT update tracking on rejection so future frames compare
                 // against the last good composite, not the degraded state.
-                if (tilesChanged && totalNow < totalPrev) {
+                // Escape hatch: after 60 frames (~1s) of continuous rejection,
+                // force-accept to prevent indefinitely stale FBO content.
+                if (tilesChanged && totalNow < totalPrev && this._tileDropRejectedAge < 60) {
                     tilesChanged = false;
                     tileDropRejected = true;
+                    this._tileDropRejectedAge++;
+                    // Protect tiles from OSD cache eviction during rejection.
+                    // Without this, rejected tiles lose beingDrawn protection
+                    // (reset by OSD's _updateLevelsForViewport), OSD evicts them,
+                    // causing cascading tile drops (vicious cycle).
+                    for (var bdi = 0; bdi < activeLayers.length; bdi++) {
+                        var bdTi = activeLayers[bdi];
+                        if (bdTi && bdTi._tilesToDraw) {
+                            for (var bdj = 0; bdj < bdTi._tilesToDraw.length; bdj++) {
+                                var bdLevel = bdTi._tilesToDraw[bdj];
+                                if (Array.isArray(bdLevel)) {
+                                    for (var bdk = 0; bdk < bdLevel.length; bdk++) {
+                                        if (bdLevel[bdk] && bdLevel[bdk].tile && bdLevel[bdk].tile.loaded) {
+                                            bdLevel[bdk].tile.beingDrawn = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else if (tilesChanged) {
                     this._lastTileCounts = newCounts;
                     this._lastTileChecksums = newChecksums;
                     this._lastTileSumChecksums = newSumChecksums;
+                    this._tileDropRejectedAge = 0;
                 }
             }
 
@@ -643,7 +699,7 @@
                 var layerTileInfos = [];
                 for (var li = 0; li < activeLayers.length; li++) {
                     var tiledImage = activeLayers[li];
-                    if (!tiledImage || tiledImage.opacity === 0) {
+                    if (!tiledImage) {
                         layerTileInfos.push([]);
                         continue;
                     }
@@ -666,31 +722,10 @@
                         this._lastLayerTileHashes[li] = null;
                         continue;
                     }
-                    // Skip layers where all 4 channels are disabled
-                    // (only when textures are already valid — initial composite must run for all layers)
-                    // IMPORTANT: When unmixing is active, ALL layers must be composited
-                    // because the shader reads all 16 raw inputs for the matrix multiply,
-                    // regardless of which output channels are enabled.
-                    if (this._texturesValid && !this._unmixEnabled) {
-                        var layerBase = li * 4;
-                        var anyEnabled = false;
-                        for (var ce = layerBase; ce < layerBase + 4; ce++) {
-                            if (this._channelConfig[ce] && this._channelConfig[ce].enabled) {
-                                anyEnabled = true;
-                                break;
-                            }
-                        }
-                        if (!anyEnabled) {
-                            if (forceAll && li < this._layerFBOs.length) {
-                                gl.bindFramebuffer(gl.FRAMEBUFFER, this._layerFBOs[li]);
-                                gl.viewport(0, 0, canvasW, canvasH);
-                                gl.clearColor(0, 0, 0, 0);
-                                gl.clear(gl.COLOR_BUFFER_BIT);
-                            }
-                            this._lastLayerTileHashes[li] = null;
-                            continue;
-                        }
-                    }
+                    // Always composite all layers — even those with no enabled channels.
+                    // The shader handles enabled/disabled via uniforms; FBOs must contain
+                    // raw tile data for both the spectrum inspector (readPixelChannels reads
+                    // ALL channels) and unmixing (matrix multiply needs all 16 inputs).
                     // Check if this layer's tiles actually changed (integer count+checksum, no GC)
                     var lhCount = layerTileInfos[li].length;
                     var lhChecksum = 0;
@@ -721,7 +756,11 @@
                 }
 
                 // Update state tracking
-                this._lastViewportHash = vpHash;
+                this._lastVpX = vpX;
+                this._lastVpY = vpY;
+                this._lastVpW = vpW;
+                this._lastVpRot = vpRot;
+                this._lastFlip = vpFlip;
                 this._lastZIndex = zIdx;
                 this._lastCanvasW = canvasW;
                 this._lastCanvasH = canvasH;
@@ -734,6 +773,7 @@
                 // to match the actually-composited state so future tile-change checks
                 // compare against this baseline (not a stale "best" from before the change).
                 if (forceAll) {
+                    this._tileDropRejectedAge = 0;
                     this._lastTileCounts = [];
                     this._lastTileChecksums = [];
                     this._lastTileSumChecksums = [];
@@ -741,10 +781,11 @@
                     // compositing loop above — do NOT reset them here or the next
                     // non-forceAll frame would re-composite all layers unnecessarily.
                     for (var rti = 0; rti < layerTileInfos.length; rti++) {
-                        var stats = this._computeLayerTileStats(layerTileInfos[rti]);
-                        this._lastTileCounts.push(stats.count);
-                        this._lastTileChecksums.push(stats.checksum);
-                        this._lastTileSumChecksums.push(stats.sumChecksum);
+                        // Reuse per-layer hashes already computed in compositing loop
+                        var cached = this._lastLayerTileHashes[rti];
+                        this._lastTileCounts.push(cached ? cached.count : 0);
+                        this._lastTileChecksums.push(cached ? cached.checksum : 0);
+                        this._lastTileSumChecksums.push(cached ? cached.sumChecksum : 0);
                     }
                 }
                 // An empty composite is valid — FBOs are in correct state (cleared).
@@ -783,7 +824,7 @@
 
             // Periodic cache eviction (runs on all frames, not just composite frames)
             if (this._frameCount % this._evictionInterval === 0) {
-                this._evictStaleTiles(vpHash);
+                this._evictStaleTiles(viewportChanged);
             }
 
             // ---- Determine if post-processing is active ----
@@ -802,10 +843,6 @@
 
             gl.useProgram(this._program);
             var loc = this._uniformLocations;
-            gl.uniform1i(loc.uLayer0, 0);
-            gl.uniform1i(loc.uLayer1, 1);
-            gl.uniform1i(loc.uLayer2, 2);
-            gl.uniform1i(loc.uLayer3, 3);
 
             // Fill pre-allocated uniform arrays
             var gArr = this._uGain, eArr = this._uEnabled;
@@ -821,8 +858,9 @@
 
             // Unmixing uniforms
             gl.uniform1f(loc.uUnmixEnabled, this._unmixEnabled ? 1.0 : 0.0);
-            if (this._unmixEnabled) {
+            if (this._unmixEnabled && this._unmixMatrixDirty) {
                 gl.uniform1fv(loc.uUnmixMatrix, this._unmixMatrix);
+                this._unmixMatrixDirty = false;
             }
 
             // Draw full-screen quad (Pass 1)
@@ -851,7 +889,6 @@
 
                 var pp = this._postProcessUniforms;
                 var ppc = this._postProcessConfig;
-                gl.uniform1i(pp.uHyperBlendOutput, 4);
                 gl.uniform1f(pp.u_k, ppc.k);
                 gl.uniform3f(pp.u_nucRGB, ppc.nucRGB[0], ppc.nucRGB[1], ppc.nucRGB[2]);
                 gl.uniform3f(pp.u_strRGB, ppc.strRGB[0], ppc.strRGB[1], ppc.strRGB[2]);
@@ -910,10 +947,9 @@
                     this._channelConfig[i].enabled = false;
                 }
             }
-            if (enabledChanged) {
-                // Force full re-composite so skipped layers get their FBOs populated
-                this._texturesValid = false;
-            }
+            // enabledChanged: no FBO re-composite needed — all layers are always
+            // composited regardless of enabled state (layer-skip optimization was
+            // removed). The enabled flag is a shader uniform; FBO content is unaffected.
             // Pre-compute RGB colors from HSV (matches shader's old hsvToRgb, no 0.5 offset)
             this._precomputeChannelColors();
             if (this.viewer) {
@@ -934,6 +970,49 @@
          */
         getChannelConfig() {
             return this._channelConfig.slice();
+        }
+
+        /**
+         * Read raw channel intensities at a given CSS pixel position.
+         * Reads 1 pixel from each layer FBO (up to 4 layers × RGBA = 16 channels).
+         * @param {number} cssX - X coordinate relative to OSD container (CSS pixels)
+         * @param {number} cssY - Y coordinate relative to OSD container (CSS pixels)
+         * @returns {Uint8Array|null} 16-element array of channel values (0-255), or null if unavailable
+         */
+        readPixelChannels(cssX, cssY) {
+            var gl = this._gl;
+            if (!gl || this._contextLost || this._layerFBOs.length === 0) return null;
+
+            // Ensure FBOs contain current data before reading
+            if (!this._texturesValid && this.viewer && this.viewer.world) {
+                var tiledImages = [];
+                for (var wi = 0; wi < this.viewer.world.getItemCount(); wi++) {
+                    tiledImages.push(this.viewer.world.getItemAt(wi));
+                }
+                this.draw(tiledImages);
+            }
+            if (!this._texturesValid) return null;
+
+            var dpr = OpenSeadragon.pixelDensityRatio;
+            var glX = Math.round(cssX * dpr);
+            var glY = this.canvas.height - Math.round(cssY * dpr) - 1;
+
+            if (glX < 0 || glX >= this.canvas.width || glY < 0 || glY >= this.canvas.height) return null;
+
+            var result = new Uint8Array(16);
+            var buf = new Uint8Array(4);
+
+            for (var i = 0; i < this._layerFBOs.length; i++) {
+                gl.bindFramebuffer(gl.FRAMEBUFFER, this._layerFBOs[i]);
+                gl.readPixels(glX, glY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+                result[i * 4]     = buf[0];
+                result[i * 4 + 1] = buf[1];
+                result[i * 4 + 2] = buf[2];
+                result[i * 4 + 3] = buf[3];
+            }
+
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            return result;
         }
 
         /**
@@ -1079,8 +1158,7 @@
             }
             if (config.matrix) {
                 this._unmixMatrix.set(config.matrix);
-                // Matrix is consumed as a uniform in the final shader pass —
-                // no layer FBO recomposition needed, just a redraw.
+                this._unmixMatrixDirty = true;
             }
             if (typeof config.numOutputs !== 'undefined') {
                 this._numOutputs = config.numOutputs;
@@ -1158,6 +1236,13 @@
                 $.console.warn('[HyperBlendWebGLDrawer] Null uniform locations:', nullUniforms.join(', '));
             }
 
+            // Static sampler bindings (never change)
+            gl.useProgram(program);
+            gl.uniform1i(this._uniformLocations.uLayer0, 0);
+            gl.uniform1i(this._uniformLocations.uLayer1, 1);
+            gl.uniform1i(this._uniformLocations.uLayer2, 2);
+            gl.uniform1i(this._uniformLocations.uLayer3, 3);
+
             // Cache attribute locations (avoids per-frame getAttribLocation calls)
             this._attribLocations = {
                 aPosition: gl.getAttribLocation(program, 'aPosition'),
@@ -1233,6 +1318,8 @@
                         aTexCoord: gl.getAttribLocation(blitProgram, 'aTexCoord')
                     };
                 }
+                gl.useProgram(blitProgram);
+                gl.uniform1i(this._blitUniforms.uTile, 5);
                 gl.deleteShader(blitVertShader);
                 gl.deleteShader(blitFragShader);
             }
@@ -1274,6 +1361,8 @@
                         aPosition: gl.getAttribLocation(beersProgram, 'aPosition'),
                         aTexCoord: gl.getAttribLocation(beersProgram, 'aTexCoord')
                     };
+                    gl.useProgram(beersProgram);
+                    gl.uniform1i(this._postProcessUniforms.uHyperBlendOutput, 4);
                 } else {
                     $.console.error('[HyperBlendWebGLDrawer] Beer\'s law program link failed:',
                         gl.getProgramInfoLog(beersProgram));
@@ -1395,7 +1484,6 @@
 
             gl.useProgram(this._blitProgram);
             gl.activeTexture(gl.TEXTURE5);  // temp unit (0-3 = layers, 4 = post-process FBO)
-            gl.uniform1i(this._blitUniforms.uTile, 5);
 
             // Blit tex coords: full tile (static buffer)
             // Reuse _texBufferFBO (0,0 → 1,1) for tile texture sampling
@@ -1549,10 +1637,10 @@
         // are all defined on DrawerBase and work as-is.
 
         // ---- Internal: evict stale tile textures from GPU cache ----
-        _evictStaleTiles(vpHash) {
+        _evictStaleTiles(viewportChanged) {
             // Skip eviction during active viewport changes (zoom/pan) to prevent
             // thrashing tiles that were just uploaded for the new viewport
-            if (vpHash !== this._lastViewportHash) {
+            if (viewportChanged) {
                 return;  // viewport is changing — defer eviction
             }
 

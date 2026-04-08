@@ -402,6 +402,11 @@ li {
     border-bottom: none;
 }
 
+#channelSelector .cs-dropdown-item.cs-all-toggle {
+    border-bottom: 2px solid rgba(0,0,0,0.12);
+    font-weight: 600;
+}
+
 #channelSelector .cs-dropdown-item:hover,
 #channelSelector .cs-dropdown-item:focus-visible {
     background: #eae8e3;
@@ -1079,4 +1084,240 @@ li {
 #unmixPanel .unmix-matrix-table td:hover {
     outline: 1px solid #908d85;
     z-index: 1;
+}
+
+#unmixMatrixTable tr.unmix-row-disabled {
+    opacity: 0.35;
+}
+#unmixMatrixTable tr.unmix-row-disabled .unmix-row-hdr label {
+    text-decoration: line-through;
+}
+#unmixMatrixTable .unmix-row-hdr label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+#unmixMatrixTable .unmix-row-toggle {
+    width: 12px;
+    height: 12px;
+    margin: 0;
+    cursor: pointer;
+    accent-color: #4a7c8a;
+}
+
+#unmixPanel .unmix-row-confirm-popup {
+    display: none;
+    position: absolute;
+    background: #2a2020;
+    border: 1px solid #a05050;
+    border-radius: 6px;
+    padding: 10px 14px;
+    text-align: center;
+    z-index: 10;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    min-width: 180px;
+}
+#unmixPanel .unmix-row-confirm-popup.visible {
+    display: block;
+}
+#unmixPanel .unmix-row-confirm-popup #unmixRowConfirmMsg {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #e8a0a0;
+    display: block;
+    margin-bottom: 8px;
+}
+#unmixPanel .unmix-row-confirm-btns {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+}
+#unmixPanel .unmix-row-confirm-btns button {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 4px 14px;
+    border-radius: 3px;
+    border: none;
+    cursor: pointer;
+}
+#unmixPanel .unmix-row-confirm-btns #unmixRowConfirmYes {
+    background: #a05050;
+    color: #fff;
+}
+#unmixPanel .unmix-row-confirm-btns #unmixRowConfirmYes:hover {
+    background: #c06060;
+}
+#unmixPanel .unmix-row-confirm-btns #unmixRowConfirmNo {
+    background: #444;
+    color: #ccc;
+}
+#unmixPanel .unmix-row-confirm-btns #unmixRowConfirmNo:hover {
+    background: #555;
+}
+
+/* ---- Spectrum Inspector Panel ---- */
+
+#spectrumPanel {
+    display: none;
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    z-index: 1000;
+    background: rgba(26, 26, 26, 0.92);
+    border: 1px solid #555;
+    border-radius: 6px;
+    padding: 10px 12px 8px;
+    max-width: 560px;
+    min-width: 200px;
+    font-family: 'JetBrains Mono', monospace;
+    color: #ccc;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+#spectrumPanel.visible {
+    display: block;
+}
+
+#spectrumPanel .sp-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 11px;
+    color: #999;
+}
+
+#spectrumPanel .sp-title-label {
+    font-weight: 600;
+    color: #ccc;
+    letter-spacing: 0.3px;
+}
+
+#spectrumPanel #spTitle {
+    flex: 1;
+}
+
+#spectrumPanel .sp-close {
+    cursor: pointer;
+    color: #777;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
+    border: none;
+    background: none;
+}
+
+#spectrumPanel .sp-close:hover {
+    color: #fff;
+}
+
+#spectrumPanel .sp-plot {
+    display: block;
+    width: 100%;
+    border-radius: 3px;
+}
+
+#spectrumPanel .sp-values {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    font-size: 9px;
+    gap: 1px;
+}
+
+#spectrumPanel .sp-val {
+    text-align: center;
+    min-width: 18px;
+}
+
+#spectrumPanel .sp-add-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid #333;
+}
+
+#spectrumPanel .sp-add-row select {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 3px 6px;
+    background: #2a2a2a;
+    color: #ccc;
+    border: 1px solid #555;
+    border-radius: 3px;
+    flex: 1;
+}
+
+#spectrumPanel .sp-add-row button {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 3px 10px;
+    background: #4a7c8a;
+    color: #fff;
+    border: 1px solid #5a8c9a;
+    border-radius: 3px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s;
+}
+
+#spectrumPanel .sp-add-row button:hover {
+    background: #5a8c9a;
+}
+
+#spectrumPanel .sp-confirm-popup {
+    display: none;
+    position: absolute;
+    bottom: 42px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #2a2020;
+    border: 1px solid #a05050;
+    border-radius: 6px;
+    padding: 10px 14px;
+    text-align: center;
+    z-index: 10;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    min-width: 180px;
+}
+#spectrumPanel .sp-confirm-popup.visible {
+    display: block;
+}
+#spectrumPanel .sp-confirm-popup #spConfirmMsg {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #e8a0a0;
+    display: block;
+    margin-bottom: 8px;
+}
+#spectrumPanel .sp-confirm-btns {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+}
+#spectrumPanel .sp-confirm-btns button {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 4px 14px;
+    border-radius: 3px;
+    border: none;
+    cursor: pointer;
+}
+#spectrumPanel .sp-confirm-btns #spConfirmYes {
+    background: #a05050;
+    color: #fff;
+}
+#spectrumPanel .sp-confirm-btns #spConfirmYes:hover {
+    background: #c06060;
+}
+#spectrumPanel .sp-confirm-btns #spConfirmNo {
+    background: #444;
+    color: #ccc;
+}
+#spectrumPanel .sp-confirm-btns #spConfirmNo:hover {
+    background: #555;
 }
