@@ -12,8 +12,10 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 - **Tone mapping** — Choose between a knee-curve (preserves intensity ratios) or Reinhard (smooth compression for publication figures).
 - **Save snapshots** — Export the current view as a PNG with an optional scale bar.
 - **Pan, zoom, and rotate** — Explore your full-resolution image at any magnification, just like a digital slide scanner.
-## New feature in 2.0
+## New feature in V2.1
 - **Linear spectral unmixing** — Load a spectral unmixing matrix to decompose overlapping fluorescence spectra into pure component channels. The matrix editor is built into the viewer.
+![spectrumInspector.png](spectrumInspector.png)
+- **Spectrum Inspector** — Inspect the spectrum of a pixel by right click on the image. Then click "Add to Matrix" to add the spectrum to the unmixing matrix.
 
 ## How It Works
 

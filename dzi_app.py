@@ -3,7 +3,7 @@
 dzi_app.py — Flask web app for DZI tile generation.
 
 Provides a browser UI to scan image folders, configure z-levels,
-and generate DZI tile pyramids for the hyperOSD viewer.
+and generate DZI tile pyramids for the HyperOSG viewer.
 
 Usage:
     pip install flask pyvips
@@ -43,7 +43,7 @@ _progress = {
 IMAGE_EXTENSIONS = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 EXCLUDE_FOLDERS = {"openseadragon", "raw_data", ".git", "__pycache__"}
 
-# Path to the hyperOSD project's openseadragon/ folder (for copy-to-dataset)
+# Path to the HyperOSG project's openseadragon/ folder (for copy-to-dataset)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_OSD_DIR = os.path.normpath(os.path.join(_SCRIPT_DIR, "..", "openseadragon"))
 
@@ -52,6 +52,9 @@ REQUIRED_OSD_FILES = [
     "hyperblend-webgl.js",
     "openseadragon-filtering-nistfuncs-12ch.js",
     "openseadragon-scalebar.js",
+    "lib/jquery-2.2.0.min.js",
+    "lib/jquery-ui-1.12.1.min.js",
+    "lib/jquery-ui.css",
 ]
 
 # Track last dataset root and resolved OSD path for serving viewer files
@@ -905,8 +908,8 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
 
     # Set browser tab title to dataset name
     html = html.replace(
-        "<title>hyperOSD Multi-Channel Blending</title>",
-        f"<title>{dataset_name} — hyperOSD</title>"
+        "<title>HyperOSG Multi-Channel Blending</title>",
+        f"<title>{dataset_name} — HyperOSG</title>"
     )
 
     # Set Reinhard toggle to checked (only if not already checked)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 generate_dzi.py — Convert fluorescence microscopy images to DZI pyramids
-for hyperOSD visualization.
+for HyperOSG visualization.
 
 Two input modes:
   --channels : Single-channel grayscale TIFFs (preferred). Packed into
@@ -40,12 +40,12 @@ except ImportError:
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
-# Constants matching hyperOSD expectations
+# Constants matching HyperOSG expectations
 # ---------------------------------------------------------------------------
 TILE_SIZE = 1024       # Larger tiles = fewer HTTP requests, better WLAN performance
 OVERLAP = 1
 LAYOUT = "dz"
-MAX_TILE_SOURCES = 4   # hyperOSD supports up to 4 tile sources per z-level
+MAX_TILE_SOURCES = 4   # HyperOSG supports up to 4 tile sources per z-level
 
 # Pack mode settings
 PACK_MODES = {
@@ -171,7 +171,7 @@ def load_rgb_tile_source(path, pack_mode, force_8bit=True):
 
 
 def generate_tile_source(image, output_dir, tile_index, suffix):
-    """Generate a single DZI tile source in the hyperOSD layout."""
+    """Generate a single DZI tile source in the HyperOSG layout."""
     tile_dir = os.path.join(output_dir, str(tile_index))
     os.makedirs(tile_dir, exist_ok=True)
 
@@ -185,7 +185,7 @@ def generate_tile_source(image, output_dir, tile_index, suffix):
         layout=LAYOUT,
     )
 
-    # Rename stitch.dzi -> stitch.xml (hyperOSD expects .xml)
+    # Rename stitch.dzi -> stitch.xml (HyperOSG expects .xml)
     dzi_path = dzi_basename + ".dzi"
     xml_path = os.path.join(tile_dir, "stitch.xml")
     if os.path.exists(dzi_path):
@@ -333,7 +333,7 @@ def load_yaml_config(config_path):
 def main():
     parser = argparse.ArgumentParser(
         description="Convert fluorescence microscopy images to DZI pyramids "
-                    "for hyperOSD visualization.",
+                    "for HyperOSG visualization.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Examples:
@@ -414,7 +414,7 @@ def main():
     tile_fmt = "PNG" if "png" in mode["suffix"] else "JPG"
 
     print("=" * 60)
-    print("hyperOSD DZI Generator")
+    print("HyperOSG DZI Generator")
     print("=" * 60)
     print(f"  pyvips {pyvips.__version__}, "
           f"libvips {pyvips.version(0)}.{pyvips.version(1)}.{pyvips.version(2)}")

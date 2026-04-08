@@ -3,12 +3,12 @@
 
 <head>
 	<link rel="icon" href="data:,">
-	<script src="https://code.jquery.com/jquery-2.2.0.min.js"></script>
-	<script src="https://code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
-	<link rel="stylesheet" href="https://code.jquery.com/ui/1.11.4/themes/smoothness/jquery-ui.css">
+	<script src="openseadragon/lib/jquery-2.2.0.min.js"></script>
+	<script src="openseadragon/lib/jquery-ui-1.12.1.min.js"></script>
+	<link rel="stylesheet" href="openseadragon/lib/jquery-ui.css">
 	<link rel="stylesheet" href="openseadragon/style.css">
 	<meta charset="UTF-8">
-	<title>hyperOSD Multi-Channel Blending</title>
+	<title>HyperOSG Multi-Channel Blending</title>
 	<link rel="stylesheet" href="openseadragon/static/css/NISTStyle.css">
 	<link rel="stylesheet" href="openseadragon/static/css/NISTPages.css">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -37,7 +37,32 @@
 	<section class="demo">
 		<div style="display:flex; width:100%; height:90vh;">
 			<div style="flex:1; min-width:0;">
-				<div id="openseadragon" role="region" aria-label="Hyperspectral image viewer" style="width:100%; height:100%; background-color:black;"></div>
+				<div id="openseadragon" role="region" aria-label="Hyperspectral image viewer" style="width:100%; height:100%; background-color:black; position:relative;">
+				<!-- Spectrum Inspector Panel -->
+				<div id="spectrumPanel">
+					<div class="sp-header">
+						<span class="sp-title-label">Spectrum Inspector</span>
+						<span id="spTitle">Pixel (&mdash;, &mdash;)</span>
+						<button class="sp-close" id="spClose" title="Close" aria-label="Close spectrum inspector">&times;</button>
+					</div>
+					<canvas id="spPlotCanvas" class="sp-plot" width="380" height="140"></canvas>
+					<div class="sp-values" id="spValues"></div>
+					<div class="sp-add-row">
+						<select id="spComponentSelect" aria-label="Output component">
+							<option value="1">Component 1</option>
+							<option value="2">Component 2</option>
+						</select>
+						<button id="spAddToMatrix" title="Add spectrum to unmixing matrix">Add to Matrix</button>
+					</div>
+					<div class="sp-confirm-popup" id="spConfirmPopup">
+						<span id="spConfirmMsg">Replace Component?</span>
+						<div class="sp-confirm-btns">
+							<button id="spConfirmYes">Replace</button>
+							<button id="spConfirmNo">Cancel</button>
+						</div>
+					</div>
+				</div>
+			</div>
 			</div>
 			<div id="filterWindow"
 				style="width:400px; min-width:250px; max-height:90vh; overflow-y:auto; overflow-x:hidden; padding:0 10px; box-sizing:border-box;">
@@ -116,7 +141,7 @@
 						<span
 							style="font-family:'JetBrains Mono',monospace; font-size:9px; font-weight:600; color:#fff; background:#4a7c8a; padding:2px 6px; border-radius:3px; letter-spacing:0.5px;">PRE-BLEND</span>
 					</div>
-					<div style="padding:0; background:#f2f1ee;">
+					<div id="unmixPanelBody" style="padding:0; background:#f2f1ee; position:relative;">
 						<!-- Dimension bar -->
 						<div class="unmix-dim-bar">
 							<span class="unmix-dim-label">
@@ -144,7 +169,7 @@
 						<div class="unmix-btn-row">
 							<button id="unmixApply" class="pp-btn pp-btn-apply">Apply</button>
 							<button id="unmixClear" class="pp-btn pp-btn-clear">Clear</button>
-							<button id="unmixReload" class="pp-btn pp-btn-clear">Reload</button>
+							<button id="unmixReload" class="pp-btn pp-btn-clear" disabled>Reload</button>
 							<button id="unmixSave" class="pp-btn pp-btn-clear">Save .txt</button>
 						</div>
 						<!-- Editable table editor zone -->
@@ -156,6 +181,13 @@
 							</div>
 							<div class="unmix-table-scroll">
 								<table class="unmix-matrix-table" id="unmixMatrixTable"></table>
+							</div>
+							<div class="unmix-row-confirm-popup" id="unmixRowConfirmPopup">
+								<span id="unmixRowConfirmMsg">Remove Component?</span>
+								<div class="unmix-row-confirm-btns">
+									<button id="unmixRowConfirmYes">Remove</button>
+									<button id="unmixRowConfirmNo">Cancel</button>
+								</div>
 							</div>
 						</div>
 					</div>
@@ -225,7 +257,7 @@
 			}
 
 			delete window.__osd602;
-			console.log("[hyperOSD] OSD " + osd.version.versionStr + " restored with NIST filter plugin.");
+			console.log("[HyperOSG] OSD " + osd.version.versionStr + " restored with NIST filter plugin.");
 		})();
 	</script>
 
@@ -255,7 +287,7 @@
 	<script type="text/javascript">
 		// Detect whether to use WebGL blending or CPU fallback
 		var useWebGLBlend = (typeof HyperBlendWebGLDrawer !== 'undefined') && HyperBlendWebGLDrawer.isSupported();
-		console.log("[hyperOSD] WebGL blending " + (useWebGLBlend ? "ENABLED" : "DISABLED (CPU fallback)"));
+		console.log("[HyperOSG] WebGL blending " + (useWebGLBlend ? "ENABLED" : "DISABLED (CPU fallback)"));
 
 		// ===== DATASET CONFIGURATION =====
 		// Edit these variables to configure for your dataset.
@@ -266,14 +298,26 @@
 		var defaultChannels = [1, 2, 3, 4]; // 1-based channel numbers to enable on startup (matches Nch labels; [] for none)
 		var imageSources = [             // DZI tile source paths (grouped by z-level)
 			// Synthetic 16ch test dataset (4 spectral components, peaks at ch2/6/12/15)
-			"deepzoom_RGBA/0.0um/1/stitch.xml",
-			"deepzoom_RGBA/0.0um/2/stitch.xml",
-			"deepzoom_RGBA/0.0um/3/stitch.xml",
-			"deepzoom_RGBA/0.0um/4/stitch.xml",
+			"test_synthetic/deepzoom_RGBA/0.0um/1/stitch.xml",
+			"test_synthetic/deepzoom_RGBA/0.0um/2/stitch.xml",
+			"test_synthetic/deepzoom_RGBA/0.0um/3/stitch.xml",
+			"test_synthetic/deepzoom_RGBA/0.0um/4/stitch.xml",
 			// // RGBA 16ch (real data)
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/1/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/2/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/3/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/4/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/1/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/2/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/3/stitch.xml",
+			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/4/stitch.xml",
 		];
 		var matrixFileName = 'unmix_matrix.txt';  // relative to HTML file, same format as imageSources
 		// matrixFileName uses the same path format as imageSources (relative to the HTML file). If not found, a zero-filled table is shown.
+		var defaultUnmixing = false;              // true = enable Linear Unmixing on startup (requires matrix file)
+		var defaultHE = false;                    // true = enable H&E staining on startup
+		var defaultTrichrome = false;             // true = enable Masson Trichrome on startup (mutually exclusive with H&E)
+		var defaultChannelHues = {};              // per-channel hue overrides, 1-based: e.g. {1: 0.0, 3: 0.33, 5: 0.66}
 		// ===== END DATASET CONFIGURATION =====
 
 		// Derive channel mode from channelsPerImage and expose globally for WebGL drawer
@@ -380,17 +424,33 @@
 		// Derive layer count from the source array
 		var imagesPerZ = imageSources.length / zLevelCount;
 		if (imagesPerZ !== Math.floor(imagesPerZ) || imagesPerZ < 1 || imagesPerZ > 4) {
-			alert("[hyperOSD] Configuration error: imageSources.length (" + imageSources.length +
+			alert("[HyperOSG] Configuration error: imageSources.length (" + imageSources.length +
 				") must be evenly divisible by zLevelCount (" + zLevelCount + "), with 1-4 images per z-level.");
 			throw new Error("Invalid dataset configuration");
 		}
 		window.imagesPerZ = imagesPerZ;  // expose for WebGL drawer
 		var currentZIndex = 0;
 		window.currentZIndex = 0;
-		var allLayers = []; // allLayers[zIdx][layerIdx] = TiledImage
+		var allLayers = []; // allLayers[zIdx][layerIdx] = TiledImage (sparse — only loaded z-levels have entries)
 		window.allLayers = allLayers;
-		var totalToLoad = imageSources.length;
+		var totalToLoad = imagesPerZ;  // only load z=0 at startup
 		var totalLoaded = 0;
+		var _pendingZIndex = null;   // z-index requested but not yet loaded
+		var _zSwitchGen = 0;         // generation counter to discard stale load callbacks
+		var _prefetchStarted = {};   // zIdx -> true while addTiledImage callbacks pending
+
+		// DOM cache for NIST channel spinners (populated once in initBlendingLogic)
+		var _nistEn = new Array(16);  // checkbox elements
+		var _nistH  = new Array(16);  // hue input elements
+		var _nistG  = new Array(16);  // gain input elements
+
+		function _populateNistCache() {
+			for (var i = 0; i < 16; i++) {
+				_nistEn[i] = document.querySelector('input[type="checkbox"][id^="en-' + i + '-"]') || null;
+				_nistH[i]  = document.querySelector('span[id^="h-' + i + '-"] input') || null;
+				_nistG[i]  = document.querySelector('span[id^="g-' + i + '-"] input') || null;
+			}
+		}
 
 		// Initialize the 2D array
 		for (var z = 0; z < zLevelCount; z++) {
@@ -408,39 +468,37 @@
 			_bundleReady = true;
 		}
 
-		// Load all images
-		imageSources.forEach(function (src, idx) {
-			var zIdx = Math.floor(idx / imagesPerZ);
-			var layerIdx = idx % imagesPerZ;
-			viewer.addTiledImage({
-				tileSource: src,
-				// In WebGL mode all layers for the current z need to be rendered
-				// by OSD (tiles loaded). We use opacity 0.01 for non-primary layers
-				// so OSD still loads their tiles.
-				opacity: (zIdx === 0) ? (layerIdx === 0 ? 1 : 0.01) : 0.01,
-				// preload=true ensures OSD 6.0.2 updates tiles even for low-opacity layers
-				preload: true,
-				success: function (event) {
-					allLayers[zIdx][layerIdx] = event.item;
-					totalLoaded++;
-					console.log("[hyperOSD] z=" + zIdx + " image " + layerIdx + " loaded: " + src);
-					if (totalLoaded === totalToLoad) {
-						console.log("[hyperOSD] All " + totalToLoad + " images loaded (" + imagesPerZ + " per z-level).");
-						_imagesLoaded = true;
-						if (_bundleReady) initBlendingLogic();
+		// Load only z=0 at startup (lazy z-level loading)
+		for (var _li = 0; _li < imagesPerZ; _li++) {
+			(function (layerIdx) {
+				var src = imageSources[layerIdx];
+				viewer.addTiledImage({
+					tileSource: src,
+					opacity: (layerIdx === 0) ? 1 : 0,
+					preload: true,
+					success: function (event) {
+						allLayers[0][layerIdx] = event.item;
+						totalLoaded++;
+						console.log("[hyperOSD] z=0 image " + layerIdx + " loaded: " + src);
+						if (totalLoaded === totalToLoad) {
+							console.log("[hyperOSD] z=0 loaded (" + imagesPerZ + " layers). Lazy loading enabled for " + zLevelCount + " z-levels.");
+							_imagesLoaded = true;
+							if (_bundleReady) initBlendingLogic();
+							_prefetchAdjacent(0);
+						}
+					},
+					error: function (event) {
+						console.error("[hyperOSD] FAILED to load z=0 layer " + layerIdx + ": " + src);
+						allLayers[0][layerIdx] = null;
+						totalLoaded++;
+						if (totalLoaded === totalToLoad) {
+							_imagesLoaded = true;
+							if (_bundleReady) initBlendingLogic();
+						}
 					}
-				},
-				error: function (event) {
-					console.error("[hyperOSD] FAILED to load z=" + zIdx + " layer " + layerIdx + ": " + src);
-					allLayers[zIdx][layerIdx] = null;
-					totalLoaded++;
-					if (totalLoaded === totalToLoad) {
-						_imagesLoaded = true;
-						if (_bundleReady) initBlendingLogic();
-					}
-				}
-			});
-		});
+				});
+			})(_li);
+		}
 
 		$("#rotationSlider").slider({
 			min: -180,
@@ -459,45 +517,206 @@
 				zHandle.text(zLevelValues[0] + "um");
 			},
 			slide: function (event, ui) {
-				switchZLevel(ui.value);
+				// Label-only during scrub — no z-switch work until release
 				zHandle.text(zLevelValues[ui.value] + "um");
+			},
+			stop: function (event, ui) {
+				switchZLevel(ui.value);
 			}
 		});
 
 		function switchZLevel(newZIndex) {
-			if (newZIndex === currentZIndex) return;
-			currentZIndex = newZIndex;
-			window.currentZIndex = newZIndex;
+			if (newZIndex === currentZIndex && _pendingZIndex === null) return;
 
-			// Update opacities for all layers — start with minimum opacity,
-			// then let _updateOSDLayerVisibility refine based on enabled channels
-			for (var z = 0; z < zLevelCount; z++) {
+			// Check if the new z-level's layers are fully loaded
+			var ready = allLayers[newZIndex] &&
+				allLayers[newZIndex].filter(Boolean).length === imagesPerZ;
+			if (ready) {
+				++_zSwitchGen;  // invalidate any in-flight loads
+				_commitZSwitch(newZIndex);
+			} else if (_prefetchStarted[newZIndex]) {
+				// Already being prefetched — just wait for it to finish
+				var gen = ++_zSwitchGen;
+				_pendingZIndex = newZIndex;
+			} else {
+				// Defer — hold current frame until new z tiles load
+				var gen = ++_zSwitchGen;
+				_pendingZIndex = newZIndex;
+				_loadZLevel(newZIndex, gen);
+			}
+		}
+
+		function _commitZSwitch(newZIndex) {
+			_pendingZIndex = null;
+
+			// Hide old z-level layers
+			if (allLayers[currentZIndex]) {
 				for (var l = 0; l < imagesPerZ; l++) {
-					if (!allLayers[z][l]) continue;
-					if (z === newZIndex) {
-						allLayers[z][l].setOpacity(l === 0 ? 1 : 0.01);
-					} else {
-						allLayers[z][l].setOpacity(0.01);
+					if (allLayers[currentZIndex][l]) {
+						allLayers[currentZIndex][l].setOpacity(0);
 					}
 				}
 			}
 
-			// Refine active z-level layer opacities based on which channels are enabled
+			// Update globals — the drawer reads these on the next frame
+			currentZIndex = newZIndex;
+			window.currentZIndex = newZIndex;
+
+			// Show new z-level layers
+			for (var l = 0; l < imagesPerZ; l++) {
+				if (allLayers[newZIndex] && allLayers[newZIndex][l]) {
+					allLayers[newZIndex][l].setOpacity(l === 0 ? 1 : 0);
+				}
+			}
+
 			_updateOSDLayerVisibility();
 
-			// In WebGL mode, invalidate textures (z-level changed) and redraw
 			if (useWebGLBlend && viewer.drawer && viewer.drawer.invalidateTextures) {
 				viewer.drawer.invalidateTextures();
 				viewer.forceRedraw();
 			}
-			// In canvas (CPU) mode, re-run the filter pipeline
 			if (typeof window.updateHyperFilters === 'function') {
 				window.updateHyperFilters();
 			}
+
+			_prefetchAdjacent(newZIndex);
+		}
+
+		function _loadZLevel(zIdx, gen) {
+			if (!allLayers[zIdx]) allLayers[zIdx] = new Array(imagesPerZ).fill(null);
+			var loaded = 0;
+			var startIdx = zIdx * imagesPerZ;
+			for (var _li = 0; _li < imagesPerZ; _li++) {
+				(function (layerIdx) {
+					var src = imageSources[startIdx + layerIdx];
+					viewer.addTiledImage({
+						tileSource: src,
+						opacity: 0,
+						preload: true,
+						success: function (event) {
+							allLayers[zIdx][layerIdx] = event.item;
+							loaded++;
+							if (loaded === imagesPerZ && gen === _zSwitchGen) {
+								if (allLayers[zIdx].filter(Boolean).length === imagesPerZ) {
+									_commitZSwitch(zIdx);
+								} else {
+									console.warn("[hyperOSD] z=" + zIdx + " partial load — staying on z=" + currentZIndex);
+									_pendingZIndex = null;
+								}
+							}
+						},
+						error: function () {
+							console.error("[hyperOSD] Failed to load z=" + zIdx + " layer " + layerIdx);
+							allLayers[zIdx][layerIdx] = null;
+							loaded++;
+							if (loaded === imagesPerZ && gen === _zSwitchGen) {
+								console.warn("[hyperOSD] z=" + zIdx + " load failed — staying on z=" + currentZIndex);
+								_pendingZIndex = null;
+							}
+						}
+					});
+				})(_li);
+			}
+		}
+
+		function _evictZLevel(zIdx) {
+			if (zIdx === currentZIndex || !allLayers[zIdx]) return;
+			for (var l = 0; l < imagesPerZ; l++) {
+				if (allLayers[zIdx][l]) {
+					viewer.world.removeItem(allLayers[zIdx][l]);
+					allLayers[zIdx][l] = null;
+				}
+			}
+			delete _prefetchStarted[zIdx];
+		}
+
+		function _prefetchAdjacent(activeZ) {
+			// Evict z-levels outside [activeZ-1, activeZ+1]
+			for (var z = 0; z < zLevelCount; z++) {
+				if (Math.abs(z - activeZ) > 1 && allLayers[z] && allLayers[z].some(Boolean)) {
+					_evictZLevel(z);
+				}
+			}
+			// Prefetch z±1 silently — commit if user is waiting on this z
+			[activeZ - 1, activeZ + 1].forEach(function (adjZ) {
+				if (adjZ < 0 || adjZ >= zLevelCount) return;
+				if (_prefetchStarted[adjZ]) return; // already in-flight
+				if (allLayers[adjZ] && allLayers[adjZ].filter(Boolean).length === imagesPerZ) return; // already loaded
+				_prefetchStarted[adjZ] = true;
+				if (!allLayers[adjZ]) allLayers[adjZ] = new Array(imagesPerZ).fill(null);
+				var prefetchLoaded = 0;
+				var startIdx = adjZ * imagesPerZ;
+				for (var _li = 0; _li < imagesPerZ; _li++) {
+					(function (layerIdx) {
+						viewer.addTiledImage({
+							tileSource: imageSources[startIdx + layerIdx],
+							opacity: 0,
+							preload: true,
+							success: function (event) {
+								allLayers[adjZ][layerIdx] = event.item;
+								prefetchLoaded++;
+								if (prefetchLoaded === imagesPerZ) {
+									if (allLayers[adjZ].filter(Boolean).length === imagesPerZ) {
+										if (_pendingZIndex === adjZ) {
+											_commitZSwitch(adjZ);
+										}
+									} else {
+										delete _prefetchStarted[adjZ];
+										if (_pendingZIndex === adjZ) {
+											_pendingZIndex = null;
+											console.warn('[hyperOSD] prefetch z=' + adjZ + ' partial — clearing pending');
+										}
+									}
+								}
+							},
+							error: function () {
+								console.error('[hyperOSD] Prefetch failed z=' + adjZ + ' layer ' + layerIdx);
+								allLayers[adjZ][layerIdx] = null;
+								prefetchLoaded++;
+								if (prefetchLoaded === imagesPerZ) {
+									if (allLayers[adjZ].filter(Boolean).length === imagesPerZ) {
+										if (_pendingZIndex === adjZ) {
+											_commitZSwitch(adjZ);
+										}
+									} else {
+										delete _prefetchStarted[adjZ];
+										if (_pendingZIndex === adjZ) {
+											_pendingZIndex = null;
+											console.warn('[hyperOSD] prefetch z=' + adjZ + ' failed — clearing pending');
+										}
+									}
+								}
+							}
+						});
+					})(_li);
+				}
+			});
 		}
 
 		// Track current drawer mode so we only switch when needed
 		var currentDrawerMode = useWebGLBlend ? 'webgl' : 'canvas';
+
+		/**
+		 * HSV to CSS color string — S=1, V=1, only hue varies.
+		 * Matches _precomputeChannelColors() in hyperblend-webgl.js (NO 0.5 offset).
+		 * Note: _hsvToRgb() applies a 0.5 offset for Beer's Law; do NOT use it for swatches.
+		 */
+		function _hueToCSS(hue01) {
+			var h = hue01;
+			var fi = Math.floor(h * 6.0);
+			var f = h * 6.0 - fi;
+			var m = ((fi % 6) + 6) % 6;
+			var r, g, b;
+			switch (m) {
+				case 0: r = 1.0; g = f; b = 0.0; break;
+				case 1: r = 1.0 - f; g = 1.0; b = 0.0; break;
+				case 2: r = 0.0; g = 1.0; b = f; break;
+				case 3: r = 0.0; g = 1.0 - f; b = 1.0; break;
+				case 4: r = f; g = 0.0; b = 1.0; break;
+				default: r = 1.0; g = 0.0; b = 1.0 - f; break;
+			}
+			return 'rgb(' + Math.round(r * 255) + ',' + Math.round(g * 255) + ',' + Math.round(b * 255) + ')';
+		}
 
 		/**
 		 * Build the two-zone channel selector UI.
@@ -525,55 +744,44 @@
 			var $countLabel = $('#csChannelCount');
 			var $statusText = $('#csStatusText');
 
-			// HSV to CSS color — matches WebGL _precomputeChannelColors (NO 0.5 offset)
-			// Note: _hsvToRgb applies a 0.5 offset for Beer's Law; do NOT use it here
-			function hueToCSS(hue01) {
-				var h = hue01;
-				var fi = Math.floor(h * 6.0);
-				var f = h * 6.0 - fi;
-				var m = ((fi % 6) + 6) % 6;
-				var r, g, b;
-				switch (m) {
-					case 0: r = 1.0; g = f; b = 0.0; break;
-					case 1: r = 1.0 - f; g = 1.0; b = 0.0; break;
-					case 2: r = 0.0; g = 1.0; b = f; break;
-					case 3: r = 0.0; g = 1.0 - f; b = 1.0; break;
-					case 4: r = f; g = 0.0; b = 1.0; break;
-					default: r = 1.0; g = 0.0; b = 1.0 - f; break;
-				}
-				return 'rgb(' + Math.round(r * 255) + ',' + Math.round(g * 255) + ',' + Math.round(b * 255) + ')';
-			}
-
 			function updateCounts() {
-				var count = $menu.find('.cs-dropdown-item.checked').length;
+				var $items = $menu.find('.cs-dropdown-item').not('.cs-all-toggle');
+				var count = $items.filter('.checked').length;
 				$countLabel.text(count + ' / ' + totalVisible + ' active');
 				$statusText.text(count > 0 ? count + ' channel' + (count > 1 ? 's' : '') + ' enabled' : 'Ready');
+				$menu.find('.cs-all-toggle').toggleClass('checked', count === $items.length && count > 0);
 			}
 
-			// Read current state from hidden NIST spinners
+			// Read current state from cached NIST spinner elements
 			function readNISTChannel(internalIdx) {
-				var enabled = false, h = 0, gain = 1;
-				$('input[type="checkbox"][id^="en-' + internalIdx + '-"]').each(function () {
-					enabled = $(this).is(':checked');
-				});
-				$('span[id^="h-' + internalIdx + '-"] input').each(function () {
-					var val = parseFloat($(this).val());
+				var enabled = _nistEn[internalIdx] ? _nistEn[internalIdx].checked : false;
+				var h = 0, gain = 1;
+				if (_nistH[internalIdx]) {
+					var val = parseFloat(_nistH[internalIdx].value);
 					if (!isNaN(val)) h = val;
-				});
-				$('span[id^="g-' + internalIdx + '-"] input').each(function () {
-					var val = parseFloat($(this).val());
+				}
+				if (_nistG[internalIdx]) {
+					var val = parseFloat(_nistG[internalIdx].value);
 					if (!isNaN(val)) gain = val;
-				});
+				}
 				return { enabled: enabled, h: h, gain: gain };
 			}
 
-			// Write value to hidden NIST spinner and trigger change
+			// Write value to cached NIST spinner element and trigger change
 			function writeNISTSpinner(prefix, internalIdx, value) {
-				$('span[id^="' + prefix + '-' + internalIdx + '-"] input').val(value).trigger('change');
+				var el = (prefix === 'h') ? _nistH[internalIdx] : (prefix === 'g') ? _nistG[internalIdx] : null;
+				if (el) {
+					el.value = value;
+					$(el).trigger('change');
+				}
 			}
 
 			function toggleNISTCheckbox(internalIdx, enable) {
-				$('input[type="checkbox"][id^="en-' + internalIdx + '-"]').prop('checked', enable).trigger('change');
+				var el = _nistEn[internalIdx];
+				if (el) {
+					el.checked = enable;
+					$(el).trigger('change');
+				}
 			}
 
 			// Show control row for an enabled channel
@@ -586,7 +794,7 @@
 				row.dataset.visIdx = visIdx;
 				row.innerHTML =
 					'<span class="cs-ch-tag">' + (visIdx + 1) + 'ch</span>' +
-					'<div class="cs-hue-swatch" data-role="swatch" style="background:' + hueToCSS(state.h) + '"></div>' +
+					'<div class="cs-hue-swatch" data-role="swatch" style="background:' + _hueToCSS(state.h) + '"></div>' +
 					'<div class="cs-control-group">' +
 					'  <span class="cs-ctrl-label">H</span>' +
 					'  <div class="cs-spinner">' +
@@ -613,12 +821,17 @@
 				var $gainInput = $row.find('[data-role="gain"]');
 				var $swatch = $row.find('[data-role="swatch"]');
 
-				// Hue input → NIST spinner
-				$hueInput.on('input change', function () {
+				// Hue input: visual-only on typing, full sync on commit
+				$hueInput.on('input', function () {
+					var val = parseFloat($(this).val());
+					if (isNaN(val)) return;
+					$swatch.css('background', _hueToCSS(val));
+				});
+				$hueInput.on('change', function () {
 					var val = parseFloat($(this).val());
 					if (isNaN(val)) return;
 					writeNISTSpinner('h', internalIdx, val);
-					$swatch.css('background', hueToCSS(val));
+					$swatch.css('background', _hueToCSS(val));
 				});
 				$row.find('[data-role="hue-up"]').on('click', function () {
 					var val = Math.min(1, parseFloat($hueInput.val()) + 0.01);
@@ -631,8 +844,8 @@
 					$hueInput.val(val).trigger('change');
 				});
 
-				// Gain input → NIST spinner
-				$gainInput.on('input change', function () {
+				// Gain input: sync only on commit (no visual preview needed)
+				$gainInput.on('change', function () {
 					var val = parseFloat($(this).val());
 					if (isNaN(val)) return;
 					writeNISTSpinner('g', internalIdx, val);
@@ -667,6 +880,39 @@
 				}
 			}
 
+			// "All Channels" toggle at top of dropdown
+			var allItem = document.createElement('div');
+			allItem.className = 'cs-dropdown-item cs-all-toggle';
+			allItem.setAttribute('role', 'option');
+			allItem.setAttribute('tabindex', '0');
+			allItem.innerHTML =
+				'<div class="cs-check-box">' +
+				'  <svg viewBox="0 0 10 10"><polyline points="1.5,5 4,7.5 8.5,2.5"/></svg>' +
+				'</div>' +
+				'<span class="cs-ch-label">All Channels</span>';
+			$(allItem).on('click', function (e) {
+				e.stopPropagation();
+				var $items = $menu.find('.cs-dropdown-item').not('.cs-all-toggle');
+				var allChecked = $items.filter('.checked').length === $items.length;
+				window.__hyperBlendSuppressUpdates = true;
+				$items.each(function () {
+					var $it = $(this);
+					var shouldCheck = !allChecked;
+					if ($it.hasClass('checked') !== shouldCheck) {
+						$it.trigger('click');
+					}
+				});
+				$(allItem).toggleClass('checked', !allChecked);
+				// Unsuppress after a tick so queued setTimeout(_syncDrawerState, 0)
+				// calls from the setFilterOptions wrapper are still suppressed.
+				setTimeout(function () {
+					window.__hyperBlendSuppressUpdates = false;
+					_pushChannelConfigToDrawer();
+					_updateOSDLayerVisibility();
+				}, 0);
+			});
+			$menu.append(allItem);
+
 			// Build dropdown items
 			visibleChannels.forEach(function (internalIdx, visIdx) {
 				var item = document.createElement('div');
@@ -695,6 +941,11 @@
 						hideControl(internalIdx);
 					}
 					updateCounts();
+					// Direct sync — NIST event chain from .trigger('change')
+					// is unreliable; jQuery .trigger() is synchronous so DOM
+					// is already settled at this point
+					_pushChannelConfigToDrawer();
+					_updateOSDLayerVisibility();
 				}
 
 				$(item).on('click', toggleItem);
@@ -737,9 +988,11 @@
 				}
 			});
 
-			// Clear All button
+			// Clear All button — uses same suppress pattern as All Channels toggle
+			// (lines 842-857): suppress → batch changes → unsuppress + single push
 			$('#csBtnClear').on('click', function () {
-				$menu.find('.cs-dropdown-item.checked').each(function () {
+				window.__hyperBlendSuppressUpdates = true;
+				$menu.find('.cs-dropdown-item.checked').not('.cs-all-toggle').each(function () {
 					var internalIdx = parseInt(this.dataset.idx);
 					$(this).removeClass('checked');
 					$(this).attr('aria-selected', 'false');
@@ -747,6 +1000,11 @@
 					hideControl(internalIdx);
 				});
 				updateCounts();
+				setTimeout(function () {
+					window.__hyperBlendSuppressUpdates = false;
+					_pushChannelConfigToDrawer();
+					_updateOSDLayerVisibility();
+				}, 0);
 			});
 
 			// Sync initial state: if any NIST checkboxes are already checked
@@ -767,7 +1025,7 @@
 			// Detect layer count from loaded tiles
 			var layerCount = allLayers[0].filter(Boolean).length;
 			window.channelCount = layerCount * 4; // total UI slots (incl. locked alpha slots in RGB mode)
-			console.log("[hyperOSD] Detected " + layerCount + " layers, " + window.channelCount + " channels");
+			console.log("[HyperOSG] Detected " + layerCount + " layers, " + window.channelCount + " channels");
 
 			// 1) Adapt channel UI to actual layer count:
 			//    Reassign hue spread, hide unused rows, relabel visible channels
@@ -777,6 +1035,9 @@
 			if (useWebGLBlend) {
 				_hookChannelUIForWebGL();
 			}
+
+			// 2b) Populate NIST DOM element cache (elements exist after filter init)
+			_populateNistCache();
 
 			// 3) Hide entire NIST HyperBlend filter entry — new channel selector drives it
 			$('#selected > li').each(function () {
@@ -809,6 +1070,41 @@
 					}
 				}
 			});
+
+			// Apply default hue overrides (1-based channel number → hue float)
+			if (defaultChannelHues && typeof defaultChannelHues === 'object') {
+				Object.keys(defaultChannelHues).forEach(function (key) {
+					var userNum = parseInt(key);
+					var hue = parseFloat(defaultChannelHues[key]);
+					if (isNaN(userNum) || isNaN(hue)) return;
+					var idx = _visibleMap[userNum - 1];
+					if (typeof idx === 'undefined') return;
+					// Enable channel if not already on
+					var $item = $('#csDropdownMenu .cs-dropdown-item[data-idx="' + idx + '"]');
+					if ($item.length && !$item.hasClass('checked')) {
+						$item.trigger('click');
+					}
+					if (_nistH[idx]) { _nistH[idx].value = hue; $(_nistH[idx]).trigger('change'); }
+					var $row = $('#csControlsZone .cs-channel-control[data-idx="' + idx + '"]');
+					if ($row.length) {
+						$row.find('[data-role="hue"]').val(hue);
+						$row.find('[data-role="swatch"]').css('background', _hueToCSS(hue));
+					}
+				});
+				_pushChannelConfigToDrawer();
+				_updateOSDLayerVisibility();
+			}
+
+			// Apply default post-processing toggles
+			if (defaultHE) {
+				$('#heToggle').prop('checked', true).trigger('change');
+			}
+			if (defaultTrichrome && !defaultHE) {
+				$('#trichromeToggle').prop('checked', true).trigger('change');
+			}
+			if (defaultUnmixing) {
+				$('#unmixToggle').prop('checked', true).trigger('change');
+			}
 
 			// 6) Monitor the selected-filters list for changes.
 			// When a filter is added/removed, check if we need to switch drawers.
@@ -863,7 +1159,7 @@
 			if (typeof window.updateHyperFilters === 'function') {
 				window.updateHyperFilters();
 			}
-			console.log("[hyperOSD] Channel UI adapted: " + visibleCount + " visible channels, " +
+			console.log("[HyperOSG] Channel UI adapted: " + visibleCount + " visible channels, " +
 				(16 - visibleCount) + " hidden" + (alphaSlots.size > 0 ? " (" + alphaSlots.size + " alpha slots locked)" : ""));
 		}
 
@@ -904,14 +1200,14 @@
 			var needsWebGL = hasHyperBlend && otherFilters.length === 0;
 
 			if (needsWebGL && currentDrawerMode !== 'webgl') {
-				console.log("[hyperOSD] Switching to WebGL drawer");
+				console.log("[HyperOSG] Switching to WebGL drawer");
 				var success = viewer.requestDrawer('hyperblend-webgl', { mainDrawer: true });
 				if (success) {
 					currentDrawerMode = 'webgl';
 					_hookChannelUIForWebGL();
 				}
 			} else if (!needsWebGL && currentDrawerMode !== 'canvas') {
-				console.log("[hyperOSD] Switching to canvas drawer for unsupported filter combo");
+				console.log("[HyperOSG] Switching to canvas drawer for unsupported filter combo");
 				viewer.requestDrawer('canvas', { mainDrawer: true });
 				currentDrawerMode = 'canvas';
 			}
@@ -1009,11 +1305,6 @@
 				viewer._setFilterOptionsWrapped = true;
 			}
 
-			// Delegate 'change' for checkboxes AND all inputs (catches spinner Enter key)
-			$('#selected').off('change.hyperblend').on('change.hyperblend', 'input', function () {
-				_syncDrawerState();
-			});
-
 			// Reinhard toggle checkbox
 			$('#reinhardToggle').off('change.hyperblend').on('change.hyperblend', function () {
 				if (viewer.drawer && viewer.drawer.setToneMappingMode) {
@@ -1077,7 +1368,7 @@
 			// ---- Linear Unmixing UI ----
 			window._unmixingActive = false;
 			window._unmixMatrix = null;   // Float32Array(128) when applied
-			window._unmixOutputCount = 4;
+			window._unmixOutputCount = 2;
 
 			// ---- Pseudoinverse computation (small-matrix linear algebra) ----
 			// Computes pinv(A^T) = (A·A^T)^(-1)·A for unmixing.
@@ -1192,7 +1483,7 @@
 			var _datasetRoot = '';
 			if (imageSources && imageSources.length > 0) {
 				// Strip filename and path segments to get dataset root
-				// e.g. "deepzoom_RGBA/0.0um/1/stitch.xml" → ""
+				// e.g. "test_synthetic/deepzoom_RGBA/0.0um/1/stitch.xml" → "test_synthetic/"
 				var _srcParts = imageSources[0].split('/');
 				// Find the deepzoom_RGBA segment and take everything before it
 				var _dzIdx = -1;
@@ -1214,7 +1505,7 @@
 				}
 				html += '</tr></thead><tbody>';
 				for (var r = 0; r < M; r++) {
-					html += '<tr><th class="unmix-row-hdr">out' + (r + 1) + '</th>';
+					html += '<tr><th class="unmix-row-hdr"><label><input type="checkbox" checked class="unmix-row-toggle" data-row="' + r + '"> out' + (r + 1) + '</label></th>';
 					for (var c = 0; c < N; c++) {
 						var v = data[r][c];
 						var display = Math.abs(v) < 0.0005 ? '0' : v.toFixed(3);
@@ -1234,6 +1525,86 @@
 					inputs[i].addEventListener('input', _onUnmixCellInput);
 				}
 				$('#unmixEditorZone').addClass('visible');
+
+				// Attach row toggle handlers
+				var toggles = table.querySelectorAll('.unmix-row-toggle');
+				for (var ti = 0; ti < toggles.length; ti++) {
+					toggles[ti].addEventListener('change', function () {
+						var tr = this.closest('tr');
+						if (this.checked) {
+							tr.classList.remove('unmix-row-disabled');
+						} else {
+							tr.classList.add('unmix-row-disabled');
+						}
+						_unmixIsDirty = true;
+						$('#unmixDirtyTag').addClass('visible');
+						$('#unmixPinvTag').hide();
+					});
+				}
+
+				// Attach right-click handler on row headers for row removal
+				var rowHdrs = table.querySelectorAll('.unmix-row-hdr');
+				for (var rhi = 0; rhi < rowHdrs.length; rhi++) {
+					rowHdrs[rhi].addEventListener('contextmenu', function (e) {
+						e.preventDefault();
+						var rowIdx = parseInt(this.querySelector('.unmix-row-toggle').dataset.row);
+						var popup = document.getElementById('unmixRowConfirmPopup');
+						var panelContainer = document.getElementById('unmixPanelBody');
+						var panelRect = panelContainer.getBoundingClientRect();
+						var hdrRect = this.getBoundingClientRect();
+						popup.style.top = (hdrRect.top - panelRect.top + hdrRect.height) + 'px';
+						popup.style.left = (hdrRect.left - panelRect.left) + 'px';
+						document.getElementById('unmixRowConfirmMsg').textContent = 'Remove Component ' + (rowIdx + 1) + '?';
+						popup.classList.add('visible');
+
+						// Escape key and click-outside dismissal
+						function _dismissRowPopup(ev) {
+							if (ev.type === 'keydown' && ev.key !== 'Escape') return;
+							if (ev.type === 'mousedown' && popup.contains(ev.target)) return;
+							popup.classList.remove('visible');
+							document.removeEventListener('keydown', _dismissRowPopup);
+							document.removeEventListener('mousedown', _dismissRowPopup);
+						}
+						document.addEventListener('keydown', _dismissRowPopup);
+						document.addEventListener('mousedown', _dismissRowPopup);
+
+						$('#unmixRowConfirmYes').off('click.unmixrow').on('click.unmixrow', function () {
+							popup.classList.remove('visible');
+							document.removeEventListener('keydown', _dismissRowPopup);
+							document.removeEventListener('mousedown', _dismissRowPopup);
+							_unmixCurrentData.splice(rowIdx, 1);
+							window._unmixOutputCount = _unmixCurrentData.length;
+							$('#unmixOutputCount').val(window._unmixOutputCount);
+							$('#unmixDimDisplay').text(window._unmixOutputCount);
+
+							if (_unmixCurrentData.length === 0) {
+								// Last row removed — full deactivation
+								window._unmixingActive = false;
+								window._unmixMatrix = null;
+								window._unmixOutputCount = 0;
+								$('#unmixToggle').prop('checked', false);
+								$('#unmixPanel').hide();
+								if (viewer.drawer && viewer.drawer.updateUnmixConfig) {
+									viewer.drawer.updateUnmixConfig({ active: false, matrix: null, numOutputs: 0 });
+								}
+								_restoreRawChannelControls();
+								$('#unmixStatus').text('').css('color', '#a09d95');
+							} else {
+								var N = _unmixCurrentData[0].length;
+								_buildUnmixTable(_unmixCurrentData, _unmixCurrentData.length, N);
+								_unmixIsDirty = true;
+								$('#unmixDirtyTag').addClass('visible');
+								$('#unmixPinvTag').hide();
+							}
+							if (typeof _spUpdateComponentDropdown === 'function') _spUpdateComponentDropdown();
+						});
+						$('#unmixRowConfirmNo').off('click.unmixrow').on('click.unmixrow', function () {
+							popup.classList.remove('visible');
+							document.removeEventListener('keydown', _dismissRowPopup);
+							document.removeEventListener('mousedown', _dismissRowPopup);
+						});
+					});
+				}
 			}
 
 			function _readUnmixTableIntoData() {
@@ -1326,7 +1697,21 @@
 					_unmixCurrentData.push(row);
 				}
 				_buildUnmixTable(_unmixCurrentData, initM, N);
-				$('#unmixStatus').text('Enter values or paste matrix').css('color', '#a09d95');
+				$('#unmixStatus').text('Right-click image to select spectrum').css('color', '#a09d95');
+				_spUpdateComponentDropdown();
+			}
+
+			function _resizeUnmixData(M, N) {
+				var newData = [];
+				for (var r = 0; r < M; r++) {
+					var row = [];
+					for (var c = 0; c < N; c++) {
+						row.push(_unmixCurrentData && _unmixCurrentData[r] ? (_unmixCurrentData[r][c] || 0) : 0);
+					}
+					newData.push(row);
+				}
+				_unmixCurrentData = newData;
+				return newData;
 			}
 
 			// ---- Toggle handler ----
@@ -1363,19 +1748,12 @@
 				// Resize table preserving existing data
 				var newM = window._unmixOutputCount;
 				var N = _unmixCurrentData && _unmixCurrentData[0] ? _unmixCurrentData[0].length : _unmixInputCount;
-				var newData = [];
-				for (var r = 0; r < newM; r++) {
-					var row = [];
-					for (var c = 0; c < N; c++) {
-						row.push(_unmixCurrentData && _unmixCurrentData[r] ? (_unmixCurrentData[r][c] || 0) : 0);
-					}
-					newData.push(row);
-				}
-				_unmixCurrentData = newData;
+				_resizeUnmixData(newM, N);
 				_unmixIsDirty = true;
 				_buildUnmixTable(_unmixCurrentData, newM, N);
 				$('#unmixDirtyTag').addClass('visible');
 				$('#unmixPinvTag').hide();
+				_spUpdateComponentDropdown();
 			});
 
 			// ---- Apply handler ----
@@ -1386,22 +1764,33 @@
 					return;
 				}
 				_readUnmixTableIntoData();
-				var parsed = _unmixCurrentData;
 
-				var M = parsed.length;
-				var N_cols = parsed[0].length;
+				// Filter by checked rows only
+				var checkedIndices = [];
+				$('#unmixMatrixTable .unmix-row-toggle').each(function () {
+					if (this.checked) {
+						checkedIndices.push(parseInt(this.dataset.row));
+					}
+				});
+
+				if (checkedIndices.length === 0) {
+					$status.text('No spectra selected').css('color', '#c45050');
+					return;
+				}
+
+				var filteredData = checkedIndices.map(function (i) { return _unmixCurrentData[i]; });
+				var M = filteredData.length;
+				var N_cols = filteredData[0].length;
 				$('#unmixInputCount').text(N_cols);
 
 				// Compute pseudoinverse: U = (A·A^T)^(-1)·A
-				var unmixed = _computePseudoinverse(parsed, M, N_cols);
+				var unmixed = _computePseudoinverse(filteredData, M, N_cols);
 				if (!unmixed) {
 					$status.text('Matrix is singular \u2014 spectra are linearly dependent').css('color', '#c45050');
 					return;
 				}
 
 				// Pack unmixing matrix into GPU layout: mat[physicalInput*8 + output].
-				// In RGB mode, the editor omits alpha slots, so logical columns must be
-				// remapped onto physical channel indices 0,1,2,4,5,6,8,9,10,12,13,14.
 				var mat = new Float32Array(128);
 				for (var col = 0; col < N_cols && col < _unmixInputChannelMap.length; col++) {
 					var physicalCol = _unmixInputChannelMap[col];
@@ -1415,13 +1804,26 @@
 				$('#unmixOutputCount').val(M);
 				$('#unmixDimDisplay').text(M);
 
-				$status.text(M + '\u00d7' + N_cols + ' matrix applied (pinv) \u2713').css('color', '#3d7c3f');
+				var totalRows = _unmixCurrentData.length;
+				var label = M === totalRows
+					? M + '\u00d7' + N_cols + ' matrix applied (pinv) \u2713'
+					: M + '/' + totalRows + ' rows \u00d7 ' + N_cols + ' matrix applied (pinv) \u2713';
+				$status.text(label).css('color', '#3d7c3f');
 				_unmixIsDirty = false;
 				$('#unmixPinvTag').show();
 				$('#unmixDirtyTag').removeClass('visible');
 
-				// Refresh table
-				_buildUnmixTable(_unmixCurrentData, M, N_cols);
+				// Refresh table (preserves all rows including unchecked)
+				_buildUnmixTable(_unmixCurrentData, totalRows, N_cols);
+
+				// Re-apply checkbox disabled states from checkedIndices
+				$('#unmixMatrixTable .unmix-row-toggle').each(function () {
+					var ri = parseInt(this.dataset.row);
+					if (checkedIndices.indexOf(ri) === -1) {
+						this.checked = false;
+						this.closest('tr').classList.add('unmix-row-disabled');
+					}
+				});
 
 				// If unmixing is active, push to drawer and switch channel controls
 				if (window._unmixingActive) {
@@ -1435,32 +1837,9 @@
 						});
 					}
 				}
-
 			});
 
-			// ---- Clear handler ----
-			$('#unmixClear').on('click', function () {
-				$('#unmixStatus').text('Cleared').css('color', '#a09d95');
-				$('#autoLoadMsg').text('');
-				var M = window._unmixOutputCount;
-				var N = _unmixCurrentData && _unmixCurrentData[0] ? _unmixCurrentData[0].length : _unmixInputCount;
-				_unmixCurrentData = [];
-				for (var r = 0; r < M; r++) {
-					var row = [];
-					for (var c = 0; c < N; c++) row.push(0);
-					_unmixCurrentData.push(row);
-				}
-				_unmixIsDirty = false;
-				$('#unmixPinvTag').hide();
-				$('#unmixDirtyTag').removeClass('visible');
-				_buildUnmixTable(_unmixCurrentData, M, N);
-
-				// Reset GPU state — stop rendering stale unmixing output
-				window._unmixMatrix = null;
-				if (window._unmixingActive && viewer.drawer && viewer.drawer.updateUnmixConfig) {
-					viewer.drawer.updateUnmixConfig({ active: false, matrix: new Float32Array(128), numOutputs: 0 });
-				}
-			});
+			// Clear handler removed — Reload button serves as the reset mechanism
 
 			// ---- Reload handler — re-fetch matrix file from disk ----
 			$('#unmixReload').on('click', function () {
@@ -1470,6 +1849,14 @@
 				$('#autoLoadMsg').text('');
 				$('#unmixStatus').text('Reloading\u2026').css('color', '#a09d95');
 				_initUnmixPanel();
+			});
+
+			$('#unmixClear').on('click', function () {
+				_initZeroTable(_unmixInputCount);
+				_unmixIsDirty = true;
+				$('#unmixDirtyTag').addClass('visible');
+				$('#unmixPinvTag').hide();
+				$('#autoLoadMsg').text('');
 			});
 
 			// ---- Save logic (File System Access API with download fallback) ----
@@ -1510,7 +1897,7 @@
 				a.href = url;
 				a.download = matrixFileName;
 				a.click();
-				URL.revokeObjectURL(url);
+				setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
 				$('#unmixStatus').text('Saved ' + matrixFileName).css('color', '#3d7c3f');
 			}
 
@@ -1566,12 +1953,294 @@
 						_buildUnmixTable(_unmixCurrentData, parsed.length, N);
 						$('#autoLoadMsg').text('Loaded from ' + fileUrl).css('color', '#3d7c3f');
 						$('#unmixStatus').text(parsed.length + '\u00d7' + N + ' loaded').css('color', '#3d7c3f');
+						$('#unmixReload').prop('disabled', false);
+						_spUpdateComponentDropdown();
 					})
 					.catch(function () {
 						_initZeroTable(_unmixInputCount);
+						$('#unmixReload').prop('disabled', true);
 					});
 			}
 			_initUnmixPanel();
+
+			// ---- Spectrum Inspector (right-click pixel readout) ----
+
+			var _spectrumPanel = document.getElementById('spectrumPanel');
+			var _spTitle = document.getElementById('spTitle');
+			var _spPlotCanvas = document.getElementById('spPlotCanvas');
+			var _spValues = document.getElementById('spValues');
+			var _spLastChannelData = null;  // last readPixelChannels result for "Add to Matrix"
+			var _spEscHandler = null;
+
+			function _spHsvToRgb(h) {
+				var r, g, b;
+				var i = Math.floor(h * 6);
+				var f = h * 6 - i;
+				var q = 1 - f;
+				switch (i % 6) {
+					case 0: r = 1; g = f; b = 0; break;
+					case 1: r = q; g = 1; b = 0; break;
+					case 2: r = 0; g = 1; b = f; break;
+					case 3: r = 0; g = q; b = 1; break;
+					case 4: r = f; g = 0; b = 1; break;
+					case 5: r = 1; g = 0; b = q; break;
+				}
+				return 'rgb(' + Math.round(r * 255) + ',' + Math.round(g * 255) + ',' + Math.round(b * 255) + ')';
+			}
+
+			function _spGetVisibleIndices() {
+				var total = window.imagesPerZ * 4;
+				var isRgb = window.__hyperBlendChannelMode === 'rgb';
+				var indices = [];
+				for (var i = 0; i < total; i++) {
+					if (isRgb && (i % 4 === 3)) continue;
+					indices.push(i);
+				}
+				return indices;
+			}
+
+			function _renderSpectrumPlot(values) {
+				var indices = _spGetVisibleIndices();
+				var N = indices.length;
+				if (N === 0) return;
+
+				var config = viewer.drawer.getChannelConfig();
+				var canvas = _spPlotCanvas;
+				var dpr = window.devicePixelRatio || 1;
+				var cssW = Math.max(N * 32, 200);
+				var cssH = 140;
+				canvas.style.width = cssW + 'px';
+				canvas.style.height = cssH + 'px';
+				canvas.width = cssW * dpr;
+				canvas.height = cssH * dpr;
+
+				var ctx = canvas.getContext('2d');
+				ctx.scale(dpr, dpr);
+
+				ctx.fillStyle = '#1a1a1a';
+				ctx.fillRect(0, 0, cssW, cssH);
+
+				var padL = 30, padR = 10, padT = 10, padB = 28;
+				var plotW = cssW - padL - padR;
+				var plotH = cssH - padT - padB;
+
+				// Grid lines + Y labels
+				ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+				ctx.fillStyle = '#666';
+				ctx.font = '9px JetBrains Mono, monospace';
+				ctx.textAlign = 'right';
+				var gridVals = [0, 64, 128, 192, 255];
+				for (var gi = 0; gi < gridVals.length; gi++) {
+					var gy = padT + plotH - (gridVals[gi] / 255) * plotH;
+					ctx.beginPath();
+					ctx.moveTo(padL, gy);
+					ctx.lineTo(padL + plotW, gy);
+					ctx.stroke();
+					ctx.fillText(gridVals[gi], padL - 4, gy + 3);
+				}
+
+				// Compute point positions
+				var points = [];
+				for (var pi = 0; pi < N; pi++) {
+					var x = padL + (N === 1 ? plotW / 2 : (pi / (N - 1)) * plotW);
+					var y = padT + plotH - (values[indices[pi]] / 255) * plotH;
+					points.push({ x: x, y: y, idx: indices[pi] });
+				}
+
+				// Connecting line
+				ctx.strokeStyle = '#999';
+				ctx.lineWidth = 1.5;
+				ctx.beginPath();
+				for (var li = 0; li < points.length; li++) {
+					if (li === 0) ctx.moveTo(points[li].x, points[li].y);
+					else ctx.lineTo(points[li].x, points[li].y);
+				}
+				ctx.stroke();
+
+				// Data points — always show raw channel hues (not unmixed output hues)
+				for (var di = 0; di < points.length; di++) {
+					var hue;
+					if (window._unmixingActive) {
+						// Use same hue formula as _adaptChannelUI (0.66 → wrap → 0.80)
+						hue = N > 1
+							? ((0.66 - di * (0.86 / (N - 1))) % 1.0 + 1.0) % 1.0
+							: 0.66;
+						hue = Math.round(hue * 100) / 100;
+					} else {
+						hue = config[points[di].idx] ? config[points[di].idx].h : 0;
+					}
+					ctx.fillStyle = _spHsvToRgb(hue);
+					ctx.beginPath();
+					ctx.arc(points[di].x, points[di].y, 4, 0, Math.PI * 2);
+					ctx.fill();
+					ctx.strokeStyle = '#fff';
+					ctx.lineWidth = 0.5;
+					ctx.stroke();
+				}
+
+				// Channel labels drawn on canvas at exact data point x positions
+				ctx.fillStyle = '#999';
+				ctx.font = '8px JetBrains Mono, monospace';
+				ctx.textAlign = 'center';
+				for (var ci = 0; ci < points.length; ci++) {
+					ctx.fillText((ci + 1) + 'ch', points[ci].x, padT + plotH + 14);
+				}
+				_spValues.style.display = 'none';
+			}
+
+			function _showSpectrumPanel(event) {
+				var pos = event.position;
+				if (!pos) return;
+
+				var channelData = viewer.drawer.readPixelChannels(pos.x, pos.y);
+				if (!channelData) return;
+				_spLastChannelData = channelData;
+
+				var vpPoint = viewer.viewport.pointFromPixel(pos);
+				var tiledImage = window.allLayers && window.allLayers[window.currentZIndex]
+					? window.allLayers[window.currentZIndex][0] : null;
+				var imgX = '\u2014', imgY = '\u2014';
+				if (tiledImage) {
+					var imgPt = tiledImage.viewportToImageCoordinates(vpPoint);
+					imgX = Math.round(imgPt.x);
+					imgY = Math.round(imgPt.y);
+				}
+				_spTitle.textContent = 'Pixel (' + imgX + ', ' + imgY + ')';
+
+				_renderSpectrumPlot(channelData);
+				_spectrumPanel.classList.add('visible');
+
+				if (!_spEscHandler) {
+					_spEscHandler = function (e) {
+						if (e.key === 'Escape') _hideSpectrumPanel();
+					};
+					document.addEventListener('keydown', _spEscHandler);
+				}
+			}
+
+			function _hideSpectrumPanel() {
+				_spectrumPanel.classList.remove('visible');
+				if (_spEscHandler) {
+					document.removeEventListener('keydown', _spEscHandler);
+					_spEscHandler = null;
+				}
+			}
+
+			viewer.addHandler('canvas-contextmenu', function (event) {
+				event.preventDefault = true;
+				_showSpectrumPanel(event);
+			});
+
+			document.getElementById('spClose').addEventListener('click', function () {
+				_hideSpectrumPanel();
+			});
+
+			// ---- Add to Matrix handler ----
+			document.getElementById('spAddToMatrix').addEventListener('click', function () {
+				if (!_spLastChannelData) return;
+
+				var indices = _spGetVisibleIndices();
+				var spectrum = [];
+				for (var i = 0; i < indices.length; i++) {
+					spectrum.push(_spLastChannelData[indices[i]]);
+				}
+
+				var select = document.getElementById('spComponentSelect');
+				var rowIdx = parseInt(select.value, 10) - 1;
+
+				var unmixToggle = document.getElementById('unmixToggle');
+				if (!unmixToggle.checked) {
+					unmixToggle.checked = true;
+					$(unmixToggle).trigger('change');
+				}
+
+				var currentOutputCount = window._unmixOutputCount || 2;
+				if (rowIdx >= currentOutputCount) {
+					currentOutputCount = rowIdx + 1;
+					$('#unmixOutputCount').val(currentOutputCount);
+					window._unmixOutputCount = currentOutputCount;
+					$('#unmixDimDisplay').text(currentOutputCount);
+				}
+
+				if (!_unmixCurrentData || _unmixCurrentData.length !== currentOutputCount ||
+					_unmixCurrentData[0].length !== spectrum.length) {
+					_resizeUnmixData(currentOutputCount, spectrum.length);
+					_buildUnmixTable(_unmixCurrentData, currentOutputCount, spectrum.length);
+				}
+
+				// Check if row already has non-zero data — show confirm popup
+				var existingRow = _unmixCurrentData[rowIdx];
+				var hasData = existingRow && existingRow.some(function (v) { return v !== 0; });
+
+				function _spWriteSpectrum() {
+					// Normalize spectrum to max pixel value (peak = 1.0)
+					var maxVal = 0;
+					for (var si = 0; si < spectrum.length; si++) {
+						if (spectrum[si] > maxVal) maxVal = spectrum[si];
+					}
+					if (maxVal === 0) maxVal = 1;
+
+					for (var si = 0; si < spectrum.length; si++) {
+						_unmixCurrentData[rowIdx][si] = spectrum[si] / maxVal;
+					}
+
+					_buildUnmixTable(_unmixCurrentData, currentOutputCount, spectrum.length);
+					_unmixIsDirty = true;
+					$('#unmixDirtyTag').addClass('visible');
+					$('#unmixStatus').text('Row ' + (rowIdx + 1) + ' set from spectrum').css('color', '#4a7c8a');
+					_spUpdateComponentDropdown();
+				}
+
+				if (hasData) {
+					var popup = document.getElementById('spConfirmPopup');
+					document.getElementById('spConfirmMsg').textContent =
+						'Replace Component ' + (rowIdx + 1) + ' data?';
+					popup.classList.add('visible');
+					$('#spConfirmYes').off('click.sp').on('click.sp', function () {
+						popup.classList.remove('visible');
+						_spWriteSpectrum();
+					});
+					$('#spConfirmNo').off('click.sp').on('click.sp', function () {
+						popup.classList.remove('visible');
+					});
+					return;
+				}
+
+				_spWriteSpectrum();
+			});
+
+			function _spUpdateComponentDropdown() {
+				var select = document.getElementById('spComponentSelect');
+				var currentCount = window._unmixOutputCount || 2;
+				var maxOptions = Math.min(currentCount + 1, 8);
+				select.innerHTML = '';
+				for (var i = 1; i <= maxOptions; i++) {
+					var opt = document.createElement('option');
+					opt.value = i;
+					opt.textContent = 'Component ' + i;
+					select.appendChild(opt);
+				}
+				// Auto-select next empty component
+				var nextEmpty = -1;
+				if (_unmixCurrentData) {
+					for (var ri = 0; ri < currentCount; ri++) {
+						var row = _unmixCurrentData[ri];
+						var isEmpty = !row || row.every(function (v) { return v === 0; });
+						if (isEmpty) { nextEmpty = ri; break; }
+					}
+				}
+				if (!_unmixCurrentData) {
+					// No data yet — default to Component 1
+					select.value = 1;
+				} else if (nextEmpty >= 0) {
+					select.value = nextEmpty + 1;
+				} else if (maxOptions > currentCount) {
+					// All rows filled — default to the growth option
+					select.value = currentCount + 1;
+				}
+			}
+
+			_spUpdateComponentDropdown();
 
 			// Rebuild channel selector to show M output channels (for unmixing mode)
 			function _rebuildOutputControls(M) {
@@ -1637,7 +2306,14 @@
 
 					// Live swatch + push config on change
 					(function ($hi, $gi, $sw, idx) {
-						$hi.on('input change', function () {
+						$hi.on('input', function () {
+							var h = parseFloat($(this).val()) || 0;
+							var _fi = Math.floor(h * 6), _f = h * 6 - _fi, _m = ((_fi % 6) + 6) % 6;
+							var _r, _g, _b;
+							switch (_m) { case 0: _r = 1; _g = _f; _b = 0; break; case 1: _r = 1 - _f; _g = 1; _b = 0; break; case 2: _r = 0; _g = 1; _b = _f; break; case 3: _r = 0; _g = 1 - _f; _b = 1; break; case 4: _r = _f; _g = 0; _b = 1; break; default: _r = 1; _g = 0; _b = 1 - _f; }
+							$sw.css('background', 'rgb(' + Math.round(_r * 255) + ',' + Math.round(_g * 255) + ',' + Math.round(_b * 255) + ')');
+						});
+						$hi.on('change', function () {
 							var h = parseFloat($(this).val()) || 0;
 							var _fi = Math.floor(h * 6), _f = h * 6 - _fi, _m = ((_fi % 6) + 6) % 6;
 							var _r, _g, _b;
@@ -1645,7 +2321,7 @@
 							$sw.css('background', 'rgb(' + Math.round(_r * 255) + ',' + Math.round(_g * 255) + ',' + Math.round(_b * 255) + ')');
 							_pushUnmixChannelConfig();
 						});
-						$gi.on('input change', function () { _pushUnmixChannelConfig(); });
+						$gi.on('change', function () { _pushUnmixChannelConfig(); });
 					})($hueInput, $gainInput, $swatch, oi);
 
 					// Spinner buttons
@@ -1729,29 +2405,30 @@
 
 		/**
 		 * Update OSD layer opacities based on which channels are enabled.
-		 * Layers with at least one active channel get opacity 1.0, others 0.01.
+		 * Layers with at least one active channel get opacity 1.0, others 0.
 		 */
 		function _updateOSDLayerVisibility() {
 			if (!allLayers || (typeof currentZIndex === 'undefined') || !allLayers[currentZIndex]) return;
 			var layers = allLayers[currentZIndex];
 			for (var l = 0; l < window.imagesPerZ; l++) {
 				if (!layers[l]) continue;
-				// In unmixing mode, ALL layers must be visible — the shader reads
-				// all 16 raw inputs for the matrix multiply regardless of which
-				// output channels are enabled.
+				var target;
 				if (window._unmixingActive) {
-					layers[l].setOpacity(1.0);
-					continue;
-				}
-				var anyEnabled = false;
-				for (var ch = 0; ch < 4; ch++) {
-					var chIdx = l * 4 + ch;
-					if ($('input[type="checkbox"][id^="en-' + chIdx + '-"]').is(':checked')) {
-						anyEnabled = true;
-						break;
+					target = 1.0;
+				} else {
+					var anyEnabled = false;
+					for (var ch = 0; ch < 4; ch++) {
+						var chIdx = l * 4 + ch;
+						if (_nistEn[chIdx] && _nistEn[chIdx].checked) {
+							anyEnabled = true;
+							break;
+						}
 					}
+					target = anyEnabled ? 1.0 : 0;
 				}
-				layers[l].setOpacity(anyEnabled ? 1.0 : 0.01);
+				if (layers[l].getOpacity() !== target) {
+					layers[l].setOpacity(target);
+				}
 			}
 		}
 
@@ -1761,38 +2438,28 @@
 		 *
 		 * The filter bundle creates jQuery UI spinners inside <span> elements with
 		 * IDs like "h-{ch}-{idIncrement}", "s-{ch}-{idIncrement}", etc.
-		 * Each <span> contains an <input> whose .val() holds the current value.
+		 * Each <span> contains an <input> whose .value holds the current value.
 		 * Checkboxes have IDs "en-{ch}-{idIncrement}".
-		 * We use attribute-starts-with selectors since we don't know idIncrement.
+		 * Elements are read from the _nistEn/_nistH/_nistG cache arrays.
 		 */
 		function _pushChannelConfigToDrawer() {
 			if (!viewer || !viewer.drawer || viewer.drawer.getType() !== 'hyperblend-webgl') {
 				return;
 			}
-			// In unmixing mode, _pushUnmixChannelConfig() handles channel config.
-			// NIST spinners don't reflect unmixed outputs — skip to avoid overwriting.
 			if (window._unmixingActive) return;
 
 			var config = [];
 			for (var i = 0; i < 16; i++) {
-				var enabled = false;
+				var enabled = _nistEn[i] ? _nistEn[i].checked : false;
 				var h = 0, gain = 1;
-
-				// Checkbox
-				$('input[type="checkbox"][id^="en-' + i + '-"]').each(function () {
-					enabled = $(this).is(':checked');
-				});
-				// H spinner: <span id="h-{i}-N"> contains <input> with the value
-				$('span[id^="h-' + i + '-"] input').each(function () {
-					var val = parseFloat($(this).val());
+				if (_nistH[i]) {
+					var val = parseFloat(_nistH[i].value);
 					if (!isNaN(val)) h = val;
-				});
-				// Gain spinner
-				$('span[id^="g-' + i + '-"] input').each(function () {
-					var val = parseFloat($(this).val());
+				}
+				if (_nistG[i]) {
+					var val = parseFloat(_nistG[i].value);
 					if (!isNaN(val)) gain = val;
-				});
-
+				}
 				config.push({ h: h, gain: gain, enabled: enabled });
 			}
 
