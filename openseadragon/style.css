@@ -756,12 +756,35 @@ li {
 }
 .pp-btn-apply:hover { background: #2d6030; }
 
+/* Engaged state — Apply button after successful engagement (Phase 2 amendment).
+   Darker green + inset shadow signals "pressed-in / active". Clicking again
+   disengages, so hover still highlights. */
+.pp-btn.pp-btn-apply.engaged {
+    background: #2d6030;
+    border-color: #1d4020;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.25);
+}
+.pp-btn.pp-btn-apply.engaged:hover {
+    background: #244d27;
+}
+
 .pp-btn-clear {
     background: none;
     color: #3a6270;
     border: 1px solid #4a7c8a;
 }
 .pp-btn-clear:hover { background: #4a7c8a; color: white; }
+
+/* Linear Zero is locked while Linear is engaged — zeroing the matrix while the
+   filter is active would leave the table at zero but the drawer holding the
+   previous pinv (incoherent state). User must disengage first. */
+#unmixZero:disabled,
+#unmixOutputCount:disabled,
+#unmixReload:disabled,
+#picassoReload:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
 
 /* ── Save Image Section ── */
 #saveImageSection {
@@ -886,6 +909,45 @@ li {
     overflow: hidden;
     background: #f2f1ee;
     box-shadow: 0 2px 8px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.04);
+    position: relative;
+}
+
+/* v5.0 Change 1: Linear panel disabled while PICASSO is engaged.
+ * Drawer flag (_picassoActive) is the sole source of truth — Apply/Clear
+ * handlers on the PICASSO side toggle this class. */
+.cs-panel-disabled {
+    opacity: 0.65;
+    pointer-events: none;
+    cursor: not-allowed;
+    border: 2px solid #c0392b !important;
+    box-shadow: 0 0 0 2px rgba(192, 57, 43, 0.25), 0 2px 12px rgba(192, 57, 43, 0.35);
+}
+
+.cs-panel-disabled::before {
+    content: "LOCKED — PICASSO IS ENGAGED — CLEAR PICASSO TO EDIT LINEAR";
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: #c0392b;
+    color: #fff;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    text-align: center;
+    padding: 8px 10px;
+    z-index: 5;
+    pointer-events: none;
+    border-bottom: 2px solid #7a1f15;
+    animation: cs-lock-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes cs-lock-pulse {
+    0%, 100% { background: #c0392b; }
+    50%      { background: #e74c3c; }
 }
 
 #unmixPanel .unmix-dim-bar {
@@ -1155,6 +1217,219 @@ li {
 }
 #unmixPanel .unmix-row-confirm-btns #unmixRowConfirmNo:hover {
     background: #555;
+}
+
+/* ── PICASSO Panel reuses the unmix-* visual styles ── */
+
+#picassoPanel {
+    margin: 4px 0;
+    border: 1px solid #c8c5bc;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #f2f1ee;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.04);
+}
+
+#picassoPanel .unmix-dim-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 14px;
+    border-bottom: 1px solid #c8c5bc;
+    background: #d8d5cd;
+}
+#picassoPanel .unmix-dim-label {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    color: #908d85;
+}
+#picassoPanel .unmix-dim-label strong {
+    color: #3a3832;
+    font-weight: 600;
+}
+#picassoPanel .picasso-k-spinner {
+    width: 36px;
+    height: 18px;
+    padding: 0 2px;
+    border: 1px solid #ccc9c0;
+    border-radius: 2px;
+    background: #fefdf8;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: #3a3832;
+    text-align: center;
+    vertical-align: middle;
+}
+#picassoPanel .picasso-k-spinner:focus {
+    outline: none;
+    border-color: #4a7c8a;
+    box-shadow: 0 0 0 2px rgba(74,124,138,0.3);
+}
+
+/* ENGAGED status badge (in cs-header of Linear + PICASSO panels) */
+.engaged-badge {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.5px;
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.engaged-badge.on {
+    background: #3d7c3f;
+    color: #fff;
+    border: 1px solid #2d6030;
+}
+.engaged-badge.off {
+    background: transparent;
+    color: #908d85;
+    border: 1px solid #c8c5bc;
+}
+
+#picassoPanel .unmix-input-zone { padding: 6px 14px 4px; }
+#picassoPanel .unmix-autoload-msg {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 9.5px;
+    color: #908d85;
+}
+#picassoPanel .unmix-status-wrap { padding: 0 14px 3px; }
+#picassoPanel .unmix-status-msg {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    color: #a09d95;
+    white-space: nowrap;
+    transition: color 0.2s;
+}
+#picassoPanel .unmix-btn-row {
+    display: flex;
+    gap: 8px;
+    padding: 0 14px 6px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+#picassoPanel .unmix-editor-zone {
+    border-top: 1px solid #c8c5bc;
+    display: block;
+    animation: unmixSlideIn 0.25s ease-out;
+}
+#picassoPanel .unmix-editor-header {
+    display: flex;
+    align-items: center;
+    padding: 5px 14px;
+    gap: 6px;
+    background: #d8d5cd;
+    border-bottom: 1px solid #c0bdb5;
+}
+#picassoPanel .unmix-editor-header span {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #3a3832;
+}
+#picassoPanel .picasso-loaded-tag {
+    font-size: 9px;
+    font-weight: 500;
+    color: #7a4a8a;
+    background: rgba(122, 74, 138, 0.12);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid rgba(122, 74, 138, 0.22);
+    letter-spacing: 0.4px;
+}
+#picassoPanel .unmix-dirty-tag {
+    font-size: 9px;
+    font-weight: 500;
+    color: #b8922e;
+    background: rgba(184, 146, 46, 0.12);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid rgba(184, 146, 46, 0.2);
+    letter-spacing: 0.4px;
+    display: none;
+}
+#picassoPanel .unmix-dirty-tag.visible { display: inline; }
+#picassoPanel .unmix-table-scroll {
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 360px;
+    padding: 6px 0 6px;
+    scrollbar-width: thin;
+    scrollbar-color: #c8c5bc transparent;
+}
+#picassoPanel .unmix-table-scroll::-webkit-scrollbar { height: 5px; width: 5px; }
+#picassoPanel .unmix-table-scroll::-webkit-scrollbar-track { background: transparent; }
+#picassoPanel .unmix-table-scroll::-webkit-scrollbar-thumb {
+    background: #c8c5bc;
+    border-radius: 3px;
+}
+#picassoPanel .picasso-block {
+    margin: 6px 8px 12px;
+}
+#picassoPanel .picasso-block-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    color: #7a4a8a;
+    letter-spacing: 0.8px;
+    margin: 0 0 3px 2px;
+}
+#picassoPanel .unmix-matrix-table {
+    border-collapse: separate;
+    border-spacing: 1px;
+    margin: 0;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 9.5px;
+    white-space: nowrap;
+}
+#picassoPanel .unmix-matrix-table th {
+    font-weight: 500;
+    color: #908d85;
+    padding: 3px 2px;
+    text-align: center;
+    font-size: 8.5px;
+    letter-spacing: 0.3px;
+    background: #eae8e3;
+}
+#picassoPanel .unmix-matrix-table th.unmix-row-hdr {
+    text-align: right;
+    padding-right: 6px;
+    background: #eae8e3;
+}
+#picassoPanel .unmix-matrix-table th.unmix-corner { background: #eae8e3; }
+#picassoPanel .unmix-matrix-table td {
+    padding: 0;
+    min-width: 40px;
+    border-radius: 2px;
+    position: relative;
+}
+#picassoPanel .unmix-matrix-table td input {
+    width: 100%;
+    min-width: 40px;
+    padding: 3px 2px;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: #1a1917;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 9.5px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    cursor: text;
+}
+#picassoPanel .unmix-matrix-table td input:focus {
+    background: rgba(122, 74, 138, 0.12);
+    outline: 1px solid #7a4a8a;
+    border-radius: 2px;
+    z-index: 5;
+    position: relative;
+}
+#picassoPanel .unmix-matrix-table td:hover {
+    outline: 1px solid #908d85;
+    z-index: 1;
 }
 
 /* ---- Spectrum Inspector Panel ---- */

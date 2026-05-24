@@ -1,4 +1,4 @@
-name: dzi
+name: hyperOSD
 channels:
   - conda-forge
 dependencies:
@@ -8,4 +8,3 @@ dependencies:
   - pip
   - pip:
     - flask>=2.0.0
-    - playwright
