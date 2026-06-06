@@ -8,7 +8,7 @@
 	<link rel="stylesheet" href="openseadragon/lib/jquery-ui.css">
 	<link rel="stylesheet" href="openseadragon/style.css">
 	<meta charset="UTF-8">
-	<title>HyperOSG Multi-Channel Blending</title>
+	<title>hyperOSD Multi-Channel Blending</title>
 	<link rel="stylesheet" href="openseadragon/static/css/NISTStyle.css">
 	<link rel="stylesheet" href="openseadragon/static/css/NISTPages.css">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -314,7 +314,7 @@
 			}
 
 			delete window.__osd602;
-			console.log("[HyperOSG] OSD " + osd.version.versionStr + " restored with NIST filter plugin.");
+			console.log("[hyperOSD] OSD " + osd.version.versionStr + " restored with NIST filter plugin.");
 		})();
 	</script>
 
@@ -344,7 +344,7 @@
 	<script type="text/javascript">
 		// Detect whether to use WebGL blending or CPU fallback
 		var useWebGLBlend = (typeof HyperBlendWebGLDrawer !== 'undefined') && HyperBlendWebGLDrawer.isSupported();
-		console.log("[HyperOSG] WebGL blending " + (useWebGLBlend ? "ENABLED" : "DISABLED (CPU fallback)"));
+		console.log("[hyperOSD] WebGL blending " + (useWebGLBlend ? "ENABLED" : "DISABLED (CPU fallback)"));
 
 		// ===== DATASET CONFIGURATION =====
 		// Edit these variables to configure for your dataset.
@@ -371,7 +371,9 @@
 		];
 		// ----- Linear Unmixing default matrix -----
 		// Path is relative to this HTML file. If missing or NaN, a zero-filled table is shown.
-		var matrixFileName = 'unmix_matrix.txt';
+		// Empty ('') by default so the viewer runs cleanly with no probe; the
+		// generator sets this to 'unmix_matrix.txt' only when a matrix is uploaded.
+		var matrixFileName = '';
 		var defaultUnmixing = false;              // true = auto-Apply Linear Unmixing on startup (requires matrixFileName)
 
 		// ----- PICASSO default matrix (K stacked N×N iteration matrices) -----
@@ -492,7 +494,7 @@
 		// Derive layer count from the source array
 		var imagesPerZ = imageSources.length / zLevelCount;
 		if (imagesPerZ !== Math.floor(imagesPerZ) || imagesPerZ < 1 || imagesPerZ > 4) {
-			alert("[HyperOSG] Configuration error: imageSources.length (" + imageSources.length +
+			alert("[hyperOSD] Configuration error: imageSources.length (" + imageSources.length +
 				") must be evenly divisible by zLevelCount (" + zLevelCount + "), with 1-4 images per z-level.");
 			throw new Error("Invalid dataset configuration");
 		}
@@ -849,7 +851,10 @@
 				var count = $items.filter('.checked').length;
 				$countLabel.text(count + ' / ' + totalVisible + ' active');
 				$statusText.text(count > 0 ? count + ' channel' + (count > 1 ? 's' : '') + ' enabled' : 'Ready');
-				$menu.find('.cs-all-toggle').toggleClass('checked', count === $items.length && count > 0);
+				var isAllChecked = (count === $items.length && count > 0);
+				$menu.find('.cs-all-toggle')
+					.toggleClass('checked', isAllChecked)
+					.attr('aria-selected', isAllChecked ? 'true' : 'false');
 			}
 
 			// Read current state from cached NIST spinner elements
@@ -992,6 +997,7 @@
 			allItem.className = 'cs-dropdown-item cs-all-toggle';
 			allItem.setAttribute('role', 'option');
 			allItem.setAttribute('tabindex', '0');
+			allItem.setAttribute('aria-selected', 'false');
 			allItem.innerHTML =
 				'<div class="cs-check-box">' +
 				'  <svg viewBox="0 0 10 10"><polyline points="1.5,5 4,7.5 8.5,2.5"/></svg>' +
@@ -1010,6 +1016,7 @@
 					}
 				});
 				$(allItem).toggleClass('checked', !allChecked);
+				$(allItem).attr('aria-selected', !allChecked ? 'true' : 'false');
 				// Unsuppress after a tick so queued setTimeout(_syncDrawerState, 0)
 				// calls from the setFilterOptions wrapper are still suppressed.
 				setTimeout(function () {
@@ -1017,6 +1024,16 @@
 					_pushChannelConfigToDrawer();
 					_updateOSDLayerVisibility();
 				}, 0);
+			});
+			$(allItem).on('keydown', function (e) {
+				if (e.key === 'Enter' || e.key === ' ') {
+					e.preventDefault();
+					$(this).click();
+				} else if (e.key === 'Escape') {
+					$('#csDropdownMenu').removeClass('open');
+					$('#csDropdownTrigger').removeClass('open').attr('aria-expanded', 'false');
+					$('#csDropdownTrigger').focus();
+				}
 			});
 			$menu.append(allItem);
 
@@ -1132,7 +1149,7 @@
 			// Detect layer count from loaded tiles
 			var layerCount = allLayers[0].filter(Boolean).length;
 			window.channelCount = layerCount * 4; // total UI slots (incl. locked alpha slots in RGB mode)
-			console.log("[HyperOSG] Detected " + layerCount + " layers, " + window.channelCount + " channels");
+			console.log("[hyperOSD] Detected " + layerCount + " layers, " + window.channelCount + " channels");
 
 			// 1) Adapt channel UI to actual layer count:
 			//    Reassign hue spread, hide unused rows, relabel visible channels
@@ -1269,7 +1286,7 @@
 			if (typeof window.updateHyperFilters === 'function') {
 				window.updateHyperFilters();
 			}
-			console.log("[HyperOSG] Channel UI adapted: " + visibleCount + " visible channels, " +
+			console.log("[hyperOSD] Channel UI adapted: " + visibleCount + " visible channels, " +
 				(16 - visibleCount) + " hidden" + (alphaSlots.size > 0 ? " (" + alphaSlots.size + " alpha slots locked)" : ""));
 		}
 
@@ -1310,14 +1327,14 @@
 			var needsWebGL = hasHyperBlend && otherFilters.length === 0;
 
 			if (needsWebGL && currentDrawerMode !== 'webgl') {
-				console.log("[HyperOSG] Switching to WebGL drawer");
+				console.log("[hyperOSD] Switching to WebGL drawer");
 				var success = viewer.requestDrawer('hyperblend-webgl', { mainDrawer: true });
 				if (success) {
 					currentDrawerMode = 'webgl';
 					_hookChannelUIForWebGL();
 				}
 			} else if (!needsWebGL && currentDrawerMode !== 'canvas') {
-				console.log("[HyperOSG] Switching to canvas drawer for unsupported filter combo");
+				console.log("[hyperOSD] Switching to canvas drawer for unsupported filter combo");
 				// PICASSO is a WebGL-only stage; disable before the drawer swap so
 				// its uniform state and the toggle reflect the legacy CPU path.
 				// Guard on drawer engagement (source of truth post-Phase 2.2) — not the

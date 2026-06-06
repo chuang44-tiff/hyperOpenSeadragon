@@ -112,7 +112,12 @@ def pack_channels(channels, pack_mode):
     while len(padded) < n_bands:
         padded.append(pyvips.Image.black(width, height).cast("uchar"))
 
-    return padded[0].bandjoin(padded[1:])
+    joined = padded[0].bandjoin(padded[1:])
+    # Without this, libvips inherits `b-w` (grayscale) interpretation from the
+    # single-band channel inputs. DZsave then writes 2-band PNG tiles
+    # (Grayscale + Alpha), collapsing ch1/ch2/ch3 into A and replicating ch0
+    # into RGB. Force `srgb` so dzsave emits real 4-band RGBA PNGs.
+    return joined.copy(interpretation="srgb")
 
 
 def load_rgb_tile_source(path, pack_mode, force_8bit=True):

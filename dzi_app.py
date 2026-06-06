@@ -52,6 +52,9 @@ REQUIRED_OSD_FILES = [
     "hyperblend-webgl.js",
     "openseadragon-filtering-nistfuncs-12ch.js",
     "openseadragon-scalebar.js",
+    "lib/jquery-2.2.0.min.js",
+    "lib/jquery-ui-1.12.1.min.js",
+    "lib/jquery-ui.css",
 ]
 
 # Track last dataset root and resolved OSD path for serving viewer files
@@ -414,26 +417,11 @@ def generate():
     if not z_levels:
         return jsonify({"error": "No z-levels provided"}), 400
 
-    # Handle optional matrix file upload
-    matrix_content = None
-    matrix_file = request.files.get("matrix_file")
-    if matrix_file and matrix_file.filename:
-        matrix_content = matrix_file.read().decode("utf-8", errors="replace")
-
-    # Validate matrix file if provided
-    if matrix_content is not None:
-        expected_channels = _scan_channel_count
-        if expected_channels is None:
-            return jsonify({"error": "Cannot determine channel count — run Scan first"}), 400
-        err = validate_unmix_matrix(matrix_content, expected_channels)
-        if err:
-            return jsonify({"error": err}), 400
-
     _reset_progress()
 
     thread = threading.Thread(
         target=_generate_worker,
-        args=(root_path, image_root, z_levels, um_per_pixel, matrix_content),
+        args=(root_path, image_root, z_levels, um_per_pixel),
         daemon=True,
     )
     thread.start()
@@ -570,7 +558,7 @@ def validate_unmix_matrix(file_content, expected_channels):
 # Background generation worker
 # ---------------------------------------------------------------------------
 
-def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None, matrix_content=None):
+def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
     """Run DZI generation in background thread.
 
     root_path: dataset root (output goes here)
@@ -584,11 +572,6 @@ def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None, matrix_
         output_dir = os.path.join(root_path, "deepzoom_RGBA")
         os.makedirs(output_dir, exist_ok=True)
 
-        # Write matrix file if provided
-        if matrix_content is not None:
-            matrix_path = os.path.join(root_path, "unmix_matrix.txt")
-            with open(matrix_path, "w", encoding="utf-8") as f:
-                f.write(matrix_content)
         pack_mode = "rgba"
 
         # Determine band mode from first image in first z-level
@@ -895,7 +878,14 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
         f"\t\tvar imageSources = [             // DZI tile source paths (grouped by z-level)\n"
         f"\t\t\t{sources_js},\n"
         f"\t\t];\n"
-        f"\t\tvar matrixFileName = 'unmix_matrix.txt';  // relative to HTML file, same format as imageSources\n"
+        f"\t\tvar matrixFileName = '';                   // empty by default; set to a filename to auto-load a matrix on startup\n"
+        f"\t\tvar defaultUnmixing = false;              // true = auto-Apply Linear Unmixing on startup\n"
+        f"\t\tvar picassoMatrixFileName = '';\n"
+        f"\t\tvar defaultPicasso = false;\n"
+        f"\t\tvar defaultHE = false;\n"
+        f"\t\tvar defaultTrichrome = false;\n"
+        f"\t\tvar defaultReinhard = false;\n"
+        f"\t\tvar defaultChannelHues = {{}};\n"
         f"\t\t// ===== END DATASET CONFIGURATION ====="
     )
 
