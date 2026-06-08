@@ -339,13 +339,6 @@
             <input type="text" id="pixelSize" placeholder="0.258"
                 style="width:120px;margin-top:4px;" />
         </div>
-        <div style="margin-bottom:12px;">
-            <label for="matrixFile" style="font-size:0.85rem;color:#555;">
-                Unmixing matrix file (optional) &mdash; tab/comma/space-separated .txt
-            </label>
-            <input type="file" id="matrixFile" accept=".txt"
-                style="margin-top:4px;font-size:0.85rem;" />
-        </div>
         <button class="btn-green" id="generateBtn">Generate DZI Tiles</button>
 
         <div id="progressArea" class="hidden" style="margin-top: 16px;" aria-live="polite">
@@ -556,10 +549,6 @@
             fd.append('image_root', scanData.image_root);
             fd.append('z_levels', JSON.stringify(zLevels));
             fd.append('um_per_pixel', pixelSize || '');
-            var matrixInput = document.getElementById('matrixFile');
-            if (matrixInput && matrixInput.files.length > 0) {
-                fd.append('matrix_file', matrixInput.files[0]);
-            }
 
             fetch('/generate', {
                 method: 'POST',

@@ -37,32 +37,34 @@
 	<section class="demo">
 		<div style="display:flex; width:100%; height:90vh;">
 			<div style="flex:1; min-width:0;">
-				<div id="openseadragon" role="region" aria-label="Hyperspectral image viewer" style="width:100%; height:100%; background-color:black; position:relative;">
-				<!-- Spectrum Inspector Panel -->
-				<div id="spectrumPanel">
-					<div class="sp-header">
-						<span class="sp-title-label">Spectrum Inspector</span>
-						<span id="spTitle">Pixel (&mdash;, &mdash;)</span>
-						<button class="sp-close" id="spClose" title="Close" aria-label="Close spectrum inspector">&times;</button>
-					</div>
-					<canvas id="spPlotCanvas" class="sp-plot" width="380" height="140"></canvas>
-					<div class="sp-values" id="spValues"></div>
-					<div class="sp-add-row">
-						<select id="spComponentSelect" aria-label="Output component">
-							<option value="1">Component 1</option>
-							<option value="2">Component 2</option>
-						</select>
-						<button id="spAddToMatrix" title="Add spectrum to unmixing matrix">Add to Matrix</button>
-					</div>
-					<div class="sp-confirm-popup" id="spConfirmPopup">
-						<span id="spConfirmMsg">Replace Component?</span>
-						<div class="sp-confirm-btns">
-							<button id="spConfirmYes">Replace</button>
-							<button id="spConfirmNo">Cancel</button>
+				<div id="openseadragon" role="region" aria-label="Hyperspectral image viewer"
+					style="width:100%; height:100%; background-color:black; position:relative;">
+					<!-- Spectrum Inspector Panel -->
+					<div id="spectrumPanel">
+						<div class="sp-header">
+							<span class="sp-title-label">Spectrum Inspector</span>
+							<span id="spTitle">Pixel (&mdash;, &mdash;)</span>
+							<button class="sp-close" id="spClose" title="Close"
+								aria-label="Close spectrum inspector">&times;</button>
+						</div>
+						<canvas id="spPlotCanvas" class="sp-plot" width="380" height="140"></canvas>
+						<div class="sp-values" id="spValues"></div>
+						<div class="sp-add-row">
+							<select id="spComponentSelect" aria-label="Output component">
+								<option value="1">Component 1</option>
+								<option value="2">Component 2</option>
+							</select>
+							<button id="spAddToMatrix" title="Add spectrum to unmixing matrix">Add to Matrix</button>
+						</div>
+						<div class="sp-confirm-popup" id="spConfirmPopup">
+							<span id="spConfirmMsg">Replace Component?</span>
+							<div class="sp-confirm-btns">
+								<button id="spConfirmYes">Replace</button>
+								<button id="spConfirmNo">Cancel</button>
+							</div>
 						</div>
 					</div>
 				</div>
-			</div>
 			</div>
 			<div id="filterWindow"
 				style="width:400px; min-width:250px; max-height:90vh; overflow-y:auto; overflow-x:hidden; padding:0 10px; box-sizing:border-box;">
@@ -71,7 +73,8 @@
 						<h3>Save Image</h3>
 					</div>
 					<div style="padding:8px 12px; background:#f2f1ee;">
-						<input type="text" id="saveFilename" placeholder="hyperblend_capture" aria-label="Save filename"><br>
+						<input type="text" id="saveFilename" placeholder="hyperblend_capture"
+							aria-label="Save filename"><br>
 						<button id="saveImageBtn">Save Current View</button><br>
 						<label><input type="checkbox" id="includeScalebar" checked> Include scale bar</label>
 					</div>
@@ -98,7 +101,8 @@
 						<span class="cs-count" id="csChannelCount">0 / 0 active</span>
 					</div>
 					<div class="cs-dropdown-zone">
-						<button class="cs-dropdown-trigger" id="csDropdownTrigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+						<button class="cs-dropdown-trigger" id="csDropdownTrigger" type="button" aria-haspopup="listbox"
+							aria-expanded="false">
 							<span class="cs-label">Select Channels</span>
 							<span class="cs-arrow">
 								<svg viewBox="0 0 10 10">
@@ -106,7 +110,8 @@
 								</svg>
 							</span>
 						</button>
-						<div class="cs-dropdown-menu" id="csDropdownMenu" role="listbox" aria-label="Channel selection"></div>
+						<div class="cs-dropdown-menu" id="csDropdownMenu" role="listbox" aria-label="Channel selection">
+						</div>
 					</div>
 					<div class="cs-controls-zone" id="csControlsZone">
 						<div class="cs-controls-empty" id="csEmptyMsg">No channels enabled</div>
@@ -136,8 +141,7 @@
 					</div>
 				</div>
 				<!-- Linear Unmixing Panel (shown when toggle is on) -->
-				<div id="unmixPanel"
-					style="display:none;">
+				<div id="unmixPanel" style="display:none;">
 					<div class="cs-header" style="justify-content:space-between;">
 						<h3>Linear Unmixing</h3>
 						<span style="display:flex; gap:6px; align-items:center;">
@@ -150,7 +154,8 @@
 						<!-- Dimension bar -->
 						<div class="unmix-dim-bar">
 							<span class="unmix-dim-label">
-								<strong id="unmixDimDisplay">4</strong> outputs &times; <strong id="unmixInputCount">16</strong> inputs
+								<strong id="unmixDimDisplay">4</strong> outputs &times; <strong
+									id="unmixInputCount">16</strong> inputs
 							</span>
 							<select id="unmixOutputCount" class="pp-select" aria-label="Output channel count">
 								<option value="2">2 out</option>
@@ -184,7 +189,8 @@
 						<div class="unmix-editor-zone" id="unmixEditorZone">
 							<div class="unmix-editor-header">
 								<span>Matrix Editor</span>
-								<span class="unmix-pinv-tag" id="unmixPinvTag" style="display:none;">pinv computed</span>
+								<span class="unmix-pinv-tag" id="unmixPinvTag" style="display:none;">pinv
+									computed</span>
 								<span class="unmix-dirty-tag" id="unmixDirtyTag">edited</span>
 							</div>
 							<div class="unmix-table-scroll">
@@ -348,17 +354,27 @@
 
 		// ===== DATASET CONFIGURATION =====
 		// Edit these variables to configure for your dataset.
-		var umPerPixel = 0.258;          // micrometers per pixel at full resolution
-		var zLevelCount = 1;             // number of z-planes
-		var zLevelValues = [0];          // z-level labels in micrometers
-		var channelsPerImage = 4;        // 3 = RGB (alpha slots locked), 4 = RGBA (all channels active)
-		var defaultChannels = [1, 2, 3, 4]; // 1-based channel numbers to enable on startup (matches Nch labels; [] for none)
+		// Active config: PICASSO validation medium fixture (single-z, 4ch RGBA, synthetic).
+		// To switch back to RGB 12ch real data: set umPerPixel=0.258, zLevelCount=2,
+		// zLevelValues=[0,3], channelsPerImage=3, defaultChannels=[1,2,3],
+		// defaultPicasso=false, and swap the commented imageSources blocks below.
+		var umPerPixel = 1.0;            // synthetic — scale bar is decorative for this fixture
+		var zLevelCount = 2;             // multi-z z-switch test fixture (see demo/multi_z_test/)
+		var zLevelValues = [0, 3];    // z-level labels in micrometers
+		var channelsPerImage = 3;        // 4 = RGBA (all channels active); 3 = RGB (alpha slots locked)
+		var defaultChannels = [1, 2, 3, 4]; // 1-based channel numbers to enable on startup
 		var imageSources = [             // DZI tile source paths (grouped by z-level)
+			// Multi-z z-switch test fixture (generated by demo/multi_z_test/generate_multi_z_dataset.py).
+			// Backup of the previous single-z PICASSO config lives in
+			//   demo/multi_z_test/zstackHyper_config_backup.txt
+			//"demo/multi_z_test/deepzoom_RGBA/0.0um/1/stitch.xml",
+			//"demo/multi_z_test/deepzoom_RGBA/1.0um/1/stitch.xml",
+			//"demo/multi_z_test/deepzoom_RGBA/2.0um/1/stitch.xml",
 			// Synthetic 16ch test dataset (4 spectral components, peaks at ch2/6/12/15)
-			"test_synthetic/deepzoom_RGBA/0.0um/1/stitch.xml",
-			"test_synthetic/deepzoom_RGBA/0.0um/2/stitch.xml",
-			"test_synthetic/deepzoom_RGBA/0.0um/3/stitch.xml",
-			"test_synthetic/deepzoom_RGBA/0.0um/4/stitch.xml",
+			// "test_synthetic/deepzoom_RGBA/0.0um/1/stitch.xml",
+			// "test_synthetic/deepzoom_RGBA/0.0um/2/stitch.xml",
+			// "test_synthetic/deepzoom_RGBA/0.0um/3/stitch.xml",
+			// "test_synthetic/deepzoom_RGBA/0.0um/4/stitch.xml",
 			// // RGBA 16ch (real data)
 			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/1/stitch.xml",
 			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/2/stitch.xml",
@@ -368,16 +384,31 @@
 			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/2/stitch.xml",
 			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/3/stitch.xml",
 			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/4/stitch.xml",
+			// PICASSO validation — medium fixture (more visible mixing, ≤3 LSB recovery)
+			// "demo/picasso-validation/deepzoom_RGBA/medium/0.0um/1/stitch.xml",
+			// // PICASSO validation — gentle fixture (committed, deterministic, 4ch synthetic)
+			// "demo/picasso-validation/deepzoom_RGBA/gentle/0.0um/1/stitch.xml",
+			// RGB 12ch real data (gitignored) — also restore scalar config above
+			 "hyperBlend_SampleData/deepzoom_RGB_12CH/0.0um/1/stitch.xml",
+			 "hyperBlend_SampleData/deepzoom_RGB_12CH/0.0um/2/stitch.xml",
+			 "hyperBlend_SampleData/deepzoom_RGB_12CH/0.0um/3/stitch.xml",
+			 "hyperBlend_SampleData/deepzoom_RGB_12CH/0.0um/4/stitch.xml",
+			 "hyperBlend_SampleData/deepzoom_RGB_12CH/3.0um/1/stitch.xml",
+			 "hyperBlend_SampleData/deepzoom_RGB_12CH/3.0um/2/stitch.xml",
+			 "hyperBlend_SampleData/deepzoom_RGB_12CH/3.0um/3/stitch.xml",
+			 "hyperBlend_SampleData/deepzoom_RGB_12CH/3.0um/4/stitch.xml",
 		];
 		// ----- Linear Unmixing default matrix -----
 		// Path is relative to this HTML file. If missing or NaN, a zero-filled table is shown.
-		// Empty ('') by default so the viewer runs cleanly with no probe; the
-		// generator sets this to 'unmix_matrix.txt' only when a matrix is uploaded.
+		// Empty ('') by default so the viewer runs cleanly with no probe; set a
+		// filename (e.g. 'unmix_matrix.txt') to auto-load a matrix on startup.
 		var matrixFileName = '';
 		var defaultUnmixing = false;              // true = auto-Apply Linear Unmixing on startup (requires matrixFileName)
 
 		// ----- PICASSO default matrix (K stacked N×N iteration matrices) -----
-		// Path is relative to this HTML file. Set to '' to skip auto-load; user can still load via the Load button.
+		// Path is relative to this HTML file. Empty ('') by default so the viewer
+		// runs cleanly with no probe; set a filename (e.g.
+		// 'demo/picasso-validation/medium_M_p.txt') to auto-load on startup.
 		var picassoMatrixFileName = '';
 		var defaultPicasso = false;               // true = auto-Apply PICASSO on startup (requires picassoMatrixFileName)
 
@@ -803,10 +834,8 @@
 		 * Matches _precomputeChannelColors() in hyperblend-webgl.js (NO 0.5 offset).
 		 * Note: _hsvToRgb() applies a 0.5 offset for Beer's Law; do NOT use it for swatches.
 		 */
-		function _hueToCSS(hue01) {
-			var h = hue01;
-			var fi = Math.floor(h * 6.0);
-			var f = h * 6.0 - fi;
+		function _hueToCSS(h) {
+			var fi = Math.floor(h * 6.0), f = h * 6.0 - fi;
 			var m = ((fi % 6) + 6) % 6;
 			var r, g, b;
 			switch (m) {
@@ -1912,7 +1941,7 @@
 			// _disengageLinear() — turn the Linear unmixing effect off, but preserve
 			// the matrix table contents. Mirrors the pre-refactor #unmixClear body.
 			// Caller is responsible for any PICASSO cascade — this helper does NOT
-			// disengage PICASSO. The Linear Apply guard already blocks Apply
+			// disengage PICASSO. The Linear Apply guard at L1892 already blocks Apply
 			// while PICASSO is engaged, so disengaging Linear while PICASSO is on is
 			// allowed only via the toggle path (which cascades) or from inside
 			// _disengagePicasso's caller.
@@ -2144,9 +2173,9 @@
 			// ---- Load .txt file picker (rectangular Cout×Cin matrix) ----
 			// NOTE: Reload always re-fetches the config-defined matrix file (matrixFileName).
 			// If the user wants the picker file again, they must re-open it via Load .txt.
-			// Parser is duplicated from _initUnmixPanel rather than reusing parseMpFile()
-			// — that parser is PICASSO-only (square N×N + header gate) and would reject
-			// rectangular Linear matrices outright. See picasso-math.md §3.
+			// Parser is duplicated from _initUnmixPanel (L2030–2055) rather than reusing
+			// parseMpFile() — that parser is PICASSO-only (square N×N + header gate) and
+			// would reject rectangular Linear matrices outright. See picasso-math.md §3.
 			document.getElementById('unmixLoadFile').addEventListener('change', function (ev) {
 				var f = ev.target.files && ev.target.files[0];
 				if (!f) return;
@@ -2628,7 +2657,7 @@
 				// PICASSO Apply must verify N === Linear's numOutputs to enter Mode 3.
 				// Phase 5 hard-gate is N=4; the drawer enforces this in updatePicassoConfig.
 				// Parse N from the PICASSO matrix file (_picassoCurrentMp.N — already
-				// loaded above). Cross-check vs. drawer._numOutputs (truth source).
+				// loaded above at L2315). Cross-check vs. drawer._numOutputs (truth source).
 				// Standalone Mode 2 (Linear off): no chain, proceed unchanged.
 				if (viewer.drawer && viewer.drawer._unmixEnabled === true) {
 					if (viewer.drawer._numOutputs !== N) {
@@ -2639,7 +2668,7 @@
 				try {
 					// v5.1: slice the loaded matrices to K_user so the drawer iterates
 					// only the user-requested number of times. The drawer accepts any
-					// matrices.length in 1..10 (drawer-side validation).
+					// matrices.length in 1..10 (drawer-side validation, see L1539).
 					var slicedP = _picassoCurrentMp.P.slice(0, K);
 					viewer.drawer.updatePicassoConfig({ matrices: slicedP, K: K, active: true });
 					window._picassoMatricesUploaded = true;
@@ -2796,8 +2825,8 @@
 			var _spTitle = document.getElementById('spTitle');
 			var _spPlotCanvas = document.getElementById('spPlotCanvas');
 			var _spValues = document.getElementById('spValues');
-			var _spLastChannelData = null;  // last readPixelChannels result for "Add to Matrix"
 			var _spEscHandler = null;
+			var _spLastChannelData = null;  // last readPixelChannels result for "Add to Matrix"
 
 			function _spHsvToRgb(h) {
 				var r, g, b;
@@ -2966,6 +2995,7 @@
 			document.getElementById('spAddToMatrix').addEventListener('click', function () {
 				if (!_spLastChannelData) return;
 
+				// Extract visible channel values (respects RGB mode filtering)
 				var indices = _spGetVisibleIndices();
 				var spectrum = [];
 				for (var i = 0; i < indices.length; i++) {
@@ -2973,14 +3003,16 @@
 				}
 
 				var select = document.getElementById('spComponentSelect');
-				var rowIdx = parseInt(select.value, 10) - 1;
+				var rowIdx = parseInt(select.value, 10) - 1;  // 0-based
 
+				// Ensure unmixing panel is open
 				var unmixToggle = document.getElementById('unmixToggle');
 				if (!unmixToggle.checked) {
 					unmixToggle.checked = true;
 					$(unmixToggle).trigger('change');
 				}
 
+				// Grow output count if needed
 				var currentOutputCount = window._unmixOutputCount || 2;
 				if (rowIdx >= currentOutputCount) {
 					currentOutputCount = rowIdx + 1;
@@ -2989,6 +3021,7 @@
 					$('#unmixDimDisplay').text(currentOutputCount);
 				}
 
+				// Ensure matrix data exists with correct dimensions
 				if (!_unmixCurrentData || _unmixCurrentData.length !== currentOutputCount ||
 					_unmixCurrentData[0].length !== spectrum.length) {
 					_resizeUnmixData(currentOutputCount, spectrum.length);
@@ -3023,6 +3056,7 @@
 					document.getElementById('spConfirmMsg').textContent =
 						'Replace Component ' + (rowIdx + 1) + ' data?';
 					popup.classList.add('visible');
+					// Wire one-time handlers
 					$('#spConfirmYes').off('click.sp').on('click.sp', function () {
 						popup.classList.remove('visible');
 						_spWriteSpectrum();
@@ -3039,7 +3073,7 @@
 			function _spUpdateComponentDropdown() {
 				var select = document.getElementById('spComponentSelect');
 				var currentCount = window._unmixOutputCount || 2;
-				var maxOptions = Math.min(currentCount + 1, 8);
+				var maxOptions = Math.min(currentCount + 1, 8);  // allow one growth option, cap at 8
 				select.innerHTML = '';
 				for (var i = 1; i <= maxOptions; i++) {
 					var opt = document.createElement('option');
@@ -3067,6 +3101,7 @@
 				}
 			}
 
+			// Initialize dropdown
 			_spUpdateComponentDropdown();
 
 			// Rebuild channel selector to show M output channels (for unmixing mode)
@@ -3088,23 +3123,9 @@
 					row.dataset.idx = oi;
 					row.dataset.unmixOutput = 'true';
 
-					// Use hueToCSS from _buildChannelSelector scope — replicate here
-					var fi = Math.floor(hue * 6.0), f = hue * 6.0 - fi;
-					var mm = ((fi % 6) + 6) % 6;
-					var r, g, b;
-					switch (mm) {
-						case 0: r = 1; g = f; b = 0; break;
-						case 1: r = 1 - f; g = 1; b = 0; break;
-						case 2: r = 0; g = 1; b = f; break;
-						case 3: r = 0; g = 1 - f; b = 1; break;
-						case 4: r = f; g = 0; b = 1; break;
-						default: r = 1; g = 0; b = 1 - f;
-					}
-					var cssCol = 'rgb(' + Math.round(r * 255) + ',' + Math.round(g * 255) + ',' + Math.round(b * 255) + ')';
-
 					row.innerHTML =
 						'<span class="cs-ch-tag">out' + (oi + 1) + '</span>' +
-						'<div class="cs-hue-swatch" data-role="swatch" style="background:' + cssCol + '"></div>' +
+						'<div class="cs-hue-swatch" data-role="swatch" style="background:' + _hueToCSS(hue) + '"></div>' +
 						'<div class="cs-control-group">' +
 						'  <span class="cs-ctrl-label">H</span>' +
 						'  <div class="cs-spinner">' +
@@ -3131,21 +3152,15 @@
 					var $gainInput = $row.find('[data-role="gain"]');
 					var $swatch = $row.find('[data-role="swatch"]');
 
-					// Live swatch + push config on change
+					// Visual-only on typing, full sync on commit
 					(function ($hi, $gi, $sw, idx) {
 						$hi.on('input', function () {
 							var h = parseFloat($(this).val()) || 0;
-							var _fi = Math.floor(h * 6), _f = h * 6 - _fi, _m = ((_fi % 6) + 6) % 6;
-							var _r, _g, _b;
-							switch (_m) { case 0: _r = 1; _g = _f; _b = 0; break; case 1: _r = 1 - _f; _g = 1; _b = 0; break; case 2: _r = 0; _g = 1; _b = _f; break; case 3: _r = 0; _g = 1 - _f; _b = 1; break; case 4: _r = _f; _g = 0; _b = 1; break; default: _r = 1; _g = 0; _b = 1 - _f; }
-							$sw.css('background', 'rgb(' + Math.round(_r * 255) + ',' + Math.round(_g * 255) + ',' + Math.round(_b * 255) + ')');
+							$sw.css('background', _hueToCSS(h));
 						});
 						$hi.on('change', function () {
 							var h = parseFloat($(this).val()) || 0;
-							var _fi = Math.floor(h * 6), _f = h * 6 - _fi, _m = ((_fi % 6) + 6) % 6;
-							var _r, _g, _b;
-							switch (_m) { case 0: _r = 1; _g = _f; _b = 0; break; case 1: _r = 1 - _f; _g = 1; _b = 0; break; case 2: _r = 0; _g = 1; _b = _f; break; case 3: _r = 0; _g = 1 - _f; _b = 1; break; case 4: _r = _f; _g = 0; _b = 1; break; default: _r = 1; _g = 0; _b = 1 - _f; }
-							$sw.css('background', 'rgb(' + Math.round(_r * 255) + ',' + Math.round(_g * 255) + ',' + Math.round(_b * 255) + ')');
+							$sw.css('background', _hueToCSS(h));
 							_pushUnmixChannelConfig();
 						});
 						$gi.on('change', function () { _pushUnmixChannelConfig(); });
@@ -3241,6 +3256,10 @@
 			var layers = allLayers[currentZIndex];
 			for (var l = 0; l < window.imagesPerZ; l++) {
 				if (!layers[l]) continue;
+				// In unmixing mode, ALL layers must be visible — the shader reads
+				// all 16 raw inputs for the matrix multiply regardless of which
+				// output channels are enabled. Read drawer flag (sole source of
+				// truth) not window._unmixingActive (advisory mirror, v4.0).
 				var target;
 				if (viewer.drawer && viewer.drawer._unmixEnabled) {
 					target = 1.0;
@@ -3275,6 +3294,9 @@
 			if (!viewer || !viewer.drawer || viewer.drawer.getType() !== 'hyperblend-webgl') {
 				return;
 			}
+			// In unmixing mode, _pushUnmixChannelConfig() handles channel config.
+			// NIST spinners don't reflect unmixed outputs — skip to avoid overwriting.
+			// Read drawer flag (sole source of truth, v4.0).
 			if (viewer.drawer && viewer.drawer._unmixEnabled) return;
 
 			var config = [];

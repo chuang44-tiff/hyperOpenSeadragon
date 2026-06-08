@@ -13,7 +13,7 @@
 # Paths are relative to this config file's location.
 # Use absolute paths if images are stored elsewhere.
 
-output_dir: ../hyperBlend_SampleData/deepzoom_RGBA_16CH
+output_dir: ./deepzoom_output
 pack: rgba   # "rgba" (4ch/tile, PNG, default) or "rgb" (3ch/tile, JPG, smaller)
 
 z_levels:
