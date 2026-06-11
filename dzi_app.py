@@ -61,7 +61,6 @@ REQUIRED_OSD_FILES = [
 _state_lock = threading.Lock()
 _dataset_root = None
 _osd_serve_dir = None  # resolved openseadragon/ path (dataset root or app fallback)
-_scan_channel_count = None  # total channels derived from last /scan (for matrix validation)
 
 
 def _check_osd_dir(osd_dir):
@@ -129,10 +128,9 @@ def load():
     dataset_osd_ok, _ = _check_osd_dir(dataset_osd)
     app_osd_ok, _ = _check_osd_dir(app_osd)
 
-    global _dataset_root, _osd_serve_dir, _scan_channel_count
+    global _dataset_root, _osd_serve_dir
     with _state_lock:
         _dataset_root = folder
-        _scan_channel_count = None  # invalidate — new dataset needs fresh /scan
         if dataset_osd_ok:
             _osd_serve_dir = dataset_osd
         elif app_osd_ok:
@@ -341,20 +339,6 @@ def scan():
                 f"Z-levels have different image counts ({count_details}). "
                 "Each z-level should have the same number of images."
             )
-
-    # Cache channel count for matrix validation in /generate
-    # grayscale/tiff_stack pack 4 channels per RGBA tile source, so round up
-    global _scan_channel_count
-    if band_mode == "tiff_stack":
-        n = z_levels[0].get("n_channels", 16)
-        _scan_channel_count = min(((n + 3) // 4) * 4, 16)
-    elif band_mode == "grayscale":
-        n = len(z_levels[0]["images"])
-        _scan_channel_count = min(((n + 3) // 4) * 4, 16)
-    elif band_mode == "rgb":
-        _scan_channel_count = min(len(z_levels[0]["images"]) * 3, 12)
-    else:  # rgba or N-band
-        _scan_channel_count = min(len(z_levels[0]["images"]) * 4, 16)
 
     return jsonify({
         "root": scan_path,

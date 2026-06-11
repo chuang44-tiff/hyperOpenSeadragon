@@ -113,11 +113,16 @@ def pack_channels(channels, pack_mode):
         padded.append(pyvips.Image.black(width, height).cast("uchar"))
 
     joined = padded[0].bandjoin(padded[1:])
-    # Without this, libvips inherits `b-w` (grayscale) interpretation from the
-    # single-band channel inputs. DZsave then writes 2-band PNG tiles
-    # (Grayscale + Alpha), collapsing ch1/ch2/ch3 into A and replicating ch0
-    # into RGB. Force `srgb` so dzsave emits real 4-band RGBA PNGs.
-    return joined.copy(interpretation="srgb")
+    # These 4 bands are INDEPENDENT channel data, not RGBA. Tag as `multiband`:
+    #  (a) it still emits real 4-band PNG tiles (avoids the old `b-w`-inherited
+    #      2-band Gray+Alpha collapse that `srgb` was originally added to fix —
+    #      verified: full-res PNG stays 4-band), AND
+    #  (b) it stops libvips from treating band 4 (= ch4/8/12/16 data) as alpha.
+    # With `srgb`, hasalpha()==1 forced dzsave onto its alpha-aware shrink, which
+    # silently ignored region_shrink and drove sparse far-channel signal to zero
+    # at coarse pyramid levels -> the "ch13-16 vanish when zoomed out" bug.
+    # `multiband` makes region_shrink (set in generate_tile_source) actually honored.
+    return joined.copy(interpretation="multiband")
 
 
 def load_rgb_tile_source(path, pack_mode, force_8bit=True):
@@ -188,6 +193,11 @@ def generate_tile_source(image, output_dir, tile_index, suffix):
         overlap=OVERLAP,
         suffix=suffix,
         layout=LAYOUT,
+        # Mean (intensity-preserving) pyramid downsample, locked in over 'max' to
+        # match the processing-team fix: mean keeps photometric ratios for
+        # quantitative fluorescence. Only honored because pack_channels now tags
+        # the image 'multiband' (the old srgb/alpha path ignored region_shrink).
+        region_shrink="mean",
     )
 
     # Rename stitch.dzi -> stitch.xml (hyperOSD expects .xml)
