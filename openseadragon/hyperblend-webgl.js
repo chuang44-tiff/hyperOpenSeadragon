@@ -1127,7 +1127,13 @@
             for (var ci = 0; ci < 16; ci++) {
                 var cfg = this._channelConfig[ci];
                 gArr[ci] = cfg.gain;
-                eArr[ci] = cfg.enabled ? 1.0 : 0.0;
+                // RGB mode masks alpha slots (3/7/11/15 carry no input data) — but NOT
+                // the layer-0/1 output lanes (ci<8) under Linear unmixing, where they hold
+                // genuine output abundances (output 3 = layer-0 alpha, output 7 = layer-1
+                // alpha). Layer-2/3 alpha (ch11/ch15) stay locked — never unmix outputs.
+                // Evaluated per frame so a post-push _unmixEnabled flip takes effect.
+                var locked = this._lockedChannels.has(ci) && !(this._unmixEnabled && ci < 8);
+                eArr[ci] = (cfg.enabled && !locked) ? 1.0 : 0.0;
             }
             gl.uniform3fv(loc.uChannelColor, this._uColor);
             gl.uniform1fv(loc.uChannelGain, gArr);
@@ -1217,10 +1223,11 @@
                 // S/V no longer stored: S is hardcoded 1.0, V was redundant with Gain
                 this._channelConfig[i].gain = config[i].gain;
                 this._channelConfig[i].enabled = !!config[i].enabled;
-                // Enforce locked channels (RGB mode: alpha slots always disabled)
-                if (this._lockedChannels.has(i)) {
-                    this._channelConfig[i].enabled = false;
-                }
+                // NB: RGB-mode alpha-slot locking is NOT applied here. Doing so would
+                // destructively clear .enabled during the Apply push that runs BEFORE
+                // _unmixEnabled is set, permanently killing genuine unmix outputs. The
+                // lock is instead applied reactively at the per-frame uniform build in
+                // draw(), gated on _unmixEnabled (see eArr fill).
             }
             // v5.0 R1 channel-config invariant (master plan §5.1 Evaluator
             // fix #3, option b): when Linear unmixing is engaged, channels
