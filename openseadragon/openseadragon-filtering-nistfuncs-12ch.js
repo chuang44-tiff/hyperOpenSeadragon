@@ -938,9 +938,10 @@
 				filters.push(filter.generatedFilter.getFilter());
 				sync &= filter.generatedFilter.sync;
 			});
+			var webgl = viewer.drawer && viewer.drawer.getType && viewer.drawer.getType() === 'hyperblend-webgl';
 			viewer.setFilterOptions({
 				filters: {
-					processors: filters
+					processors: webgl ? [] : filters
 				},
 				loadMode: sync ? 'sync' : 'async'
 			});

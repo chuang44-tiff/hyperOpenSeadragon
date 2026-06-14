@@ -312,6 +312,21 @@
 				});
 			}
 
+			// Delete OSD 2.1.0-only properties that leaked onto the namespace and
+			// were NOT present in the 6.0.2 snapshot. defineProperty above restored
+			// every 6.0.2-era own prop, but any property the 2.1.0 IIFE *added*
+			// (rather than clobbered) survives the restore. Sweep them out so the
+			// namespace matches 6.0.2 + the two filter-plugin additions we keep.
+			// MUST run before Phases 5/6 (hyperblend-webgl.js + scalebar) add their
+			// own OSD props — running later would delete those and break the drawer.
+			// setFilterOptions lives on Viewer.prototype (not osd), so it is untouched.
+			Object.getOwnPropertyNames(osd).forEach(function (key) {
+				if (Object.prototype.hasOwnProperty.call(snap.props, key)) return;
+				if (key === 'Filters' || key === 'FilterPlugin') return;
+				console.warn('[hyperOSD] shim: deleting OSD 2.1.0-only leaked property: ' + key);
+				try { delete osd[key]; } catch (e) { }
+			});
+
 			// Re-apply filter plugin additions onto restored 6.0.2
 			osd.Filters = savedFilters;
 			osd.FilterPlugin = savedFilterPlugin;
@@ -330,12 +345,33 @@
 			var osdConsole = OpenSeadragon.console;
 			var origError = osdConsole.error;
 			var origWarn = osdConsole.warn;
+			// Once-per-unique-message suppression: the first occurrence of each
+			// distinct deprecation message (keyed on the first ~60 chars) is logged
+			// once via the ORIGINAL console fn (bypassing the filter — no recursion),
+			// prefixed so it is clearly a one-time audit. Subsequent identical
+			// messages are swallowed. Not a fixed allowlist (OSD uses several
+			// phrasings) and not init-time-only (the canvas path emits per-tile).
+			var seenDeprecations = {};
 			osdConsole.error = function () {
-				if (arguments[0] && typeof arguments[0] === 'string' && arguments[0].indexOf('deprecated') !== -1) return;
+				if (arguments[0] && typeof arguments[0] === 'string' && arguments[0].indexOf('deprecated') !== -1) {
+					var ekey = arguments[0].slice(0, 60);
+					if (!seenDeprecations[ekey]) {
+						seenDeprecations[ekey] = true;
+						origError.call(osdConsole, '[hyperOSD] suppressing repeated OSD deprecation:', arguments[0]);
+					}
+					return;
+				}
 				origError.apply(osdConsole, arguments);
 			};
 			osdConsole.warn = function () {
-				if (arguments[0] && typeof arguments[0] === 'string' && arguments[0].indexOf('deprecated') !== -1) return;
+				if (arguments[0] && typeof arguments[0] === 'string' && arguments[0].indexOf('deprecated') !== -1) {
+					var wkey = arguments[0].slice(0, 60);
+					if (!seenDeprecations[wkey]) {
+						seenDeprecations[wkey] = true;
+						origWarn.call(osdConsole, '[hyperOSD] suppressing repeated OSD deprecation:', arguments[0]);
+					}
+					return;
+				}
 				origWarn.apply(osdConsole, arguments);
 			};
 		})();
@@ -434,10 +470,20 @@
 			maxZoomPixelRatio: 15,
 			prefixUrl: "openseadragon/openseadragon-bin-6.0.2/",
 			crossOriginPolicy: 'Anonymous',
-			// OSD default (200). The WebGL drawer's GPU tile cache and tile-drop
-			// rejection logic retain fine tiles independently of OSD's cache,
-			// so OSD eviction does not cause visual degradation.
-			maxImageCacheCount: 200,
+			// Raised from OSD default (200) to 300 for cache headroom. The WebGL
+			// drawer's GPU tile cache and tile-drop rejection logic retain fine
+			// tiles independently of OSD's cache, so OSD eviction does not cause
+			// visual degradation.
+			maxImageCacheCount: 300,
+			// Concurrent tile-load cap, bounding gesture flooding on large 1024px datasets
+			// (the pipeline standard, where this is the right tradeoff). Real-GPU 16ch
+			// testing: a low cap (8) made fast zoom-out visibly tile-in on a non-standard
+			// 256px dataset; 24 is the chosen balance. Small-tile / many-source datasets
+			// that still lag can raise toward 0 (unbounded = pre-3.1 behavior).
+			imageLoaderLimit: 24,
+			animationTime: animationTime,
+			springStiffness: springStiffness,
+			immediateRender: true,
 			// Use WebGL HyperBlend drawer if supported, otherwise fall back to canvas
 			// (canvas mode uses the NIST filter bundle for CPU-based blending)
 			drawer: useWebGLBlend ? ['hyperblend-webgl', 'canvas'] : 'canvas'
@@ -539,6 +585,9 @@
 		var _pendingZIndex = null;   // z-index requested but not yet loaded
 		var _zSwitchGen = 0;         // generation counter to discard stale load callbacks
 		var _prefetchStarted = {};   // zIdx -> true while addTiledImage callbacks pending
+		var _stepZTimer = null;      // trailing-edge debounce timer for _stepZ
+		var _stepZPending = null;    // accumulated step target while debounce is pending
+		var _prefetchTimer = null;   // deferred z±1 prefetch timer (eviction stays synchronous)
 
 		// DOM cache for NIST channel spinners (populated once in initBlendingLogic)
 		var _nistEn = new Array(16);  // checkbox elements
@@ -585,7 +634,14 @@
 							console.log("[hyperOSD] z=0 loaded (" + imagesPerZ + " layers). Lazy loading enabled for " + zLevelCount + " z-levels.");
 							_imagesLoaded = true;
 							if (_bundleReady) initBlendingLogic();
-							_prefetchAdjacent(0);
+							// Defer the z±1 prefetch (same 750 ms grace as commit-time) so
+							// z=0 tiles get exclusive loader/network priority at startup.
+							clearTimeout(_prefetchTimer);
+							_prefetchTimer = setTimeout(function () {
+								_prefetchTimer = null;
+								if (_pendingZIndex !== null || currentZIndex !== 0) return;
+								_prefetchAdjacent(0);
+							}, 750);
 						}
 					},
 					error: function (event) {
@@ -632,11 +688,23 @@
 		if (zLevelCount > 1) {
 			var _osdPrefix = "openseadragon/openseadragon-bin-6.0.2/";
 			function _stepZ(delta) {
-				var target = currentZIndex + delta;
+				// currentZIndex only updates at commit — accumulate from the pending
+				// target so rapid multi-clicks step relative to the last requested z.
+				var base = (_stepZPending !== null) ? _stepZPending : currentZIndex;
+				var target = base + delta;
 				if (target < 0 || target > zLevelCount - 1) return;
+				// Slider value + zHandle label stay synchronous (immediate feedback)
 				$('#zlevel').slider('value', target);
 				zHandle.text(zLevelValues[target] + "um");
-				switchZLevel(target);
+				// Commit via a trailing-edge 180ms timer (debounce rapid clicks)
+				_stepZPending = target;
+				clearTimeout(_stepZTimer);
+				_stepZTimer = setTimeout(function () {
+					_stepZTimer = null;
+					var t = _stepZPending;
+					_stepZPending = null;
+					if (t !== null) switchZLevel(t);
+				}, 180);
 			}
 			var prevZBtn = new OpenSeadragon.Button({
 				tooltip: 'Previous Z-level',
@@ -659,6 +727,16 @@
 		}
 
 		function switchZLevel(newZIndex) {
+			// A direct commit (e.g. slider-stop) must not be overridden by a stale
+			// pending step — clear the stepper debounce first.
+			clearTimeout(_stepZTimer);
+			_stepZTimer = null;
+			_stepZPending = null;
+			// Race fix 1: cancel any deferred z±1 prefetch from a prior commit. A stale
+			// timer firing after the user stepped again would addTiledImage the same z
+			// sources twice — permanently leaked, unevictable TiledImages.
+			clearTimeout(_prefetchTimer);
+			_prefetchTimer = null;
 			if (newZIndex === currentZIndex && _pendingZIndex === null) return;
 
 			// Check if the new z-level's layers are fully loaded
@@ -681,6 +759,7 @@
 
 		function _commitZSwitch(newZIndex) {
 			_pendingZIndex = null;
+			_stepZPending = null;
 
 			// Hide old z-level layers
 			if (allLayers[currentZIndex]) {
@@ -708,11 +787,27 @@
 				viewer.drawer.invalidateTextures();
 				viewer.forceRedraw();
 			}
-			if (typeof window.updateHyperFilters === 'function') {
+			// Only canvas mode needs the NIST CPU processor rebuilt on z-switch;
+			// under WebGL the drawer reads layers directly (gate consistent with
+			// the drawer-suppression in _autoSwitchDrawer / Cycle B).
+			if (currentDrawerMode === 'canvas' && typeof window.updateHyperFilters === 'function') {
 				window.updateHyperFilters();
 			}
 
-			_prefetchAdjacent(newZIndex);
+			// Race fix 2: the far-z eviction pass MUST stay synchronous — deferring it
+			// would let rapid stepping accumulate 4+ resident preloading z-levels, and a
+			// stale timer's eviction loop could null a partially-loaded allLayers[newZ],
+			// silently cancelling a pending switch. Only the z±1 prefetch is deferred.
+			_evictFarZLevels(newZIndex);
+			var _capturedZ = newZIndex;
+			clearTimeout(_prefetchTimer);
+			_prefetchTimer = setTimeout(function () {
+				_prefetchTimer = null;
+				// Race fix 1 guard: skip if a newer switch is in flight, or if the active
+				// z moved on since this timer was scheduled (the user stepped again).
+				if (_pendingZIndex !== null || _capturedZ !== currentZIndex) return;
+				_prefetchAdjacent(_capturedZ);
+			}, 750);
 		}
 
 		function _loadZLevel(zIdx, gen) {
@@ -763,13 +858,17 @@
 			delete _prefetchStarted[zIdx];
 		}
 
-		function _prefetchAdjacent(activeZ) {
-			// Evict z-levels outside [activeZ-1, activeZ+1]
+		// Synchronous far-z eviction (race fix 2): kept out of the deferred prefetch so
+		// it always runs at commit time before the 750 ms timer is scheduled.
+		function _evictFarZLevels(activeZ) {
 			for (var z = 0; z < zLevelCount; z++) {
 				if (Math.abs(z - activeZ) > 1 && allLayers[z] && allLayers[z].some(Boolean)) {
 					_evictZLevel(z);
 				}
 			}
+		}
+
+		function _prefetchAdjacent(activeZ) {
 			// Prefetch z±1 silently — commit if user is waiting on this z
 			[activeZ - 1, activeZ + 1].forEach(function (adjZ) {
 				if (adjZ < 0 || adjZ >= zLevelCount) return;
@@ -1213,6 +1312,10 @@
 			for (var _vi = 0; _vi < window.channelCount; _vi++) {
 				if (!_alphaSlots.has(_vi)) _visibleMap.push(_vi);
 			}
+			// Batch all startup channel enabling under the suppress flag so the
+			// ~32 per-toggle _pushChannelConfigToDrawer() calls collapse into a
+			// single final push in the unsuppress callback below.
+			window.__hyperBlendSuppressUpdates = true;
 			defaultChannels.forEach(function (userNum) {
 				var idx = _visibleMap[userNum - 1];
 				if (typeof idx !== 'undefined') {
@@ -1261,6 +1364,28 @@
 			if (defaultReinhard) {
 				$('#reinhardToggle').prop('checked', true).trigger('change');
 			}
+
+			// Unsuppress after a tick (so any queued setTimeout(_syncDrawerState, 0)
+			// from the setFilterOptions wrapper is still suppressed), then do one
+			// final config push + layer-visibility sync. defaultHE/Trichrome/Unmixing
+			// ran while suppressed, so NIST's internal instance.filters has not picked
+			// up the post-process processor — rebuild it once via updateHyperFilters().
+			setTimeout(function () {
+				window.__hyperBlendSuppressUpdates = false;
+				if (typeof window.updateHyperFilters === 'function') {
+					window.updateHyperFilters();
+				}
+				_pushChannelConfigToDrawer();
+				_updateOSDLayerVisibility();
+				// defaultHE/Trichrome toggled while the filter-list MutationObserver was
+				// not yet installed (it is set up below at _observeFilterChanges()), so the
+				// startup #selected mutation was never observed and the drawer post-process
+				// never engaged. Drive the engage path explicitly here based on the current
+				// #selected list (the H&E/Trichrome <li> is already present).
+				if ((defaultHE || defaultTrichrome) && typeof _autoSwitchDrawer === 'function') {
+					_autoSwitchDrawer();
+				}
+			}, 0);
 
 			// 6) Monitor the selected-filters list for changes.
 			// When a filter is added/removed, check if we need to switch drawers.
@@ -1338,6 +1463,26 @@
 			observer.observe(selectedList, { childList: true });
 		}
 
+		// PICASSO engagement UI setters — hoisted to script top level so the
+		// _autoSwitchDrawer canvas branch (also top-level) can call them. Both are
+		// pure jQuery/DOM with no closure captures. Phase 2.2: checkbox is purely
+		// panel-visibility; engagement lives in Apply label, .engaged class, Reload
+		// lock, and the ENGAGED badge.
+		function _updatePicassoEngagedBadge(on) {
+			var $b = $('#picassoEngagedBadge');
+			$b.text(on ? 'ENGAGED' : 'OFF');
+			$b.toggleClass('on', !!on).toggleClass('off', !on);
+		}
+
+		function _setPicassoEngagedUI(on) {
+			var $apply = $('#picassoApply');
+			$apply.text(on ? 'ENGAGED ✓' : 'Apply');
+			$apply.toggleClass('engaged', !!on);
+			// Reload is locked while engaged (§8.7).
+			$('#picassoReload').prop('disabled', !!on);
+			_updatePicassoEngagedBadge(!!on);
+		}
+
 		function _autoSwitchDrawer() {
 			var filterNames = [];
 			$('#selected li .filterLabel').each(function () {
@@ -1361,6 +1506,9 @@
 				if (success) {
 					currentDrawerMode = 'webgl';
 					_hookChannelUIForWebGL();
+					// 1.1: re-register processors for the new drawer. Now WebGL, so the
+					// bundle's updateFilters passes processors:[] (skips CPU filter work).
+					if (window.updateHyperFilters) window.updateHyperFilters();
 				}
 			} else if (!needsWebGL && currentDrawerMode !== 'canvas') {
 				console.log("[hyperOSD] Switching to canvas drawer for unsupported filter combo");
@@ -1383,8 +1531,18 @@
 					$('#picassoPanel').hide();
 					$('#picassoStatus').text('PICASSO disabled — legacy filter active (CPU path)').css('color', '#b8922e');
 				}
-				viewer.requestDrawer('canvas', { mainDrawer: true });
+				// 1.12: tear down Linear engagement while the WebGL drawer is still
+				// live so updateUnmixConfig({active:false,...}) reaches it. Guard on the
+				// DRAWER flag (sole source of truth), not window._unmixingActive. Does
+				// NOT hide #unmixPanel (panel-stays-open by design).
+				if (viewer.drawer && viewer.drawer._unmixEnabled === true && window._hyperBlendDisengageLinear) window._hyperBlendDisengageLinear();
+				var canvasSuccess = viewer.requestDrawer('canvas', { mainDrawer: true });
 				currentDrawerMode = 'canvas';
+				// 1.1: re-register processors for the canvas drawer. Now canvas, so the
+				// bundle's updateFilters passes the real CPU filters (webgl flag false).
+				// Safe in canvas mode: the wrapped updateHyperFilters' _pushChannelConfigToDrawer
+				// early-returns via its drawer-type guard.
+				if (canvasSuccess !== false && window.updateHyperFilters) window.updateHyperFilters();
 			}
 
 			// Update post-process state based on stacked filters
@@ -1897,12 +2055,6 @@
 				$b.text(on ? 'ENGAGED' : 'OFF');
 				$b.toggleClass('on', !!on).toggleClass('off', !on);
 			}
-			function _updatePicassoEngagedBadge(on) {
-				var $b = $('#picassoEngagedBadge');
-				$b.text(on ? 'ENGAGED' : 'OFF');
-				$b.toggleClass('on', !!on).toggleClass('off', !on);
-			}
-
 			// ---- Engagement UI state setters (Phase 2 amendment) ----
 			// Single source of truth for Apply-button label, .engaged CSS class,
 			// Zero-button lock, and ENGAGED badge. Called from Apply success
@@ -1927,15 +2079,10 @@
 				_updateUnmixEngagedBadge(!!on);
 			}
 
-			function _setPicassoEngagedUI(on) {
-				// Phase 2.2 amendment: checkbox is purely panel-visibility now.
-				var $apply = $('#picassoApply');
-				$apply.text(on ? 'ENGAGED ✓' : 'Apply');
-				$apply.toggleClass('engaged', !!on);
-				// Reload is locked while engaged (§8.7).
-				$('#picassoReload').prop('disabled', !!on);
-				_updatePicassoEngagedBadge(!!on);
-			}
+			// _setPicassoEngagedUI / _updatePicassoEngagedBadge are defined at script
+			// top level (above _autoSwitchDrawer) — the canvas branch calls them from
+			// outside this closure. In-closure callers (_disengagePicasso, PICASSO
+			// Apply) resolve them via the scope chain.
 
 			// ---- Disengage helpers (sole disengage code paths) ----
 			// _disengageLinear() — turn the Linear unmixing effect off, but preserve
@@ -1967,6 +2114,11 @@
 				// Only the toggle-uncheck path hides the panel (user gesture = "close").
 				_setLinearEngagedUI(false);
 			}
+			// Export for the top-level _autoSwitchDrawer canvas branch (1.12). The
+			// drawer-switch path lives outside this closure and must tear down Linear
+			// engagement before requestDrawer('canvas'). Intentionally reassigned on
+			// every hook generation — no run-once guard.
+			window._hyperBlendDisengageLinear = _disengageLinear;
 
 			// _disengagePicasso() — turn the PICASSO unmixing effect off, but preserve
 			// the loaded matrices. Mirrors the pre-refactor #picassoClear body.
@@ -3291,6 +3443,9 @@
 		 * Elements are read from the _nistEn/_nistH/_nistG cache arrays.
 		 */
 		function _pushChannelConfigToDrawer() {
+			// Skip during batch UI operations (startup defaultChannels, All/Clear).
+			// Callers do a single final push after unsuppressing.
+			if (window.__hyperBlendSuppressUpdates) return;
 			if (!viewer || !viewer.drawer || viewer.drawer.getType() !== 'hyperblend-webgl') {
 				return;
 			}

@@ -22,6 +22,71 @@
     'use strict';
 
     // =========================================================================
+    //  BENCH COUNTERS (v5.3 Cycle 1, v5.2 Item 0)
+    //  Flag-gated instrumentation. Incremented ONLY when window.__hyperBenchEnabled
+    //  is truthy — a single property read on `window` guards every increment site,
+    //  so the drawer is byte-identical in behavior and allocation-free when off.
+    //  frameTimes is a PREALLOCATED 600-sample ring buffer; never reallocated.
+    // =========================================================================
+    var __bench = {
+        drawCalls: 0, fullPathFrames: 0, fastPathFrames: 0, layerComposites: 0,
+        linearPassRuns: 0, picassoKernelRuns: 0, picassoPassCount: 0,
+        tileUploads: 0, tileCacheHits: 0, tileDropRejections: 0,
+        escapeHatchFires: 0, uniformUploadBlocks: 0,
+        frameTimes: new Float64Array(600),   // PREALLOCATED ring buffer, never reallocated
+        frameTimeIdx: 0, frameTimeCount: 0
+    };
+    window.__hyperBench = {
+        counters: __bench,
+        reset: function () {
+            __bench.drawCalls = 0; __bench.fullPathFrames = 0; __bench.fastPathFrames = 0;
+            __bench.layerComposites = 0; __bench.linearPassRuns = 0; __bench.picassoKernelRuns = 0;
+            __bench.picassoPassCount = 0; __bench.tileUploads = 0; __bench.tileCacheHits = 0;
+            __bench.tileDropRejections = 0; __bench.escapeHatchFires = 0; __bench.uniformUploadBlocks = 0;
+            __bench.frameTimeIdx = 0; __bench.frameTimeCount = 0;
+            __bench.frameTimes.fill(0);   // do NOT reallocate the Float64Array
+        },
+        snapshot: function () {
+            // Returns { counters: {...12 keys...}, frameTimes: {n, p50, p95, max} }
+            // (the contract consumed by demo/headless_bench_frametime.py).
+            // Copy frameTimes out of the ring buffer (valid samples only), then
+            // sort a copy for percentile stats.
+            var n = __bench.frameTimeCount;
+            var ft = new Array(n);
+            if (n < 600) {
+                // Buffer not yet wrapped: samples 0..n-1 are already chronological.
+                for (var i = 0; i < n; i++) { ft[i] = __bench.frameTimes[i]; }
+            } else {
+                // Wrapped: oldest sample is at frameTimeIdx.
+                for (var j = 0; j < 600; j++) {
+                    ft[j] = __bench.frameTimes[(__bench.frameTimeIdx + j) % 600];
+                }
+            }
+            var ftStats = { n: n, p50: null, p95: null, max: null };
+            if (n > 0) {
+                var sorted = ft.slice().sort(function (a, b) { return a - b; });
+                var pct = function (p) {
+                    return sorted[Math.min(n - 1, Math.floor(p * (n - 1)))];
+                };
+                ftStats.p50 = Math.round(pct(0.50) * 1000) / 1000;
+                ftStats.p95 = Math.round(pct(0.95) * 1000) / 1000;
+                ftStats.max = Math.round(sorted[n - 1] * 1000) / 1000;
+            }
+            return {
+                counters: {
+                    drawCalls: __bench.drawCalls, fullPathFrames: __bench.fullPathFrames,
+                    fastPathFrames: __bench.fastPathFrames, layerComposites: __bench.layerComposites,
+                    linearPassRuns: __bench.linearPassRuns, picassoKernelRuns: __bench.picassoKernelRuns,
+                    picassoPassCount: __bench.picassoPassCount, tileUploads: __bench.tileUploads,
+                    tileCacheHits: __bench.tileCacheHits, tileDropRejections: __bench.tileDropRejections,
+                    escapeHatchFires: __bench.escapeHatchFires, uniformUploadBlocks: __bench.uniformUploadBlocks
+                },
+                frameTimes: ftStats
+            };
+        }
+    };
+
+    // =========================================================================
     //  GLSL SHADER SOURCES (ES 1.0)
     //  Vertex shader: pass-through for a full-screen quad.
     //  Fragment shader: samples 4 layer textures, processes 16 channels with
@@ -145,6 +210,8 @@
         '',
         'uniform sampler2D uHyperBlendOutput;',
         'uniform float u_k;',
+        'uniform float u_k1;',   // 3.3: exp(-u_k), precomputed CPU-side
+        'uniform float u_k2;',   // 3.3: 1.0 / (1.0 - u_k1), precomputed CPU-side
         'uniform vec3 u_nucRGB;',
         'uniform vec3 u_strRGB;',
         'uniform vec3 u_colRGB;',
@@ -157,34 +224,35 @@
         'void main() {',
         '    vec4 px = texture2D(uHyperBlendOutput, vTexCoord);',
         '',
+        '    // 3.3: ×255 on nuc/str/col and ÷255 in the exp args are an exact',
+        '    // identity pair (the unmix step is homogeneous in the 255 scale), so',
+        '    // both are dropped; nuc/str/col now carry the [0,1]-scaled values.',
         '    float nuc, str, col;',
         '    if (u_mode < 0.5) {',
         '        // H&E: nuclei from Blue, stroma from Green',
-        '        nuc = px.b * 255.0 * u_nucGain;',
-        '        str = px.g * 255.0 * u_strGain;',
+        '        nuc = px.b * u_nucGain;',
+        '        str = px.g * u_strGain;',
         '        col = 0.0;',
         '    } else {',
         '        // Trichrome: nuclei from Green, stroma from Red, collagen from Blue',
-        '        nuc = px.g * 255.0 * u_nucGain;',
-        '        str = px.r * 255.0 * u_strGain;',
-        '        col = px.b * 255.0 * u_colGain;',
+        '        nuc = px.g * u_nucGain;',
+        '        str = px.r * u_strGain;',
+        '        col = px.b * u_colGain;',
         '    }',
         '',
         '    // Spectral unmixing (H&E only; for Trichrome u_unmix = 0.0)',
         '    str = max(0.0, str - u_unmix * nuc);',
         '',
-        '    float k1 = exp(-u_k);',
-        '    float k2 = 1.0 / (1.0 - k1);',
-        '',
+        '    // 3.3: u_k1 = exp(-u_k), u_k2 = 1/(1-u_k1) precomputed CPU-side',
         '    // Cascade 1: stroma (eosin)',
-        '    vec3 result = (exp(-u_k * (str / 255.0) * u_strRGB) - k1) * k2;',
+        '    vec3 result = (exp(-u_k * str * u_strRGB) - u_k1) * u_k2;',
         '',
         '    // Cascade 2: nuclei (hematoxylin)',
-        '    result *= (exp(-u_k * (nuc / 255.0) * u_nucRGB) - k1) * k2;',
+        '    result *= (exp(-u_k * nuc * u_nucRGB) - u_k1) * u_k2;',
         '',
         '    // Cascade 3: collagen (Trichrome only — skipped when u_colGain = 0.0)',
         '    if (u_mode > 0.5) {',
-        '        result *= (exp(-u_k * (col / 255.0) * u_colRGB) - k1) * k2;',
+        '        result *= (exp(-u_k * col * u_colRGB) - u_k1) * u_k2;',
         '    }',
         '',
         '    gl_FragColor = vec4(result, 1.0);',
@@ -200,8 +268,12 @@
         '}'
     ].join('\n');
 
+    // 3.4: module-level constant returned by getSupportedDataFormats() — avoids
+    // allocating a fresh array literal on every (frequent) OSD call.
+    var SUPPORTED_FORMATS = ['context2d', 'image'];
+
     // -----------------------------------------------------------------------
-    // Linear pre-blend pass (NEW — v5.0 R1).
+    // Linear pre-blend pass (NEW — v5.0 R1; specialized v5.2 1.10).
     // Lifts the 16-input × ≤8-output pseudoinverse multiply out of
     // FRAGMENT_SHADER_SRC so PICASSO can consume Linear's abundance output
     // (Mode 3 — Linear→PICASSO chain).
@@ -211,81 +283,78 @@
     // Output : 4 abundance channels per fragment (clamped ≥ 0, ≤ 1).
     //
     // The drawer runs this pass up to twice per frame:
-    //   - first invocation writes outputs 0..3 (uOutputOffset = 0)
+    //   - first invocation writes outputs 0..3 (variant A program)
     //   - second invocation (only when numOutputs > 4) writes outputs 4..7
-    //     (uOutputOffset = 4)
-    // The matrix layout in uUnmixMatrix is unchanged from the inlined version
-    // (row-major 16×8 stored as a flat 128-float array): for input i, output j,
-    // the coefficient is at uUnmixMatrix[i * 8 + j]. Two passes shift the
-    // sampled `j` slot by uOutputOffset; that is the only difference between
-    // the two passes.
+    //     (variant B program, lazily compiled on first M > 4 use)
+    // The matrix layout in uUnmixMatrix is unchanged (row-major 16×8 stored
+    // as a flat 128-float array): for input i, output j, the coefficient is at
+    // uUnmixMatrix[i * 8 + j]. v5.2 1.10 specializes the output column base
+    // (0 or 4) into the compiled shader instead of a uOutputOffset uniform +
+    // local-array indexing + 8-way selection chains. This halves the per-
+    // fragment ALU (only 4 of the 8 MAD rows are emitted per variant) and
+    // removes the file's only local-array indexing.
+    //
+    // BIT-IDENTICAL CONTRACT (Mode 3 PICASSO consumes Linear's RGBA8 FBO):
+    // each emitted MAD row preserves the exact input-major term order
+    // r{i}*uUnmixMatrix[i*8 + j] (i = 0→15, plain '+' chain), and the final
+    // per-component clamp(x, 0.0, 1.0). Variant A reproduces former outs[0..3];
+    // variant B reproduces former outs[4..7].
     //
     // Uint8 quantization on the output FBO is part of the math contract
     // (MRA fix #3 in v5.0 master plan §7.1 R-2): Mode 3 must hand
     // PICASSO the same precision profile Mode 2 sees from raw layer FBOs.
     // -----------------------------------------------------------------------
-    var LINEAR_PASS_FRAGMENT_SRC = [
-        'precision mediump float;',
-        '',
-        'varying vec2 vTexCoord;',
-        '',
-        'uniform sampler2D uLayer0;',
-        'uniform sampler2D uLayer1;',
-        'uniform sampler2D uLayer2;',
-        'uniform sampler2D uLayer3;',
-        '',
-        'uniform float uUnmixMatrix[128];',
-        'uniform float uOutputOffset;',  // 0.0 for outputs 0..3, 4.0 for outputs 4..7
-        '',
-        'void main() {',
-        '    // Sample raw 16-channel mixed inputs (same layout as Pass 1)',
-        '    vec4 L0 = texture2D(uLayer0, vTexCoord);',
-        '    vec4 L1 = texture2D(uLayer1, vTexCoord);',
-        '    vec4 L2 = texture2D(uLayer2, vTexCoord);',
-        '    vec4 L3 = texture2D(uLayer3, vTexCoord);',
-        '',
-        '    float r0=L0.r, r1=L0.g, r2=L0.b, r3=L0.a;',
-        '    float r4=L1.r, r5=L1.g, r6=L1.b, r7=L1.a;',
-        '    float r8=L2.r, r9=L2.g, r10=L2.b, r11=L2.a;',
-        '    float r12=L3.r, r13=L3.g, r14=L3.b, r15=L3.a;',
-        '',
-        '    // Output column index for each RGBA slot in this pass',
-        '    // (offset shifts between the two FBO writes).',
-        '    int o0 = int(uOutputOffset);',
-        '    int o1 = o0 + 1;',
-        '    int o2 = o0 + 2;',
-        '    int o3 = o0 + 3;',
-        '',
-        '    // Matrix multiply: out[j] = sum_i(raw[i] * M[i*8 + j])',
-        '    // GLSL ES 1.0 forbids dynamic indexing into uniform arrays; the',
-        '    // 8 cases below are unrolled by output column to keep the shader',
-        '    // portable. Identical to the inlined ch0..ch7 block formerly in',
-        '    // FRAGMENT_SHADER_SRC.',
-        '    float outs[8];',
-        '    outs[0] = r0*uUnmixMatrix[0]   + r1*uUnmixMatrix[8]   + r2*uUnmixMatrix[16]  + r3*uUnmixMatrix[24]  + r4*uUnmixMatrix[32]  + r5*uUnmixMatrix[40]  + r6*uUnmixMatrix[48]  + r7*uUnmixMatrix[56]  + r8*uUnmixMatrix[64]  + r9*uUnmixMatrix[72]  + r10*uUnmixMatrix[80]  + r11*uUnmixMatrix[88]  + r12*uUnmixMatrix[96]  + r13*uUnmixMatrix[104] + r14*uUnmixMatrix[112] + r15*uUnmixMatrix[120];',
-        '    outs[1] = r0*uUnmixMatrix[1]   + r1*uUnmixMatrix[9]   + r2*uUnmixMatrix[17]  + r3*uUnmixMatrix[25]  + r4*uUnmixMatrix[33]  + r5*uUnmixMatrix[41]  + r6*uUnmixMatrix[49]  + r7*uUnmixMatrix[57]  + r8*uUnmixMatrix[65]  + r9*uUnmixMatrix[73]  + r10*uUnmixMatrix[81]  + r11*uUnmixMatrix[89]  + r12*uUnmixMatrix[97]  + r13*uUnmixMatrix[105] + r14*uUnmixMatrix[113] + r15*uUnmixMatrix[121];',
-        '    outs[2] = r0*uUnmixMatrix[2]   + r1*uUnmixMatrix[10]  + r2*uUnmixMatrix[18]  + r3*uUnmixMatrix[26]  + r4*uUnmixMatrix[34]  + r5*uUnmixMatrix[42]  + r6*uUnmixMatrix[50]  + r7*uUnmixMatrix[58]  + r8*uUnmixMatrix[66]  + r9*uUnmixMatrix[74]  + r10*uUnmixMatrix[82]  + r11*uUnmixMatrix[90]  + r12*uUnmixMatrix[98]  + r13*uUnmixMatrix[106] + r14*uUnmixMatrix[114] + r15*uUnmixMatrix[122];',
-        '    outs[3] = r0*uUnmixMatrix[3]   + r1*uUnmixMatrix[11]  + r2*uUnmixMatrix[19]  + r3*uUnmixMatrix[27]  + r4*uUnmixMatrix[35]  + r5*uUnmixMatrix[43]  + r6*uUnmixMatrix[51]  + r7*uUnmixMatrix[59]  + r8*uUnmixMatrix[67]  + r9*uUnmixMatrix[75]  + r10*uUnmixMatrix[83]  + r11*uUnmixMatrix[91]  + r12*uUnmixMatrix[99]  + r13*uUnmixMatrix[107] + r14*uUnmixMatrix[115] + r15*uUnmixMatrix[123];',
-        '    outs[4] = r0*uUnmixMatrix[4]   + r1*uUnmixMatrix[12]  + r2*uUnmixMatrix[20]  + r3*uUnmixMatrix[28]  + r4*uUnmixMatrix[36]  + r5*uUnmixMatrix[44]  + r6*uUnmixMatrix[52]  + r7*uUnmixMatrix[60]  + r8*uUnmixMatrix[68]  + r9*uUnmixMatrix[76]  + r10*uUnmixMatrix[84]  + r11*uUnmixMatrix[92]  + r12*uUnmixMatrix[100] + r13*uUnmixMatrix[108] + r14*uUnmixMatrix[116] + r15*uUnmixMatrix[124];',
-        '    outs[5] = r0*uUnmixMatrix[5]   + r1*uUnmixMatrix[13]  + r2*uUnmixMatrix[21]  + r3*uUnmixMatrix[29]  + r4*uUnmixMatrix[37]  + r5*uUnmixMatrix[45]  + r6*uUnmixMatrix[53]  + r7*uUnmixMatrix[61]  + r8*uUnmixMatrix[69]  + r9*uUnmixMatrix[77]  + r10*uUnmixMatrix[85]  + r11*uUnmixMatrix[93]  + r12*uUnmixMatrix[101] + r13*uUnmixMatrix[109] + r14*uUnmixMatrix[117] + r15*uUnmixMatrix[125];',
-        '    outs[6] = r0*uUnmixMatrix[6]   + r1*uUnmixMatrix[14]  + r2*uUnmixMatrix[22]  + r3*uUnmixMatrix[30]  + r4*uUnmixMatrix[38]  + r5*uUnmixMatrix[46]  + r6*uUnmixMatrix[54]  + r7*uUnmixMatrix[62]  + r8*uUnmixMatrix[70]  + r9*uUnmixMatrix[78]  + r10*uUnmixMatrix[86]  + r11*uUnmixMatrix[94]  + r12*uUnmixMatrix[102] + r13*uUnmixMatrix[110] + r14*uUnmixMatrix[118] + r15*uUnmixMatrix[126];',
-        '    outs[7] = r0*uUnmixMatrix[7]   + r1*uUnmixMatrix[15]  + r2*uUnmixMatrix[23]  + r3*uUnmixMatrix[31]  + r4*uUnmixMatrix[39]  + r5*uUnmixMatrix[47]  + r6*uUnmixMatrix[55]  + r7*uUnmixMatrix[63]  + r8*uUnmixMatrix[71]  + r9*uUnmixMatrix[79]  + r10*uUnmixMatrix[87]  + r11*uUnmixMatrix[95]  + r12*uUnmixMatrix[103] + r13*uUnmixMatrix[111] + r14*uUnmixMatrix[119] + r15*uUnmixMatrix[127];',
-        '',
-        '    // Select the 4 outputs corresponding to this pass via',
-        '    // uOutputOffset. GLSL ES 1.0 dynamic indexing on a local array is',
-        '    // allowed (only uniform arrays are restricted), so the unrolled',
-        '    // selection below is the canonical workaround.',
-        '    float c0, c1, c2, c3;',
-        '    if (o0 == 0)      c0 = outs[0]; else if (o0 == 1) c0 = outs[1]; else if (o0 == 2) c0 = outs[2]; else if (o0 == 3) c0 = outs[3]; else if (o0 == 4) c0 = outs[4]; else if (o0 == 5) c0 = outs[5]; else if (o0 == 6) c0 = outs[6]; else c0 = outs[7];',
-        '    if (o1 == 0)      c1 = outs[0]; else if (o1 == 1) c1 = outs[1]; else if (o1 == 2) c1 = outs[2]; else if (o1 == 3) c1 = outs[3]; else if (o1 == 4) c1 = outs[4]; else if (o1 == 5) c1 = outs[5]; else if (o1 == 6) c1 = outs[6]; else c1 = outs[7];',
-        '    if (o2 == 0)      c2 = outs[0]; else if (o2 == 1) c2 = outs[1]; else if (o2 == 2) c2 = outs[2]; else if (o2 == 3) c2 = outs[3]; else if (o2 == 4) c2 = outs[4]; else if (o2 == 5) c2 = outs[5]; else if (o2 == 6) c2 = outs[6]; else c2 = outs[7];',
-        '    if (o3 == 0)      c3 = outs[0]; else if (o3 == 1) c3 = outs[1]; else if (o3 == 2) c3 = outs[2]; else if (o3 == 3) c3 = outs[3]; else if (o3 == 4) c3 = outs[4]; else if (o3 == 5) c3 = outs[5]; else if (o3 == 6) c3 = outs[6]; else c3 = outs[7];',
-        '',
-        '    // Non-negativity (Linear math contract: max(0, M_p · mixed)) +',
-        '    // uint8 saturation (FBO format is RGBA8).',
-        '    gl_FragColor = vec4(clamp(c0, 0.0, 1.0), clamp(c1, 0.0, 1.0), clamp(c2, 0.0, 1.0), clamp(c3, 0.0, 1.0));',
-        '}'
-    ].join('\n');
+    // Build a specialized Linear pre-blend fragment shader for output columns
+    // [outputBase, outputBase+3]. outputBase is baked in at build time (0 for
+    // variant A, 4 for variant B) — no uOutputOffset uniform.
+    function buildLinearPassFragmentSrc(outputBase) {
+        // Emit one MAD row for output column j, input-major i = 0..15:
+        //   r{i}*uUnmixMatrix[i*8 + j]  joined by ' + '
+        function madRow(j) {
+            var terms = [];
+            for (var i = 0; i < 16; i++) {
+                terms.push('r' + i + '*uUnmixMatrix[' + (i * 8 + j) + ']');
+            }
+            return terms.join(' + ');
+        }
+        return [
+            'precision mediump float;',
+            '',
+            'varying vec2 vTexCoord;',
+            '',
+            'uniform sampler2D uLayer0;',
+            'uniform sampler2D uLayer1;',
+            'uniform sampler2D uLayer2;',
+            'uniform sampler2D uLayer3;',
+            '',
+            'uniform float uUnmixMatrix[128];',
+            '',
+            'void main() {',
+            '    // Sample raw 16-channel mixed inputs (same layout as Pass 1)',
+            '    vec4 L0 = texture2D(uLayer0, vTexCoord);',
+            '    vec4 L1 = texture2D(uLayer1, vTexCoord);',
+            '    vec4 L2 = texture2D(uLayer2, vTexCoord);',
+            '    vec4 L3 = texture2D(uLayer3, vTexCoord);',
+            '',
+            '    float r0=L0.r, r1=L0.g, r2=L0.b, r3=L0.a;',
+            '    float r4=L1.r, r5=L1.g, r6=L1.b, r7=L1.a;',
+            '    float r8=L2.r, r9=L2.g, r10=L2.b, r11=L2.a;',
+            '    float r12=L3.r, r13=L3.g, r14=L3.b, r15=L3.a;',
+            '',
+            '    // Matrix multiply for output columns ' + outputBase + '..' + (outputBase + 3) + ':',
+            '    // out[j] = sum_i(raw[i] * M[i*8 + j]). Term order is input-major',
+            '    // (i = 0→15), preserved verbatim from the formerly-inlined outs[j].',
+            '    float c0 = ' + madRow(outputBase + 0) + ';',
+            '    float c1 = ' + madRow(outputBase + 1) + ';',
+            '    float c2 = ' + madRow(outputBase + 2) + ';',
+            '    float c3 = ' + madRow(outputBase + 3) + ';',
+            '',
+            '    // Non-negativity (Linear math contract: max(0, M_p · mixed)) +',
+            '    // uint8 saturation (FBO format is RGBA8).',
+            '    gl_FragColor = vec4(clamp(c0, 0.0, 1.0), clamp(c1, 0.0, 1.0), clamp(c2, 0.0, 1.0), clamp(c3, 0.0, 1.0));',
+            '}'
+        ].join('\n');
+    }
 
     // PICASSO kernel: vec4 y = uP * x; clamp at ≥0. Port of FS_PICASSO from
     // demo/picasso-osd-demo.html L353–359. precision highp is required —
@@ -372,6 +441,8 @@
             // Cache cap sized for 1024×1024 tiles (~4MB VRAM each)
             // 300 entries ≈ ~1.2GB VRAM max — reasonable for modern GPUs
             this._tileCacheCap = 300;
+            this._tileCacheBytes = 0;       // running sum of bytes(width*height*4) of cached tile textures
+            this._tileCacheByteBudget = 768 * 1024 * 1024; // 768MB post-settle VRAM budget (backed by the 300-entry cap)
             this._evictionInterval = 60;    // check eviction every N frames
             this._evictionMaxAge = 240;     // evict tiles unused for N frames (~4s at 60fps)
             this._inactiveSettleInterval = 30; // settle inactive layers every N frames (not every frame)
@@ -401,6 +472,8 @@
             this._lastTileChecksums = [];  // per-layer XOR checksum of cacheKey hashes
             this._lastTileSumChecksums = [];  // per-layer additive checksum (collision resistance)
             this._tileDropRejectedAge = 0;    // frames since last tile-drop rejection; escape hatch at 60
+            this._lastTileAcceptFrame = -1000; // last frame a tile-driven composite was accepted; throttle floods to 1 per ~4 frames
+            this._keepAliveScheduled = false; // guards a single pending out-of-draw() forceRedraw for the throttle defer keep-alive
 
             // Post-process (Beer's law) state
             this._postProcessConfig = {
@@ -448,9 +521,18 @@
             // texture binding + PICASSO source-tex switch); it is set inside
             // _runLinearPass and cleared whenever Linear is disabled or the
             // matrix is invalidated.
-            this._linearProgram = null;
+            // Two specialized programs (v5.2 1.10): variant A writes outputs
+            // 0..3, variant B writes outputs 4..7. B is compiled lazily on the
+            // first M > 4 use. Per-program uniform/attrib caches + matrixUploaded
+            // flags (WebGL2-footgun: uniform/attrib state is per-program).
+            this._linearProgram = null;          // variant A (outputs 0..3)
             this._linearUniforms = {};
             this._linearAttribs = {};
+            this._linearMatrixUploaded = false;
+            this._linearProgramB = null;         // variant B (outputs 4..7, lazy)
+            this._linearUniformsB = {};
+            this._linearAttribsB = {};
+            this._linearMatrixUploadedB = false;
             this._linearFBOs = [null, null];
             this._linearFBOTextures = [null, null];
             this._linearFBOWidth_pre = 0;
@@ -468,6 +550,7 @@
             this._picassoK = 0;
             this._picassoN = 0;
             this._picassoFBOsAllocated = false;
+            this._picassoOutputReady = false;      // cached Out textures valid across fast-path frames (v5.2 1.5)
             this._picassoFBO_A = [];
             this._picassoFBO_B = [];
             this._picassoFBO_Out = [];
@@ -490,6 +573,9 @@
                 this._gl = null;
                 this._program = null;
             }
+
+            // One-time OSD-internals contract canary flag (1.13)
+            this._contractChecked = false;
 
             // WebGL context loss/restore handling
             this._contextLost = false;
@@ -514,6 +600,7 @@
                 self._contextLost = false;
                 if (self._contextBanner) self._contextBanner.style.display = 'none';
                 self._tileCache.clear();
+                self._tileCacheBytes = 0;
                 self._layerFBOs = [];
                 self._layerFBOTextures = [];
                 self._layerFBOWidth = 0;
@@ -534,6 +621,7 @@
                 // PICASSO resources are bound to the lost context — drop and
                 // let updatePicassoConfig lazy-realloc on next activation.
                 self._picassoFBOsAllocated = false;
+                self._picassoOutputReady = false;  // v5.2 1.5: Out textures nulled below
                 self._picassoFBO_A = [];
                 self._picassoFBO_B = [];
                 self._picassoFBO_Out = [];
@@ -544,9 +632,18 @@
                 self._picassoCastProgram = null;
                 self._picassoFBOWidth = 0;
                 self._picassoFBOHeight = 0;
+                // The lost context invalidated the float-FBO extension objects
+                // probed at construction. Reset to null so _ensurePicassoResources
+                // re-runs _probePicassoExtensions() before re-creating FBOs —
+                // without this the stale `true` lets _createPicassoFBOs hit an
+                // incomplete FBO and set _picassoSupported=false permanently.
+                self._picassoSupported = null;
                 // Linear pre-blend resources are also bound to the lost
                 // context — drop and let _ensureLinearResources lazy-realloc.
                 self._linearProgram = null;
+                self._linearMatrixUploaded = false;
+                self._linearProgramB = null;
+                self._linearMatrixUploadedB = false;
                 self._linearFBOs = [null, null];
                 self._linearFBOTextures = [null, null];
                 self._linearFBOWidth_pre = 0;
@@ -675,7 +772,7 @@
         }
 
         getSupportedDataFormats() {
-            return ['context2d', 'image'];
+            return SUPPORTED_FORMATS;
         }
 
         _createDrawingElement() {
@@ -713,6 +810,7 @@
                         gl.deleteTexture(entry.texture);
                     });
                     this._tileCache.clear();
+                    this._tileCacheBytes = 0;
                 }
                 // Blit resources
                 if (this._blitPosBuffer) gl.deleteBuffer(this._blitPosBuffer);
@@ -746,6 +844,7 @@
                     if (this._linearFBOTextures[lpi]) gl.deleteTexture(this._linearFBOTextures[lpi]);
                 }
                 if (this._linearProgram) gl.deleteProgram(this._linearProgram);
+                if (this._linearProgramB) gl.deleteProgram(this._linearProgramB);
             }
             this._layerFBOs = [];
             this._layerFBOTextures = [];
@@ -758,6 +857,9 @@
             this._linearFBOs = [null, null];
             this._linearFBOTextures = [null, null];
             this._linearProgram = null;
+            this._linearMatrixUploaded = false;
+            this._linearProgramB = null;
+            this._linearMatrixUploadedB = false;
             this._linearOutputReady = false;
             this.canvas.width = 1;
             this.canvas.height = 1;
@@ -787,6 +889,9 @@
                 }
                 return;
             }
+
+            var __bt0 = 0;
+            if (window.__hyperBenchEnabled) { __bench.drawCalls++; __bt0 = performance.now(); }
 
             // Resize the canvas if the viewport changed
             var viewportSize = this._calculateCanvasSize();
@@ -873,6 +978,7 @@
                     tilesChanged = false;
                     tileDropRejected = true;
                     this._tileDropRejectedAge++;
+                    if (window.__hyperBenchEnabled) __bench.tileDropRejections++;
                     // Protect tiles from OSD cache eviction during rejection.
                     // Without this, rejected tiles lose beingDrawn protection
                     // (reset by OSD's _updateLevelsForViewport), OSD evicts them,
@@ -893,10 +999,39 @@
                         }
                     }
                 } else if (tilesChanged) {
-                    this._lastTileCounts = newCounts;
-                    this._lastTileChecksums = newChecksums;
-                    this._lastTileSumChecksums = newSumChecksums;
-                    this._tileDropRejectedAge = 0;
+                    // Tile-flood composite throttle: cap tile-driven recomposites
+                    // (and the Linear/Beer's-law passes that follow) to one per ~4
+                    // frames during streaming floods. Bypassed when the tile-drop
+                    // escape hatch is engaged (_tileDropRejectedAge >= 60) so its
+                    // exact force-accept semantics and timing are unchanged.
+                    // On defer: suppress this frame's composite (tilesChanged=false)
+                    // WITHOUT updating tracking or _tileDropRejectedAge — constraint
+                    // 4/5 requires drop rejection to keep comparing against the last
+                    // GOOD composite. The keep-alive forceRedraw() is scheduled
+                    // OUTSIDE draw() (via setTimeout) because OSD 6.0.2's
+                    // updateOnce unconditionally clears forceRedraw AFTER drawWorld()
+                    // returns — an inline forceRedraw() set during draw() would be
+                    // swallowed. The scheduled call guarantees another draw() tick
+                    // (advancing _frameCount) so the deferred composite is not
+                    // stranded if OSD settles after the flood's last tile.
+                    if (this._tileDropRejectedAge < 60 &&
+                        (this._frameCount - this._lastTileAcceptFrame) < 4) {
+                        tilesChanged = false;
+                        if (!this._keepAliveScheduled && this.viewer) {
+                            this._keepAliveScheduled = true;
+                            setTimeout(() => {
+                                this._keepAliveScheduled = false;
+                                if (this.viewer) this.viewer.forceRedraw();
+                            }, 0);
+                        }
+                    } else {
+                        if (window.__hyperBenchEnabled && totalNow < totalPrev) __bench.escapeHatchFires++;
+                        this._lastTileCounts = newCounts;
+                        this._lastTileChecksums = newChecksums;
+                        this._lastTileSumChecksums = newSumChecksums;
+                        this._tileDropRejectedAge = 0;
+                        this._lastTileAcceptFrame = this._frameCount;
+                    }
                 }
             }
 
@@ -906,6 +1041,7 @@
             var needsComposite = !this._texturesValid || viewportChanged || zChanged || sizeChanged || tilesChanged;
 
             if (needsComposite) {
+                if (window.__hyperBenchEnabled) __bench.fullPathFrames++;
                 // ---- FULL PATH: composite tiles into per-layer FBOs ----
                 // Unbind layer textures from units 0-3 to prevent feedback loop
                 // (they may still be bound from previous frame's Pass 1)
@@ -957,6 +1093,7 @@
                     var lhChecksum = 0;
                     var lhSumChecksum = 0;
                     for (var lhi = 0; lhi < lhCount; lhi++) {
+                        if (!layerTileInfos[li][lhi] || !layerTileInfos[li][lhi].tile) continue;
                         var lhHash = this._hashCacheKey(layerTileInfos[li][lhi].tile.cacheKey);
                         lhChecksum = (lhChecksum ^ lhHash) | 0;
                         lhSumChecksum = (lhSumChecksum + lhHash) | 0;
@@ -968,7 +1105,9 @@
                     this._compositeTilesToFBO(activeLayers[li], layerTileInfos[li], li, canvasW, canvasH, forceAll);
                     this._lastLayerTileHashes[li] = { count: lhCount, checksum: lhChecksum, sumChecksum: lhSumChecksum };
                 }
-                gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+                // 3.2: UNPACK_PREMULTIPLY_ALPHA_WEBGL is already false (set pre-composite,
+                // never set true anywhere) — redundant re-set deleted. FLIP_Y must be
+                // reset because it is set true during the pre-composite pass.
                 gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 
                 // Ensure no layer FBO is bound before sampling layer textures
@@ -1000,6 +1139,7 @@
                 // compare against this baseline (not a stale "best" from before the change).
                 if (forceAll) {
                     this._tileDropRejectedAge = 0;
+                    this._lastTileAcceptFrame = this._frameCount; // throttle baseline: viewport/z/size force-composite counts as an accept
                     this._lastTileCounts = [];
                     this._lastTileChecksums = [];
                     this._lastTileSumChecksums = [];
@@ -1027,6 +1167,7 @@
                     }
                 }
             } else {
+                if (window.__hyperBenchEnabled) __bench.fastPathFrames++;
                 // ---- FAST PATH: FBO textures still valid, just re-bind them ----
                 for (var fti = 0; fti < this._layerFBOTextures.length; fti++) {
                     gl.activeTexture(gl.TEXTURE0 + fti);
@@ -1083,7 +1224,43 @@
             // the chain dim contract fails, the throw in updatePicassoConfig
             // refused activation upstream — _picassoActive would be false here.
             if (this._picassoActive && this._picassoMatricesUploaded && (!this._unmixEnabled || this._chainAllowed())) {
-                this._runPicassoKernel(activeLayers);
+                // Lazy-(re)create PICASSO programs/FBOs — covers context-restore,
+                // where the restore handler dropped them and set _picassoSupported
+                // back to null so the ensure helper re-probes the float extensions.
+                // v5.2 1.5: cache the kernel output across fast-path frames.
+                // Recompute only when the FBO contents changed (needsComposite)
+                // or the cached Out textures are not yet valid; otherwise just
+                // rebind the cached Out textures over the raw layer textures the
+                // fast path just bound to units 0..3.
+                if (needsComposite || !this._picassoOutputReady) {
+                    if (this._ensurePicassoResources(canvasW, canvasH)) {
+                        // Mark ready only if the kernel actually executed its body
+                        // (it has silent early-returns). A cached frame must never
+                        // rebind empty/stale Out textures.
+                        if (this._runPicassoKernel(activeLayers)) {
+                            this._picassoOutputReady = true;
+                        }
+                    } else {
+                        // Ensure failed post-restore (e.g. float renderability gone on
+                        // this restored context). The HTML ENGAGED badge won't auto-clear
+                        // — accepted degraded state; warn once is sufficient context.
+                        $.console.warn('[HyperBlendWebGLDrawer] PICASSO resources unavailable — skipping kernel (degraded after context restore?)');
+                    }
+                } else {
+                    // Fast path: kernel output still valid on the GPU — rebind the
+                    // cached Out textures (the fast-path raw-texture rebind above
+                    // clobbered units 0..3 and must be overridden).
+                    // v5.2 1.6: derive `chained` with the SAME expression the
+                    // kernel uses (_chainAllowed() && _linearOutputReady) so the
+                    // cached rebind matches the mode the kernel last ran in.
+                    // _linearOutputReady is already settled above (the Linear
+                    // stage at L1205-1213 precedes this PICASSO stage). Under
+                    // chained, only Out[0] is meaningful — Out[1..3] are stale —
+                    // so the rebind must restrict to unit 0, leaving units 1..3
+                    // on the raw layer textures the fast path just bound.
+                    var chainedCached = this._chainAllowed() && this._linearOutputReady;
+                    this._rebindPicassoOutputs(activeLayers, chainedCached);
+                }
             }
 
             // ---- Mode 1 texture binding swap (v5.0 R1) ----
@@ -1122,17 +1299,32 @@
             gl.useProgram(this._program);
             var loc = this._uniformLocations;
 
-            // Fill pre-allocated uniform arrays
-            var gArr = this._uGain, eArr = this._uEnabled;
-            for (var ci = 0; ci < 16; ci++) {
-                var cfg = this._channelConfig[ci];
-                gArr[ci] = cfg.gain;
-                eArr[ci] = cfg.enabled ? 1.0 : 0.0;
+            // 3.2: only re-upload channel uniforms when they actually changed
+            // (config push, tone-mode switch, unmix engage/disengage, or
+            // init/context-restore). useProgram, attrib setup and drawArrays
+            // below stay unconditional.
+            if (this._channelUniformsDirty) {
+                // Fill pre-allocated uniform arrays
+                var gArr = this._uGain, eArr = this._uEnabled;
+                for (var ci = 0; ci < 16; ci++) {
+                    var cfg = this._channelConfig[ci];
+                    gArr[ci] = cfg.gain;
+                    // RGB mode masks alpha slots (3/7/11/15 carry no input data) — but NOT
+                    // the layer-0/1 output lanes (ci<8) under Linear unmixing, where they hold
+                    // genuine output abundances (output 3 = layer-0 alpha, output 7 = layer-1
+                    // alpha). Layer-2/3 alpha (ch11/ch15) stay locked — never unmix outputs.
+                    // _unmixEnabled flips mark _channelUniformsDirty (see updateUnmixConfig)
+                    // so this lock re-evaluates after a post-push engage/disengage.
+                    var locked = this._lockedChannels.has(ci) && !(this._unmixEnabled && ci < 8);
+                    eArr[ci] = (cfg.enabled && !locked) ? 1.0 : 0.0;
+                }
+                gl.uniform3fv(loc.uChannelColor, this._uColor);
+                gl.uniform1fv(loc.uChannelGain, gArr);
+                gl.uniform1fv(loc.uChannelEnabled, eArr);
+                gl.uniform1f(loc.uToneMode, this._toneMode);
+                this._channelUniformsDirty = false;
+                if (window.__hyperBenchEnabled) __bench.uniformUploadBlocks++;
             }
-            gl.uniform3fv(loc.uChannelColor, this._uColor);
-            gl.uniform1fv(loc.uChannelGain, gArr);
-            gl.uniform1fv(loc.uChannelEnabled, eArr);
-            gl.uniform1f(loc.uToneMode, this._toneMode);
 
             // v5.0 R1: Linear pre-blend output (when enabled) is now consumed
             // via the unit 0..1 texture bindings prepared earlier in draw().
@@ -1165,6 +1357,10 @@
                 var pp = this._postProcessUniforms;
                 var ppc = this._postProcessConfig;
                 gl.uniform1f(pp.u_k, ppc.k);
+                // 3.3: hoist the per-pixel exp(-u_k) / 1/(1-k1) out of the shader
+                var k1 = Math.exp(-ppc.k);
+                gl.uniform1f(pp.u_k1, k1);
+                gl.uniform1f(pp.u_k2, 1.0 / (1.0 - k1));
                 gl.uniform3f(pp.u_nucRGB, ppc.nucRGB[0], ppc.nucRGB[1], ppc.nucRGB[2]);
                 gl.uniform3f(pp.u_strRGB, ppc.strRGB[0], ppc.strRGB[1], ppc.strRGB[2]);
                 gl.uniform3f(pp.u_colRGB, ppc.colRGB[0], ppc.colRGB[1], ppc.colRGB[2]);
@@ -1184,6 +1380,12 @@
                 gl.enableVertexAttribArray(ppTex);
                 gl.vertexAttribPointer(ppTex, 2, gl.FLOAT, false, 0, 0);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
+
+            if (window.__hyperBenchEnabled && __bt0 !== 0) {
+                __bench.frameTimes[__bench.frameTimeIdx] = performance.now() - __bt0;
+                __bench.frameTimeIdx = (__bench.frameTimeIdx + 1) % 600;
+                if (__bench.frameTimeCount < 600) __bench.frameTimeCount++;
             }
 
         }
@@ -1217,10 +1419,11 @@
                 // S/V no longer stored: S is hardcoded 1.0, V was redundant with Gain
                 this._channelConfig[i].gain = config[i].gain;
                 this._channelConfig[i].enabled = !!config[i].enabled;
-                // Enforce locked channels (RGB mode: alpha slots always disabled)
-                if (this._lockedChannels.has(i)) {
-                    this._channelConfig[i].enabled = false;
-                }
+                // NB: RGB-mode alpha-slot locking is NOT applied here. Doing so would
+                // destructively clear .enabled during the Apply push that runs BEFORE
+                // _unmixEnabled is set, permanently killing genuine unmix outputs. The
+                // lock is instead applied reactively at the per-frame uniform build in
+                // draw(), gated on _unmixEnabled (see eArr fill).
             }
             // v5.0 R1 channel-config invariant (master plan §5.1 Evaluator
             // fix #3, option b): when Linear unmixing is engaged, channels
@@ -1243,6 +1446,7 @@
             // removed). The enabled flag is a shader uniform; FBO content is unaffected.
             // Pre-compute RGB colors from HSV (matches shader's old hsvToRgb, no 0.5 offset)
             this._precomputeChannelColors();
+            this._channelUniformsDirty = true;  // 3.2: gain/enabled/color changed
             if (this.viewer) {
                 this.viewer.forceRedraw();
             }
@@ -1260,7 +1464,10 @@
          * @returns {Array} Array of 16 {h, gain, enabled} objects
          */
         getChannelConfig() {
-            return this._channelConfig.slice();
+            // Deep copy: updateChannelConfig() mutates the per-channel objects in
+            // place, so a shallow .slice() would let a "saved" snapshot silently
+            // mutate. Return fresh {h, gain, enabled} objects to break aliasing.
+            return this._channelConfig.map(c => ({ h: c.h, gain: c.gain, enabled: c.enabled }));
         }
 
         /**
@@ -1312,6 +1519,7 @@
          */
         setToneMappingMode(mode) {
             this._toneMode = (mode === 'reinhard') ? 1 : 0;
+            this._channelUniformsDirty = true;  // 3.2: uToneMode is in the gated block
             if (this.viewer) {
                 this.viewer.forceRedraw();
             }
@@ -1364,6 +1572,7 @@
          */
         // ---- Internal: hash a cacheKey string (djb2) ----
         _hashCacheKey(key) {
+            if (typeof key !== 'string') return 0;
             var h = 0;
             for (var i = 0; i < key.length; i++) {
                 h = ((h << 5) - h + key.charCodeAt(i)) | 0;
@@ -1471,6 +1680,11 @@
                         // next draw runs the pre-blend pass and rebinds units.
                         this._unmixEnabled = true;
                         this._texturesValid = false;
+                        // Unlock the layer-0/1 alpha output lanes (ci<8) on the
+                        // next draw: the alpha-lock in Pass 1 is gated on
+                        // _unmixEnabled, so the dirty-gated uniform upload must
+                        // recompute eArr now that the flag flipped.
+                        this._channelUniformsDirty = true;
                     } else {
                         // Disable path — ordering per master plan §3.4 to
                         // avoid a torn read where downstream callers see
@@ -1490,6 +1704,10 @@
                         this._unmixEnabled = false;
                         this._linearOutputReady = false;
                         this._texturesValid = false;
+                        // Re-lock the alpha output lanes on the next draw (mirror
+                        // of the enable path): the lock re-evaluates only on a
+                        // dirty uniform upload, so flag it now that unmix is off.
+                        this._channelUniformsDirty = true;
                     }
                 }
             }
@@ -1503,6 +1721,11 @@
             }
             if (typeof config.numOutputs !== 'undefined') {
                 this._numOutputs = config.numOutputs;
+                // v5.2 1.5: numOutputs is the one config path that does NOT set
+                // _texturesValid=false but can flip _chainAllowed() (which compares
+                // _numOutputs === _picassoN). Clear the cache so the next eligible
+                // draw re-runs the kernel under the new chain semantics.
+                this._picassoOutputReady = false;
             }
             if (this.viewer) {
                 this.viewer.forceRedraw();
@@ -1579,6 +1802,7 @@
                 // Stale output: matrices changed, recompose downstream.
                 if (this._picassoActive) {
                     this._texturesValid = false;
+                    this._picassoOutputReady = false;  // v5.2 1.5: cached Out is stale
                 }
             }
 
@@ -1623,6 +1847,7 @@
                     // when entering PICASSO the units 0..3 must hold output textures;
                     // when leaving they must hold the raw layer FBO textures.
                     this._texturesValid = false;
+                    this._picassoOutputReady = false;  // v5.2 1.5: re-run kernel on re-engage
                 }
             }
 
@@ -1676,7 +1901,13 @@
 
         /**
          * Read 1 pixel from a PICASSO output FBO (Spectrum Inspector / self-check 7).
-         * @param {number} layerIdx 0..3
+         *
+         * STALENESS (v5.2 1.6): in Mode-3 chained PICASSO the kernel skips layers
+         * 1..3, so _picassoFBO_Out[1..3] are NOT updated and hold stale content
+         * from the last Mode-2 frame (or are cleared). Only layerIdx 0 is valid
+         * under chained Mode 3. In Mode 2 (standalone PICASSO) all 4 outputs are
+         * current.
+         * @param {number} layerIdx 0..3 (only 0 is current in Mode-3 chained)
          * @param {number} cssX
          * @param {number} cssY
          * @returns {Uint8Array(4)|null}
@@ -1704,7 +1935,11 @@
          * Full-FBO readback for one PICASSO layer (headless test fast-path).
          * Per-pixel readPixels at 2048² would take >10 minutes — this path is the
          * only way the integration test can dump the recovered image at scale.
-         * @param {number} layerIdx 0..3
+         *
+         * STALENESS (v5.2 1.6): in Mode-3 chained PICASSO the kernel skips layers
+         * 1..3, so _picassoFBO_Out[1..3] are stale. Only layerIdx 0 reflects the
+         * current frame under chained Mode 3; Mode 2 keeps all 4 outputs current.
+         * @param {number} layerIdx 0..3 (only 0 is current in Mode-3 chained)
          * @returns {Uint8Array|null} length = W*H*4, RGBA in WebGL bottom-up order
          */
         readPicassoLayerFull(layerIdx) {
@@ -1957,6 +2192,13 @@
                     var mp = { N: self._picassoN, K: self._picassoK, P: self._picassoMatrices };
                     var buf = new Uint8Array(4);
                     for (var li = 0; li < self._layerFBOs.length; li++) {
+                        // v5.2 1.6: in Mode-3 chained PICASSO the kernel skips
+                        // layers 1..3 (their _picassoFBO_Out are stale), so the
+                        // CPU/GPU round-trip is only meaningful for layer 0.
+                        // Skip li>0 when chained to keep the check honest. (The
+                        // harness runs this in Mode 2 where all layers are valid;
+                        // this guard protects against accidental Mode-3 runs.)
+                        if (self._chainAllowed() && li > 0) continue;
                         // Sample raw layer
                         gl.bindFramebuffer(gl.FRAMEBUFFER, self._layerFBOs[li]);
                         gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
@@ -2193,6 +2435,9 @@
             if (w === this._picassoFBOWidth && h === this._picassoFBOHeight) return;
             var gl = this._gl;
             if (!gl || !this._picassoFBOsAllocated) return;
+            // v5.2 1.5: a real resize re-allocates _picassoTex_Out storage below
+            // (texImage2D with null wipes content) — cached Out is now invalid.
+            this._picassoOutputReady = false;
             var floatFmt = this._picassoFloatInternalFmt;
             for (var i = 0; i < this._picassoTex_A.length; i++) {
                 gl.bindTexture(gl.TEXTURE_2D, this._picassoTex_A[i]);
@@ -2215,8 +2460,11 @@
         // L765–792 (_runPicassoKernel); split across layers per spec §1.3.
         _runPicassoKernel(activeLayers) {
             var gl = this._gl;
-            if (!gl || !this._picassoFBOsAllocated || !this._picassoProgram || !this._picassoCastProgram) return;
-            if (!this._picassoTransposed || this._picassoK <= 0) return;
+            // v5.2 1.5: return false on every early-return so draw() does NOT
+            // mark _picassoOutputReady when the body did not execute.
+            if (!gl || !this._picassoFBOsAllocated || !this._picassoProgram || !this._picassoCastProgram) return false;
+            if (!this._picassoTransposed || this._picassoK <= 0) return false;
+            if (window.__hyperBenchEnabled) __bench.picassoKernelRuns++;
 
             var w = this._picassoFBOWidth;
             var h = this._picassoFBOHeight;
@@ -2250,6 +2498,14 @@
             for (var li = 0; li < activeLayers.length; li++) {
                 if (!activeLayers[li] || li >= this._picassoFBO_A.length) continue;
                 if (!this._layerFBOTextures[li]) continue;
+                // v5.2 1.6: skip provably-inert layers 1..3 in Mode-3 chained
+                // PICASSO. Only layer 0's output (ch0..3) feeds enabled HyperBlend
+                // channels — the N=4 hard gate (_chainAllowed) guarantees layers
+                // 1..3 produce ch4..15, all disabled via uChannelEnabled. Skipping
+                // them is bit-identical. Driven by the SINGLE `chained` boolean
+                // computed once above (no re-eval). chained===false (Mode 2, or
+                // Mode 3 with _linearOutputReady false) still runs all 4 layers.
+                if (chained && li > 0) continue;
 
                 // --- Initial blit: raw uint8 layer FBO texture → _picassoFBO_A[li] (float). ---
                 // Reuse the existing _blitProgram (no scale; the kernel's iter-0 matrix
@@ -2307,6 +2563,7 @@
                     gl.bindTexture(gl.TEXTURE_2D, srcTex);
                     gl.uniformMatrix4fv(this._picassoUniforms.uP, false, this._picassoTransposed[k]);
                     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                    if (window.__hyperBenchEnabled) __bench.picassoPassCount++;
                     lastDstTex = dstTex;
                     // Swap: next src = current dst; next dst = the other FBO/tex.
                     var prevDstFbo = dstFbo;
@@ -2338,11 +2595,41 @@
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
             // Rebind PICASSO output textures to units 0..3 in place of the raw
-            // layer FBOs. The HyperBlend shader samples uLayer0..3 unchanged.
-            // Absent layers keep their cleared raw FBO texture bound from the
-            // earlier composite path (no rebind here).
+            // layer FBOs (extracted so cached fast-path frames can reuse it).
+            // v5.2 1.6: pass the SAME `chained` boolean computed above so the
+            // rebind restriction stays in lockstep with the loop skip.
+            this._rebindPicassoOutputs(activeLayers, chained);
+            return true;
+        }
+
+        // ---- Internal: rebind cached PICASSO Out textures to units 0..3 ----
+        // Extracted from _runPicassoKernel (v5.2 1.5). On cached fast-path frames
+        // the kernel is skipped but the fast path rebinds the RAW layer FBO
+        // textures to units 0..3 — those must be overridden by the cached PICASSO
+        // output textures, so this runs at the same draw() slot as the kernel.
+        // Absent layers keep their cleared raw FBO texture bound from the earlier
+        // composite path (no rebind here). Same guards as the kernel's loop.
+        //
+        // v5.2 1.6: when `chained` (Mode-3 chained PICASSO), only unit 0 is
+        // rebound to _picassoTex_Out[0]. Unit-0 rebind is MANDATORY — the kernel
+        // (and this rebind on cached frames) clobbers TEXTURE0. Units 1..3 are
+        // deliberately LEFT bound to the RAW layer FBO textures that both the
+        // full path (composite → bind units 0..3) and the fast path rebind every
+        // single frame before the PICASSO stage; _runLinearPass's exit contract
+        // also preserves units 1..3. This is SAFE because in Mode 3 the kernel
+        // skips layers 1..3 (their Out textures are never written / are stale),
+        // and HyperBlend Pass 1 has ch4..15 disabled — so units 1..3 contents
+        // do not reach the tone-mapped sum. The cached-path caller must pass the
+        // same `chained` value the kernel last ran with so Out[1..3] (which are
+        // stale under chained) are never bound.
+        _rebindPicassoOutputs(activeLayers, chained) {
+            var gl = this._gl;
+            if (!gl) return;
             for (var bi = 0; bi < activeLayers.length; bi++) {
                 if (!activeLayers[bi] || bi >= this._picassoTex_Out.length) continue;
+                // v5.2 1.6: in chained Mode 3 only unit 0 is meaningful; units
+                // 1..3 keep the raw layer FBO textures bound earlier this frame.
+                if (chained && bi > 0) break;
                 if (!this._picassoTex_Out[bi]) continue;
                 gl.activeTexture(gl.TEXTURE0 + bi);
                 gl.bindTexture(gl.TEXTURE_2D, this._picassoTex_Out[bi]);
@@ -2390,8 +2677,10 @@
         //  LINEAR PRE-BLEND STAGE (v5.0 R1)
         //  _chainAllowed         — Mode 3 dim-contract predicate (used by
         //                          _runPicassoKernel for source-tex selection).
-        //  _ensureLinearResources — lazy-allocates program + FBOs.
-        //  _initLinearProgram     — compile/link LINEAR_PASS_FRAGMENT_SRC.
+        //  _ensureLinearResources — lazy-allocates programs + FBOs.
+        //  _buildLinearProgram    — compile/link one specialized variant.
+        //  _initLinearProgram     — build variant A (outputs 0..3).
+        //  _initLinearProgramB    — build variant B (outputs 4..7, lazy).
         //  _resizeLinearFBOs      — re-allocate FBO textures on canvas resize.
         //  _runLinearPass         — writes M abundance outputs into
         //                           _linearFBOTextures[0..1] (uint8 RGBA).
@@ -2409,6 +2698,14 @@
          * so chainAllowed === true also implies numOutputs === 4. Future
          * phases that generalise N must keep the equality. Per
          * doc/picasso-math.md §4 the equality is design, not coincidence.
+         *
+         * v5.2 1.6 DEPENDENCY: the Mode-3 layer-skip optimization in
+         * _runPicassoKernel (skip li>0) and the rebind restriction in
+         * _rebindPicassoOutputs (unit 0 only) BOTH rely on this N=4 implication —
+         * only layer 0's PICASSO output (ch0..3) feeds enabled HyperBlend
+         * channels; layers 1..3 produce ch4..15 which are disabled. If a future
+         * phase generalises N>4 such that layers 1..3 carry enabled channels,
+         * revisit those two skip conditions or the optimization will drop data.
          */
         _chainAllowed() {
             // The plan (§3.2) phrases the matrix check as `_unmixMatrix != null`.
@@ -2431,56 +2728,116 @@
                 this._initLinearProgram();
                 if (!this._linearProgram) return false;
             }
+            // Variant B (outputs 4..7) is compiled lazily on the first M > 4 use.
+            if (this._numOutputs > 4 && !this._linearProgramB) {
+                this._initLinearProgramB();
+                if (!this._linearProgramB) return false;
+            }
             if (!this._linearFBOs[0] || w !== this._linearFBOWidth_pre || h !== this._linearFBOHeight_pre) {
                 this._resizeLinearFBOs(w, h);
             }
             return !!this._linearFBOs[0];
         }
 
-        // ---- Internal: compile/link the Linear pre-blend program ----
-        _initLinearProgram() {
+        // ---- Internal: lazy-(re)create PICASSO programs + FBOs on demand ----
+        // Mirrors _ensureLinearResources. Critical for context-restore recovery:
+        // the restore handler sets _picassoSupported=null (extension objects are
+        // invalidated by context loss), so re-run _probePicassoExtensions() when
+        // null BEFORE _createPicassoFBOs — otherwise the FLOAT FBO is incomplete
+        // and _createPicassoFBOs sets _picassoSupported=false + _picassoActive=false
+        // permanently, disabling PICASSO on capable hardware. The re-probe also
+        // refreshes _picassoIsWebGL2 / _picassoFloatInternalFmt (WebGL1-vs-2 ext
+        // naming + RGBA32F internal-format differences).
+        _ensurePicassoResources(w, h) {
             var gl = this._gl;
-            if (!gl) return;
+            if (!gl) return false;
+            if (w <= 0 || h <= 0) return false;
+            if (this._picassoSupported === null) {
+                this._probePicassoExtensions();
+            }
+            if (this._picassoSupported === false) return false;
+            if (!this._picassoProgram || !this._picassoCastProgram) {
+                this._initPicassoPrograms();
+                if (!this._picassoProgram || !this._picassoCastProgram) return false;
+            }
+            if (!this._picassoFBOsAllocated) {
+                this._createPicassoFBOs(w, h);
+            } else {
+                this._resizePicassoFBOs(w, h);
+            }
+            return !!this._picassoFBOsAllocated;
+        }
+
+        // ---- Internal: compile/link one specialized Linear pre-blend program ----
+        // Shared by both variants. Returns {program, uniforms, attribs} on
+        // success or null on failure. Sets static sampler bindings uLayer0..3 →
+        // units 0..3 at link time (per-program state — must run for BOTH
+        // variants, item (b)).
+        _buildLinearProgram(outputBase) {
+            var gl = this._gl;
+            if (!gl) return null;
             var vs = this._compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC);
-            var fs = this._compileShader(gl, gl.FRAGMENT_SHADER, LINEAR_PASS_FRAGMENT_SRC);
+            var fs = this._compileShader(gl, gl.FRAGMENT_SHADER, buildLinearPassFragmentSrc(outputBase));
             if (!vs || !fs) {
-                $.console.error('[HyperBlendWebGLDrawer] Linear pre-blend shader compilation failed');
+                $.console.error('[HyperBlendWebGLDrawer] Linear pre-blend shader compilation failed (outputs ' + outputBase + '..' + (outputBase + 3) + ')');
                 if (vs) gl.deleteShader(vs);
                 if (fs) gl.deleteShader(fs);
-                return;
+                return null;
             }
             var prog = gl.createProgram();
             gl.attachShader(prog, vs);
             gl.attachShader(prog, fs);
             gl.linkProgram(prog);
             if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-                $.console.error('[HyperBlendWebGLDrawer] Linear pre-blend program link failed:', gl.getProgramInfoLog(prog));
+                $.console.error('[HyperBlendWebGLDrawer] Linear pre-blend program link failed (outputs ' + outputBase + '..' + (outputBase + 3) + '):', gl.getProgramInfoLog(prog));
                 gl.deleteShader(vs);
                 gl.deleteShader(fs);
                 gl.deleteProgram(prog);
-                return;
+                return null;
             }
-            this._linearProgram = prog;
-            this._linearUniforms = {
+            var uniforms = {
                 uLayer0: gl.getUniformLocation(prog, 'uLayer0'),
                 uLayer1: gl.getUniformLocation(prog, 'uLayer1'),
                 uLayer2: gl.getUniformLocation(prog, 'uLayer2'),
                 uLayer3: gl.getUniformLocation(prog, 'uLayer3'),
-                uUnmixMatrix: gl.getUniformLocation(prog, 'uUnmixMatrix[0]'),
-                uOutputOffset: gl.getUniformLocation(prog, 'uOutputOffset')
+                uUnmixMatrix: gl.getUniformLocation(prog, 'uUnmixMatrix[0]')
             };
-            this._linearAttribs = {
+            var attribs = {
                 aPosition: gl.getAttribLocation(prog, 'aPosition'),
                 aTexCoord: gl.getAttribLocation(prog, 'aTexCoord')
             };
             // Static sampler bindings (units 0..3 match the raw layer FBO bindings)
             gl.useProgram(prog);
-            gl.uniform1i(this._linearUniforms.uLayer0, 0);
-            gl.uniform1i(this._linearUniforms.uLayer1, 1);
-            gl.uniform1i(this._linearUniforms.uLayer2, 2);
-            gl.uniform1i(this._linearUniforms.uLayer3, 3);
+            gl.uniform1i(uniforms.uLayer0, 0);
+            gl.uniform1i(uniforms.uLayer1, 1);
+            gl.uniform1i(uniforms.uLayer2, 2);
+            gl.uniform1i(uniforms.uLayer3, 3);
             gl.deleteShader(vs);
             gl.deleteShader(fs);
+            return { program: prog, uniforms: uniforms, attribs: attribs };
+        }
+
+        // ---- Internal: compile/link the Linear pre-blend variant A (outputs 0..3) ----
+        _initLinearProgram() {
+            var built = this._buildLinearProgram(0);
+            if (!built) return;
+            this._linearProgram = built.program;
+            this._linearUniforms = built.uniforms;
+            this._linearAttribs = built.attribs;
+            this._linearMatrixUploaded = false;
+        }
+
+        // ---- Internal: compile/link the Linear pre-blend variant B (outputs 4..7) ----
+        // Lazily invoked on the first M > 4 use. Per item (c), B uploads the
+        // matrix at the next _runLinearPass via its own matrixUploaded flag
+        // (reset false here) — it does not depend on the global dirty flag.
+        _initLinearProgramB() {
+            var built = this._buildLinearProgram(4);
+            if (!built) return;
+            this._linearProgramB = built.program;
+            this._linearUniformsB = built.uniforms;
+            this._linearAttribsB = built.attribs;
+            this._linearMatrixUploadedB = false;
         }
 
         // ---- Internal: (re)allocate the two RGBA8 Linear pre-blend FBOs ----
@@ -2544,14 +2901,24 @@
             if (!gl) return;
             if (!this._unmixEnabled || !this._unmixMatrix) return;
             if (!this._ensureLinearResources(w, h)) return;
+            if (window.__hyperBenchEnabled) __bench.linearPassRuns++;
 
+            // Dirty-gate the 128-float matrix upload (item (c)). When the matrix
+            // data changed, both per-program copies are stale: reset their
+            // upload flags and clear the global flag once. Each variant then
+            // re-uploads only if its own copy is stale (the lazily-compiled B
+            // starts with _linearMatrixUploadedB = false, so it uploads on its
+            // first run regardless of the global flag's state).
+            if (this._unmixMatrixDirty) {
+                this._linearMatrixUploaded = false;
+                this._linearMatrixUploadedB = false;
+                this._unmixMatrixDirty = false;
+            }
+
+            // Pass A: outputs 0..3 → _linearFBOs[0]
             gl.useProgram(this._linearProgram);
-
-            // Matrix upload — clear the dirty flag once consumed.
-            gl.uniform1fv(this._linearUniforms.uUnmixMatrix, this._unmixMatrix);
-            this._unmixMatrixDirty = false;
-
-            // Bind the static full-screen quad shared with Pass 1.
+            // Per-program attrib re-bind (item (b)): bind the static full-screen
+            // quad shared with Pass 1 against THIS program's attrib locations.
             var aPos = this._linearAttribs.aPosition;
             var aTex = this._linearAttribs.aTexCoord;
             gl.bindBuffer(gl.ARRAY_BUFFER, this._posBuffer);
@@ -2560,24 +2927,38 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, this._texBufferFBO);
             gl.enableVertexAttribArray(aTex);
             gl.vertexAttribPointer(aTex, 2, gl.FLOAT, false, 0, 0);
-
-            // Pass A: outputs 0..3 → _linearFBOs[0]
+            if (!this._linearMatrixUploaded) {
+                gl.uniform1fv(this._linearUniforms.uUnmixMatrix, this._unmixMatrix);
+                this._linearMatrixUploaded = true;
+            }
             gl.bindFramebuffer(gl.FRAMEBUFFER, this._linearFBOs[0]);
             gl.viewport(0, 0, w, h);
             gl.clearColor(0, 0, 0, 1);
             gl.clear(gl.COLOR_BUFFER_BIT);
-            gl.uniform1f(this._linearUniforms.uOutputOffset, 0.0);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             // Pass B: outputs 4..7 → _linearFBOs[1] (skip when M ≤ 4 to save
             // a draw call; the texture exists but doesn't need refreshing
             // because no consumer reads from it when numOutputs ≤ 4).
-            if (this._numOutputs > 4 && this._linearFBOs[1]) {
+            if (this._numOutputs > 4 && this._linearFBOs[1] && this._linearProgramB) {
+                gl.useProgram(this._linearProgramB);
+                // Per-program attrib re-bind against variant B's locations.
+                var aPosB = this._linearAttribsB.aPosition;
+                var aTexB = this._linearAttribsB.aTexCoord;
+                gl.bindBuffer(gl.ARRAY_BUFFER, this._posBuffer);
+                gl.enableVertexAttribArray(aPosB);
+                gl.vertexAttribPointer(aPosB, 2, gl.FLOAT, false, 0, 0);
+                gl.bindBuffer(gl.ARRAY_BUFFER, this._texBufferFBO);
+                gl.enableVertexAttribArray(aTexB);
+                gl.vertexAttribPointer(aTexB, 2, gl.FLOAT, false, 0, 0);
+                if (!this._linearMatrixUploadedB) {
+                    gl.uniform1fv(this._linearUniformsB.uUnmixMatrix, this._unmixMatrix);
+                    this._linearMatrixUploadedB = true;
+                }
                 gl.bindFramebuffer(gl.FRAMEBUFFER, this._linearFBOs[1]);
                 gl.viewport(0, 0, w, h);
                 gl.clearColor(0, 0, 0, 1);
                 gl.clear(gl.COLOR_BUFFER_BIT);
-                gl.uniform1f(this._linearUniforms.uOutputOffset, 4.0);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
 
@@ -2638,7 +3019,7 @@
             // Get uniform locations.
             // v5.0 R1: uUnmixEnabled / uUnmixMatrix removed from this program;
             // the Linear matrix multiply now lives in its own pre-blend pass
-            // (see _runLinearPass + LINEAR_PASS_FRAGMENT_SRC).
+            // (see _runLinearPass + buildLinearPassFragmentSrc).
             this._uniformLocations = {
                 uLayer0: gl.getUniformLocation(program, 'uLayer0'),
                 uLayer1: gl.getUniformLocation(program, 'uLayer1'),
@@ -2663,6 +3044,12 @@
             gl.uniform1i(this._uniformLocations.uLayer1, 1);
             gl.uniform1i(this._uniformLocations.uLayer2, 2);
             gl.uniform1i(this._uniformLocations.uLayer3, 3);
+
+            // 3.2: force a Pass-1 channel-uniform upload on the next draw. Set here
+            // (after program link + location lookup) so it covers BOTH initial
+            // construction and the webglcontextrestored re-init path (which re-calls
+            // _initWebGL) — otherwise channels render black after context restore.
+            this._channelUniformsDirty = true;
 
             // Cache attribute locations (avoids per-frame getAttribLocation calls)
             this._attribLocations = {
@@ -2769,6 +3156,8 @@
                     this._postProcessUniforms = {
                         uHyperBlendOutput: gl.getUniformLocation(beersProgram, 'uHyperBlendOutput'),
                         u_k: gl.getUniformLocation(beersProgram, 'u_k'),
+                        u_k1: gl.getUniformLocation(beersProgram, 'u_k1'),
+                        u_k2: gl.getUniformLocation(beersProgram, 'u_k2'),
                         u_nucRGB: gl.getUniformLocation(beersProgram, 'u_nucRGB'),
                         u_strRGB: gl.getUniformLocation(beersProgram, 'u_strRGB'),
                         u_colRGB: gl.getUniformLocation(beersProgram, 'u_colRGB'),
@@ -2890,6 +3279,7 @@
         // preserving all 4 RGBA channels perfectly.  Replaces the old canvas-based path.
         _compositeTilesToFBO(tiledImage, tilesToDraw, layerIndex, canvasW, canvasH, clearFBO) {
             var gl = this._gl;
+            if (window.__hyperBenchEnabled) __bench.layerComposites++;
             var viewport = this.viewport;
 
             // Bind this layer's FBO
@@ -2949,25 +3339,40 @@
 
             for (var i = 0; i < tilesToDraw.length; i++) {
                 var tile = tilesToDraw[i].tile;
+                // One-time OSD-internals contract canary (1.13): the hot path relies
+                // on tile.cacheKey being a string, tile.beingDrawn existing, and
+                // ti._tilesToDraw being an array. If a future OSD changes these,
+                // emit ONE loud error instead of failing silently frame after frame.
+                if (!this._contractChecked) {
+                    this._contractChecked = true;
+                    if (!(typeof tile.cacheKey === 'string' && 'beingDrawn' in tile && Array.isArray(tiledImage._tilesToDraw))) {
+                        $.console.error('[HyperBlendWebGLDrawer] OSD internals contract changed: ' +
+                            'expected typeof tile.cacheKey === "string", "beingDrawn" in tile, ' +
+                            'and Array.isArray(tiledImage._tilesToDraw)');
+                    }
+                }
                 if (!tile.loaded) continue;
 
-                var rendered = this.getDataToDraw(tile);
-                if (!rendered) continue;
-
-                var sourceEl = rendered.canvas || rendered;
-                if (!(sourceEl instanceof HTMLCanvasElement ||
-                      sourceEl instanceof HTMLImageElement ||
-                      sourceEl instanceof Image)) continue;
-
-                // Cache-aware tile upload: skip CPU→GPU transfer for cached tiles
+                // 3.4: cache lookup FIRST — a hit skips getDataToDraw + the instanceof
+                // checks entirely (GPU→GPU rebind). getDataToDraw/instanceof and their
+                // continues only run in the miss branch.
                 var cacheKey = tile.cacheKey;
                 var cached = this._tileCache.get(cacheKey);
                 if (cached) {
                     // Cache hit — bind existing GPU texture (GPU→GPU, fast)
                     gl.bindTexture(gl.TEXTURE_2D, cached.texture);
                     cached.lastUsed = this._frameCount;
+                    if (window.__hyperBenchEnabled) __bench.tileCacheHits++;
                 } else {
-                    // Cache miss — upload tile to GPU
+                    // Cache miss — fetch source pixels, validate, then upload to GPU
+                    var rendered = this.getDataToDraw(tile);
+                    if (!rendered) continue;
+
+                    var sourceEl = rendered.canvas || rendered;
+                    if (!(sourceEl instanceof HTMLCanvasElement ||
+                          sourceEl instanceof HTMLImageElement ||
+                          sourceEl instanceof Image)) continue;
+
                     var tex = gl.createTexture();
                     gl.bindTexture(gl.TEXTURE_2D, tex);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -2975,7 +3380,10 @@
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
                     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceEl);
-                    this._tileCache.set(cacheKey, { texture: tex, lastUsed: this._frameCount });
+                    var bytes = (sourceEl.naturalWidth || sourceEl.width) * (sourceEl.naturalHeight || sourceEl.height) * 4;
+                    this._tileCache.set(cacheKey, { texture: tex, lastUsed: this._frameCount, bytes: bytes });
+                    this._tileCacheBytes += bytes;
+                    if (window.__hyperBenchEnabled) __bench.tileUploads++;
                 }
 
                 // Tile position in viewport pixels — round to integers to prevent
@@ -3081,21 +3489,31 @@
             });
             for (var si = 0; si < staleKeys.length; si++) {
                 var stale = this._tileCache.get(staleKeys[si]);
-                if (stale) gl.deleteTexture(stale.texture);
+                if (stale) {
+                    gl.deleteTexture(stale.texture);
+                    this._tileCacheBytes -= (stale.bytes || 0);
+                }
                 this._tileCache.delete(staleKeys[si]);
             }
 
-            // Cap-based eviction (if still over limit, evict oldest)
-            if (this._tileCache.size > cap) {
+            // Byte-budget + cap eviction (post-settle only — viewportChanged returns above).
+            // Evict oldest LRU iteratively while over the byte budget OR over the entry cap.
+            // Tiles bound this frame (lastUsed === _frameCount) are exempt so they are not
+            // evicted out from under the current composite.
+            var budget = this._tileCacheByteBudget;
+            if (this._tileCacheBytes > budget || this._tileCache.size > cap) {
                 var entries = [];
                 this._tileCache.forEach(function(entry, key) {
                     entries.push({ key: key, lastUsed: entry.lastUsed });
                 });
                 entries.sort(function(a, b) { return a.lastUsed - b.lastUsed; });
-                var toRemove = this._tileCache.size - cap;
-                for (var i = 0; i < toRemove; i++) {
+                for (var i = 0; i < entries.length; i++) {
+                    if (this._tileCacheBytes <= budget && this._tileCache.size <= cap) break;
                     var e = this._tileCache.get(entries[i].key);
-                    if (e) gl.deleteTexture(e.texture);
+                    if (!e) continue;
+                    if (e.lastUsed === frame) continue; // exempt tiles bound this frame
+                    gl.deleteTexture(e.texture);
+                    this._tileCacheBytes -= (e.bytes || 0);
                     this._tileCache.delete(entries[i].key);
                 }
             }
