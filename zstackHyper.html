@@ -30,6 +30,10 @@
 			width: 100%;
 			margin: 5px 0;
 		}
+
+		/* ── Variant A: PICASSO generate-workflow zone, progress bar, pip strip,
+		   dependency line, and status band now live in openseadragon/style.css
+		   (shared single source of truth across all three viewer copies). ── */
 	</style>
 </head>
 
@@ -217,19 +221,42 @@
 						</span>
 					</div>
 					<div id="picassoPanelBody" style="padding:0; background:#f2f1ee; position:relative;">
-						<!-- Dimension bar (N × N, K iterations) -->
+						<!-- Generate workflow (Variant A: folded-in #hpDebugSection content) -->
+						<div class="gen-zone">
+							<div class="gen-row">
+								<button id="hpExtractBtn" type="button"><span class="ic"></span>Generate from current view</button>
+								<span class="gen-hint"><b>10 iterations</b> on the visible FOV<br>runs in your browser</span>
+							</div>
+							<div id="hpProgressBar" style="display:none;"><span class="hp-prog-fill"></span><span class="hp-prog-label">Optimizing…</span></div>
+							<div class="pip-strip" id="hpPipStrip" aria-hidden="true" style="display:none;"><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span></div>
+							<!-- dep status collapsed to one quiet line; expands on click (pure CSS) -->
+							<div id="hpDepPanel">
+								<input class="dep-collapse" type="checkbox" id="hpDepCollapse">
+								<label class="hp-dep-head" for="hpDepCollapse">
+									<span class="hp-dep-summary">
+										<span class="hp-dep-dot ok" id="hpDepDot"></span>
+										<span class="txt" id="hpDepSummaryTxt">Optimizer (in-browser) ready</span>
+										<span class="hp-dep-chev">▶</span>
+									</span>
+									<button id="hpDepRetry" type="button" onclick="event.preventDefault()">Recheck</button>
+								</label>
+								<div id="hpDepRows"></div>
+							</div>
+						</div>
+						<!-- Dimension bar (N × N matrix) -->
 						<div class="unmix-dim-bar">
 							<span class="unmix-dim-label">
-								<strong id="picassoNDisplay">4</strong>&times;<strong id="picassoNDisplay2">4</strong>,
-								<input type="number" id="picassoKSpinner" class="picasso-k-spinner" min="1" max="10" value="5" aria-label="PICASSO iteration count"> iterations
+								<strong id="picassoNDisplay">4</strong>&times;<strong id="picassoNDisplay2">4</strong> matrix
 							</span>
 						</div>
+						<div class="unmix-input-zone" style="padding-top:0;"><span class="unmix-autoload-msg" style="color:#a0764a;">Note: PICASSO currently supports up to 8 channels (N&le;8).</span></div>
 						<!-- Auto-load status -->
 						<div class="unmix-input-zone">
 							<span id="autoLoadMsgPicasso" class="unmix-autoload-msg" aria-live="polite"></span>
 						</div>
-						<!-- Status message -->
-						<div class="unmix-status-wrap">
+						<!-- Status band (idle / working / success / unavailable) -->
+						<div class="status-band idle" id="picassoStatusBand">
+							<span class="lamp"></span>
 							<span id="picassoStatus" class="unmix-status-msg" aria-live="polite"></span>
 						</div>
 						<!-- Button row -->
@@ -455,6 +482,10 @@
 
 		// ----- Channel customization -----
 		var defaultChannelHues = {};              // per-channel hue overrides, 1-based: e.g. {1: 0.0, 3: 0.33, 5: 0.66}
+
+		// ----- Viewer feel ----- (subjective; tuned for snappier pan/zoom. OSD defaults: animationTime 1.2, springStiffness 6.5)
+		var animationTime = 0.7;                  // seconds for pan/zoom spring to settle (lower = snappier)
+		var springStiffness = 8.0;                // pan/zoom spring stiffness (higher = snappier)
 		// ===== END DATASET CONFIGURATION =====
 
 		// Derive channel mode from channelsPerImage and expose globally for WebGL drawer
@@ -552,6 +583,156 @@
 				setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
 			}, 'image/png');
 		});
+
+		// ---- DEBUG: PICASSO Phase-2 FOV extraction (demo-only) ----
+		// Chunked base64 encoder: a flat btoa(String.fromCharCode(...buf))
+		// overflows the call stack at ~1M bytes (1024^2 canvas). Encode in 8KB
+		// windows over slices, then btoa the concatenated binary string.
+		function _hpBase64(buf) {
+			var CHUNK = 0x2000; // 8KB-window of bytes per fromCharCode call
+			var binary = '';
+			for (var off = 0; off < buf.length; off += CHUNK) {
+				binary += String.fromCharCode.apply(null, buf.subarray(off, off + CHUNK));
+			}
+			return btoa(binary);
+		}
+		// Shared optimizer-server base URL. Same-origin when the page is served
+		// over http(s) by app.py (any port); localhost:8765 fallback only for
+		// file:// / standalone. Both _hpGenerate and the dep-panel health check
+		// resolve the base through this single helper. (both-files parity token)
+		function _hpServerBase() {
+			return (window.__HP_SERVER_OVERRIDE || (location.protocol.indexOf('http') === 0 ? location.origin : 'http://127.0.0.1:8765'));
+		}
+		// Dependency checklist: fetch /health and render the server-reachable line
+		// plus one row per optimizer dependency. Fired on page load and on the
+		// #hpDepRetry click. Ugly-OK, no v4 theme.
+		function _hpHealthCheck() {
+			var $rows = $('#hpDepRows');
+			if (!$rows.length) return;
+			// FINDING 3: drive the COLLAPSED summary dot/text from real worker availability —
+			// green "Optimizer (in-browser) ready" when a module worker can run over http,
+			// amber "Optimizer (in-browser) unavailable — serve over http://" otherwise. The
+			// literal "Optimizer (in-browser)" substring is a byte-identity sync-test guard.
+			function _setDepSummary(workerOk) {
+				var $dot = $('#hpDepDot'), $txt = $('#hpDepSummaryTxt');
+				if ($dot && $dot.length && typeof $dot.removeClass === 'function') { $dot.removeClass('ok bad warn').addClass(workerOk ? 'ok' : 'warn'); }
+				if ($txt && $txt.length && typeof $txt.text === 'function') { $txt.text(workerOk ? 'Optimizer (in-browser) ready' : 'Optimizer (in-browser) unavailable — serve over http://'); }
+			}
+			$rows.html('<div class="hp-dep-line hp-dep-wait">… checking</div>');
+			fetch(_hpServerBase() + '/health', { method: 'GET' }).then(function (resp) {
+				if (!resp.ok) throw new Error('bad status');
+				return resp.json();
+			}).then(function (h) {
+				// Worker-primary, server-optional framing: the in-browser JS worker is the
+				// default optimizer path; the Flask server is opt-in only and its health is
+				// informational. Lead with the worker line; render server reachability + deps
+				// as the optional secondary section.
+				var workerOk = (typeof Worker !== 'undefined' && location.protocol.indexOf('http') === 0);
+				_setDepSummary(workerOk);
+				var html = workerOk
+					? '<div class="hp-dep-line hp-dep-ok">✓ in-browser optimizer ready (primary)</div>'
+					: '<div class="hp-dep-line hp-dep-bad">✗ in-browser optimizer unavailable — serve over http://</div>';
+				html += '<div class="hp-dep-line hp-dep-ok">✓ optimizer server reachable (optional)</div>';
+				var deps = (h && h.deps) ? h.deps : {};
+				for (var name in deps) {
+					if (!Object.prototype.hasOwnProperty.call(deps, name)) continue;
+					var d = deps[name];
+					if (d && d.installed) {
+						html += '<div class="hp-dep-line hp-dep-ok">✓ ' + name + ' ' + (d.version || '') + ' (optional)</div>';
+					} else {
+						html += '<div class="hp-dep-line hp-dep-bad">✗ ' + name + ' (missing, optional)</div>';
+					}
+				}
+				$rows.html(html);
+			}).catch(function () {
+				// In-browser worker is the default no-server path: a failed /health probe
+				// is expected and must NOT show the red 'not reachable' banner. Show a
+				// benign no-server line instead. Only fall through to the honest red line
+				// when the worker is also unavailable (file:// / no Worker support).
+				// NOTE: this banner is informational, not a health guarantee — the worker
+				// module is validated lazily on first Extract→PICASSO, and _hpRunWorker
+				// falls back to the server on a worker load/error/timeout.
+				var workerOk = (typeof Worker !== 'undefined' && location.protocol.indexOf('http') === 0);
+				_setDepSummary(workerOk);
+				if (workerOk) {
+					$rows.html('<div class="hp-dep-line hp-dep-ok">✓ in-browser optimizer ready (no server needed)</div>');
+				} else {
+					$rows.html('<div class="hp-dep-line hp-dep-bad">✗ in-browser optimizer unavailable — serve over http:// (or opt into the server)</div>');
+				}
+			});
+		}
+		$(document).on('click', '#hpDepRetry', function () { _hpHealthCheck(); });
+		// On-load dep-checklist probe — UNCONDITIONAL (spec Feature 2: probe on page
+		// load). When served by hyperpicasso-app the same-origin /health resolves and
+		// the checklist auto-renders. Under a bare static fixture (no Flask /health
+		// route) the same-origin /health returns 404 → _hpHealthCheck's existing
+		// !resp.ok throw → .catch() → honest red 'not reachable' line. The strict
+		// no-404 smoke contract whitelists /health (see test_zstack_html_runtime).
+		$(window).on('load', function () {
+			_hpHealthCheck();
+		});
+		function _hpExtractFOV() {
+			// Step 1: drawer guard — canvas drawer has no FBOs to read.
+			if (!viewer || !viewer.drawer || viewer.drawer.getType() !== 'hyperblend-webgl') {
+				alert('Extract requires the WebGL drawer (disable H&E/Trichrome/canvas filters)');
+				console.warn('[hpExtract] aborted: WebGL drawer required');
+				return;
+			}
+			// Step 2: full visible canvas region, CSS px, origin (0,0). Per the
+			// locked API contract, measure viewer.canvas directly so the requested
+			// rectangle matches OpenSeadragon's visible canvas exactly.
+			var w = viewer.canvas.clientWidth;
+			var h = viewer.canvas.clientHeight;
+			var region = viewer.drawer.readChannelRegion(0, 0, w, h);
+			if (!region) {
+				alert('FBOs not ready — pan/interact once then retry');
+				console.warn('[hpExtract] aborted: readChannelRegion returned null');
+				return;
+			}
+			var W = region.width, H = region.height, N = W * H;
+			// Step 3: de-interleave 4 RGBA planes (GL-order bytes) into 16 uint8 planes.
+			var channels = [];
+			for (var i = 0; i < 4; i++) {
+				var src = region.planes[i];
+				for (var c = 0; c < 4; c++) {
+					var plane = new Uint8Array(N);
+					for (var p = 0; p < N; p++) {
+						plane[p] = src[p * 4 + c];
+					}
+					channels[i * 4 + c] = _hpBase64(plane);
+				}
+			}
+			// Step 4: enabledMask from the authoritative drawer config (enforces
+			// _lockedChannels — RGB alpha slots 3/7/11/15 return enabled:false).
+			var cfg = viewer.drawer.getChannelConfig();
+			var enabledMask = [];
+			for (var ei = 0; ei < 16; ei++) {
+				enabledMask[ei] = (cfg[ei] && cfg[ei].enabled) ? 1 : 0;
+			}
+			// Step 5: unmix matrix (read live unmix state, NOT the PICASSO table).
+			var unmixMatrix = null, numOutputs = null;
+			if (window._unmixingActive && window._unmixMatrix) {
+				unmixMatrix = Array.from(window._unmixMatrix);
+				numOutputs = window._unmixOutputCount;
+			}
+			// Step 6: stash for Playwright pickup (step-3 will swap this for a POST).
+			window.__hpExtract = {
+				width: W,
+				height: H,
+				channelsPerImage: (window.__hyperBlendChannelMode === 'rgb' ? 3 : 4),
+				channels: channels,
+				enabledMask: enabledMask,
+				unmixMatrix: unmixMatrix,
+				numOutputs: numOutputs
+			};
+			var enabledIdx = [];
+			for (var k = 0; k < 16; k++) { if (enabledMask[k]) enabledIdx.push(k); }
+			console.log('[hpExtract] ' + W + 'x' + H + ', ' + enabledIdx.length +
+				' enabled, channels=[' + enabledIdx.join(',') + ']');
+		}
+		// NOTE: #hpExtractBtn click handler (Phase 3) is bound inside
+		// initBlendingLogic, where _setPicassoCurrentMp/_markPicassoDirty are in
+		// scope. _hpExtractFOV (above) is reachable from there via outer closure.
 
 		// ---- Scale bar ----
 		if (umPerPixel > 0) viewer.scalebar({
@@ -2491,8 +2672,9 @@
 			// ============================================================
 			window._picassoActive = false;
 			window._picassoMatricesUploaded = false;
-			window._picassoN = 4;            // Phase 3 hard-wired
-			window._picassoK = 10;           // updated on parse
+			window._picassoN = 4;            // default scaffold; overwritten by _setPicassoCurrentMp (dynamic N≤8)
+			window._picassoMaxN = 8;         // 2-RGBA-texel kernel cap (mirror Linear A/B); N>8 needs >2 texels
+			window._picassoK = 1;            // single-matrix (K=1) UI
 			var _picassoCurrentMp = null;    // { N, K, P: [Float32Array(16) × K], gamma, source, kind }
 			var _picassoIsDirty = false;
 			var _picassoLoadedOnce = false;
@@ -2574,8 +2756,9 @@
 				if (!host) return;
 				var html = '';
 				for (var k = 0; k < K; k++) {
+					var blockLabel = (K === 1) ? 'Matrix' : ('P^(' + (k + 1) + ')');
 					html += '<div class="picasso-block" data-block="' + k + '">';
-					html += '<div class="picasso-block-label">P^(' + (k + 1) + ')</div>';
+					html += '<div class="picasso-block-label">' + blockLabel + '</div>';
 					html += '<table class="unmix-matrix-table"><thead><tr><th class="unmix-corner"></th>';
 					for (var c = 0; c < N; c++) {
 						html += '<th class="unmix-col-hdr">j=' + c + '</th>';
@@ -2672,25 +2855,27 @@
 			function _updatePicassoDimDisplay(N, K) {
 				$('#picassoNDisplay').text(N);
 				$('#picassoNDisplay2').text(N);
-				// v5.1: #picassoKDisplay replaced by #picassoKSpinner — write the
-				// loaded K to the spinner so the user starts at "all iterations".
-				// Clamp to spinner max (10) to satisfy native input range.
-				$('#picassoKSpinner').val(Math.min(K, 10));
+				// Single-matrix (K=1) UI: the K spinner was removed; only N is shown.
 			}
 
 			function _setPicassoCurrentMp(mp) {
+				// Single-matrix (K=1): collapse any legacy multi-block load to its
+				// first block so the UI and apply path stay K=1.
+				if (mp.K !== 1) {
+					mp.K = 1;
+					mp.P = [mp.P[0]];
+				}
 				_picassoCurrentMp = mp;
 				window._picassoN = mp.N;
-				window._picassoK = mp.K;
-				_updatePicassoDimDisplay(mp.N, mp.K);
-				_buildPicassoTables(mp.P, mp.N, mp.K);
+				window._picassoK = 1;
+				_updatePicassoDimDisplay(mp.N, 1);
+				_buildPicassoTables(mp.P, mp.N, 1);
 			}
 
 			function _initPicassoZeroTables() {
-				// N=4 fixed for Phase 3; K=10 default scaffold (matches the spinner max).
-				var N = 4, K = 10;
-				var P = [];
-				for (var k = 0; k < K; k++) P.push(new Float32Array(N * N));
+				// N=4 default scaffold; single-matrix (K=1) UI.
+				var N = 4, K = 1;
+				var P = [new Float32Array(N * N)];
 				_picassoCurrentMp = { N: N, K: K, gamma: undefined, source: undefined, kind: undefined, P: P };
 				_updatePicassoDimDisplay(N, K);
 				_buildPicassoTables(P, N, K);
@@ -2729,7 +2914,7 @@
 						// and the drawer would no-op with "no matrix loaded".
 						try {
 							if (viewer.drawer && typeof viewer.drawer.updatePicassoConfig === 'function') {
-								viewer.drawer.updatePicassoConfig({ matrices: mp.P, K: mp.K });
+								viewer.drawer.updatePicassoConfig({ matrices: mp.P, N: mp.N, K: mp.K });
 								window._picassoMatricesUploaded = true;
 							}
 						} catch (pushErr) {
@@ -2773,21 +2958,10 @@
 					return;
 				}
 				_readPicassoTablesIntoMp();
-				// v5.1: K is now user intent via spinner, not file content. File K is
-				// the upper bound (can't run more iterations than were stored); spinner
-				// can dial down to inspect intermediate results.
+				// Single-matrix (K=1) UI: the optimizer emits one composed matrix; no
+				// per-iteration spinner. N is dynamic (2..4, drawer-validated).
 				var N = _picassoCurrentMp.N;
-				var fileK = _picassoCurrentMp.K;
-				var K_user = parseInt($('#picassoKSpinner').val(), 10);
-				if (!Number.isFinite(K_user) || K_user < 1 || K_user > 10) {
-					$status.text('K must be in 1..10; got ' + K_user).css('color', '#c45050');
-					return;
-				}
-				if (K_user > fileK) {
-					$status.text('K=' + K_user + ' exceeds loaded matrix K=' + fileK).css('color', '#c45050');
-					return;
-				}
-				var K = K_user;
+				var K = 1;
 				for (var k = 0; k < K; k++) {
 					var Pk = _picassoCurrentMp.P[k];
 					if (!Pk || Pk.length !== N * N) {
@@ -2818,11 +2992,10 @@
 					}
 				}
 				try {
-					// v5.1: slice the loaded matrices to K_user so the drawer iterates
-					// only the user-requested number of times. The drawer accepts any
-					// matrices.length in 1..10 (drawer-side validation, see L1539).
-					var slicedP = _picassoCurrentMp.P.slice(0, K);
-					viewer.drawer.updatePicassoConfig({ matrices: slicedP, K: K, active: true });
+					// Single-matrix (K=1): upload exactly one native N×N block; pass N
+					// explicitly so the drawer pads N<4 to its 4×4 GL uniform.
+					var slicedP = _picassoCurrentMp.P.slice(0, 1);
+					viewer.drawer.updatePicassoConfig({ matrices: slicedP, N: N, K: 1, active: true });
 					window._picassoMatricesUploaded = true;
 					// v5.0 Change 1: Linear panel is greyed out (no pointer events,
 					// "Locked — PICASSO is engaged" banner via ::before) while PICASSO
@@ -2830,7 +3003,7 @@
 					// class is the visual reflection. The Q5 block-on-conflict guards
 					// in Linear Apply/Clear remain as belt-and-suspenders.
 					$('#unmixPanel').addClass('cs-panel-disabled');
-					$status.text(K + '×(' + N + '×' + N + ') applied ✓').css('color', '#3d7c3f');
+					$status.text(N + '×' + N + ' applied ✓').css('color', '#3d7c3f');
 					_picassoIsDirty = false;
 					$('#picassoDirtyTag').removeClass('visible');
 					$('#picassoLoadedTag').show();
@@ -2877,7 +3050,6 @@
 					try {
 						var mp = parseMpFile(reader.result);
 						_setPicassoCurrentMp(mp);
-						$('#picassoKSpinner').val(Math.min(mp.K, 10));
 						_picassoIsDirty = false;
 						$('#picassoDirtyTag').removeClass('visible');
 						$('#picassoLoadedTag').show();
@@ -2952,6 +3124,15 @@
 					$('#picassoStatus').text('No matrix data to save').css('color', '#c45050');
 					return;
 				}
+				// Route-2 provenance warning: a matrix generated from linearly-unmixed
+				// channels is meaningless without its companion Linear Unmixing matrix.
+				if (_picassoCurrentMp && _picassoCurrentMp.hpRoute === 'hyperpicasso') {
+					if (!window.confirm('This PICASSO matrix was generated from linearly-unmixed channels (Route 2). ' +
+						'It only works together with the Linear Unmixing matrix that produced it — save that matrix too ' +
+						'via the Linear Unmixing panel\'s Save button. Click OK to save this PICASSO matrix, Cancel to go back.')) {
+						return;
+					}
+				}
 				_readPicassoTablesIntoMp();
 				if (window.showSaveFilePicker && !_picassoFileHandle) {
 					window.showSaveFilePicker({
@@ -2967,6 +3148,341 @@
 				} else {
 					_savePicassoMatrix();
 				}
+			});
+
+			// ---- Phase 3: Extract FOV -> localhost optimizer -> fill PICASSO table ----
+			// Bound here (inside initBlendingLogic) so _setPicassoCurrentMp/
+			// _markPicassoDirty are in scope. _hpExtractFOV is reachable via the
+			// outer closure. Route is AUTO-DERIVED from the authoritative drawer
+			// unmix state (viewer.drawer._unmixEnabled) — there is no route toggle UI.
+			function _hpGenerate(route) {
+				// Same-origin base (spec AUDIT-FIX B-origin / both-files parity token).
+				var HP_SERVER = (window.__HP_SERVER_OVERRIDE || (location.protocol.indexOf('http') === 0 ? location.origin : 'http://127.0.0.1:8765'));
+				// In-browser Web Worker is the DEFAULT optimizer path (Flask server is the
+				// fallback). Module workers need an http(s) origin; file:// → false → the
+				// server fallback runs unconditionally. (both-files parity token)
+				var __HP_USE_WORKER = (typeof Worker !== 'undefined' && location.protocol.indexOf('http') === 0);
+				var $status = $('#picassoStatus');
+				// Status-band lamp helper (#picassoStatusBand): drives the idle/work/ok/err
+				// lamp from the real lifecycle. Self-contained class guard (mirrors _hpCls)
+				// so it is a no-op under the minimal jQuery test stub (no addClass/removeClass).
+				var $band = $('#picassoStatusBand');
+				function _hpStatusBand(state) {
+					if (!$band || !$band.length) return;
+					if (typeof $band.removeClass === 'function') { $band.removeClass('idle work ok err'); }
+					if (typeof $band.addClass === 'function') { $band.addClass(state); }
+				}
+				// Route 2 precondition (belt-and-suspenders to the server 422).
+				if (route === 'hyperpicasso' && window.__hpExtract.unmixMatrix == null) {
+					$status.text('Route 2 requires an applied Linear Unmixing matrix').css('color', '#c45050');
+					_hpStatusBand('err');
+					return;
+				}
+				var payload = {};
+				for (var key in window.__hpExtract) {
+					if (Object.prototype.hasOwnProperty.call(window.__hpExtract, key)) {
+						payload[key] = window.__hpExtract[key];
+					}
+				}
+				payload.route = route;
+				// Progress bar helpers (#hpProgressBar shown at start, hidden on result/error).
+				// The bar OWNS the live iteration display: its label reads "N / total · NN%"
+				// and a slim 10-segment pip strip lights one pip per optimizer iteration.
+				var $prog = $('#hpProgressBar');
+				var $pips = $('#hpPipStrip');
+				// Class toggles guarded behind a feature check so the helpers run under a
+				// minimal jQuery test stub (which only exposes show/hide/find/text/css on
+				// $prog) without throwing — class manipulation is presentation-only.
+				function _hpCls($el, method, cls) {
+					if ($el && typeof $el[method] === 'function') { $el[method](cls); }
+				}
+				// Tiny pip helper (identical across the three files): light the first `it`
+				// pips, mark the current one as pulsing. Tolerant of a no-op jQuery stub.
+				function _hpSetPips(it, total) {
+					if (!$pips || !$pips.length) return;
+					$pips.show();
+					var $p = ($pips.children ? $pips.children() : null);
+					if (!$p) return;
+					_hpCls($p, 'removeClass', 'on cur');
+					for (var i = 0; i < it && i < $p.length; i++) {
+						_hpCls($p.eq(i), 'addClass', i === it - 1 ? 'cur' : 'on');
+					}
+				}
+				function _hpSetProgress(pct, it, total) {
+					$prog.show();
+					_hpCls($prog, 'removeClass', 'done');
+					$prog.find('.hp-prog-fill').css('width', pct + '%');
+					// When (it,total) are known the bar shows the live "N / total · NN%"
+					// state; otherwise a bare percentage (SSE-server path / initial reset).
+					var label = (typeof it === 'number' && typeof total === 'number')
+						? (it + ' / ' + total + ' · ' + pct + '%')
+						: (pct + '%');
+					$prog.find('.hp-prog-label').text(label);
+					if (typeof it === 'number' && typeof total === 'number') _hpSetPips(it, total);
+				}
+				function _hpHideProgress() {
+					$prog.hide();
+					_hpCls($prog, 'removeClass', 'done');
+					if ($pips && $pips.length) { $pips.hide(); _hpCls($pips, 'removeClass', 'done'); if ($pips.children) _hpCls($pips.children(), 'removeClass', 'on cur'); }
+				}
+				// Fresh-run reset (FINDING 1): a 2nd Generate must start clean. The success
+				// .done state (green bar + green pips) sticks until cleared, so strip .done
+				// from BOTH bar and pip strip, un-light every pip, zero the fill, and restore
+				// the running/shimmer label — leaving the bar visible at 0% for the new run.
+				function _hpResetProgress() {
+					$prog.show();
+					_hpCls($prog, 'removeClass', 'done');
+					$prog.find('.hp-prog-fill').css('width', '0%');
+					$prog.find('.hp-prog-label').text('Optimizing…');
+					if ($pips && $pips.length) {
+						$pips.show();
+						_hpCls($pips, 'removeClass', 'done');
+						if ($pips.children) _hpCls($pips.children(), 'removeClass', 'on cur');
+					}
+				}
+				// On a successful result: leave the bar visible but go success-green at 100%,
+				// stop the shimmer/pulse (the .done class), and green all pips. Called from the
+				// result callbacks instead of _hpHideProgress so completion reads as "done".
+				function _hpDoneProgress() {
+					$prog.show();
+					_hpCls($prog, 'addClass', 'done');
+					$prog.find('.hp-prog-fill').css('width', '100%');
+					$prog.find('.hp-prog-label').text('done · 100%');
+					// FINDING 2: success completion → green 'ok' lamp. _hpDoneProgress is the
+					// dedicated success-completion signal called on every genuine result (and
+					// is NOT inside the frozen handleResult block).
+					_hpStatusBand('ok');
+					if ($pips && $pips.length) {
+						$pips.show();
+						_hpCls($pips, 'addClass', 'done');
+						if ($pips.children) { var $pc = $pips.children(); _hpCls($pc, 'removeClass', 'cur'); _hpCls($pc, 'addClass', 'on'); }
+					}
+				}
+				// Phase-3 downstream contract, factored UNCHANGED. Takes the {N,K,matrix,route}
+				// body and runs the N!=4 hard-stop, P-matrix fill, mp.hpRoute provenance,
+				// #picassoToggle sync, and status colors. Called from BOTH transports.
+				function handleResult(body) {
+					var N = body.N, matrix = body.matrix;
+					if (!Number.isInteger(N) || N < 2 || N > window._picassoMaxN) {
+						$status.text('Generated ' + N + 'x' + N + ' matrix; the viewer supports up to ' + window._picassoMaxN + ' channels (N≤' + window._picassoMaxN + '). ' +
+							'Reduce enabled channels (Route 1) or unmix outputs (Route 2).').css('color', '#c45050');
+						return;
+					}
+					var P = [new Float32Array(N * N)];
+					for (var rr = 0; rr < N; rr++) {
+						for (var cc = 0; cc < N; cc++) {
+							P[0][rr * N + cc] = matrix[rr][cc];
+						}
+					}
+					var mp = { N: N, K: 1, gamma: undefined, source: 'hyperpicasso', kind: 'generated', P: P, hpRoute: route };
+					_setPicassoCurrentMp(mp);
+					_markPicassoDirty();
+					$('#picassoToggle').prop('checked', true);
+					$('#picassoPanel').show();
+					$status.text('Generated ' + N + 'x' + N + ' (route ' + route + ') — review and Apply/Save').css('color', '#3d7c3f');
+				}
+				function _hpErrorStatus(body) {
+					var msg = (body && body.error) ? body.error : 'Optimizer error';
+					$status.text(msg).css('color', '#c45050');
+					_hpStatusBand('err');
+				}
+				// Flask/stdlib server transport, factored VERBATIM out of the inline call
+				// site (zero logic change). Used as the fallback when the in-browser worker
+				// is unavailable (file://, no Worker, construction/load failure, watchdog).
+				function _hpServerFallback(payload) {
+					fetch(HP_SERVER + '/picasso/generate', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify(payload)
+					}).then(function (resp) {
+						var ctype = resp.headers.get('Content-Type') || '';
+						if (ctype.indexOf('text/event-stream') >= 0) {
+							// SSE transport (Flask app.py): stream progress + a single result/error.
+							var reader = resp.body.getReader();
+							var decoder = new TextDecoder();
+							var buf = '';
+							function dispatch(evt) {
+								// evt is one blank-line-delimited SSE block: event:/data: lines.
+								var ev = null, dataLines = [];
+								var parts = evt.split('\n');
+								for (var i = 0; i < parts.length; i++) {
+									var line = parts[i];
+									if (line.indexOf('event:') === 0) ev = line.slice(6).trim();
+									else if (line.indexOf('data:') === 0) dataLines.push(line.slice(5).trim());
+								}
+								if (ev === null) return;
+								var data = null;
+								try { data = JSON.parse(dataLines.join('\n')); } catch (e) { data = null; }
+								if (ev === 'progress') {
+									var pct = (data && typeof data.pct === 'number') ? data.pct : 0;
+									_hpSetProgress(pct);
+								} else if (ev === 'result') {
+									_hpDoneProgress();
+									if (data) handleResult(data);
+								} else if (ev === 'error') {
+									_hpHideProgress();
+									_hpErrorStatus(data);
+								}
+							}
+							function pump() {
+								return reader.read().then(function (res) {
+									if (res.done) {
+										// Flush any final buffered (complete) event at EOF.
+										buf += decoder.decode();
+										var tail = buf.split(/\n\n/);
+										for (var t = 0; t < tail.length; t++) {
+											if (tail[t].trim() !== '') dispatch(tail[t]);
+										}
+										return;
+									}
+									buf += decoder.decode(res.value, { stream: true });
+									// Split on blank lines; retain the incomplete trailing buffer.
+									var events = buf.split(/\n\n/);
+									buf = events.pop();
+									for (var k = 0; k < events.length; k++) {
+										if (events[k].trim() !== '') dispatch(events[k]);
+									}
+									return pump();
+								});
+							}
+							return pump();
+						}
+						// JSON transport (stdlib server.py fallback): one response body.
+						return resp.json().then(function (body) {
+							if (resp.ok) { _hpDoneProgress(); handleResult(body); }
+							else { _hpHideProgress(); _hpErrorStatus(body); }
+						});
+					}).catch(function () {
+						_hpHideProgress();
+						$status.text('Optimizer server not running — start hyperpicasso-app (see SERVER_README)').css('color', '#c45050');
+						_hpStatusBand('err');
+					});
+				}
+				// In-browser optimizer transport (default). Decodes the 16 base64 planes the
+				// server payload already carries → 16 transferable ArrayBuffers, runs the
+				// module worker, and bridges its progress/result/error to cbs. Any setup or
+				// transport failure (no Worker, construct throw, onerror, 45s idle watchdog) calls
+				// cbs.onUnavailable so the caller can fall back to the server.
+				function _hpRunWorker(payload, cbs) {
+					var worker;
+					try {
+						worker = new Worker('openseadragon/hyperpicasso.worker.js', { type: 'module' });
+					} catch (e) {
+						cbs.onUnavailable();
+						return;
+					}
+					// Decode the 16 base64 planes → 16 transferable ArrayBuffers.
+					var planeBuffers = [];
+					var chans = payload.channels || [];
+					for (var ci = 0; ci < chans.length; ci++) {
+						var bin = atob(chans[ci]);
+						var u = new Uint8Array(bin.length);
+						for (var bi = 0; bi < bin.length; bi++) { u[bi] = bin.charCodeAt(bi); }
+						planeBuffers.push(u.buffer);
+					}
+					var settled = false;
+					// IDLE watchdog (not a fixed total-runtime cap): re-armed on every
+					// progress tick. A real FOV run takes ~7s/iter × 10 iters (~72s), which
+					// would trip a fixed 60s timer mid-run and drop the eventual result. The
+					// idle timer only fires when the worker goes SILENT for 45s (never loaded
+					// / hung), which is the genuine "worker unavailable" signal.
+					var HP_WATCHDOG_IDLE_MS = 45000;
+					var watchdog;
+					function armWatchdog() {
+						clearTimeout(watchdog);
+						watchdog = setTimeout(function () {
+							if (settled) return;
+							settled = true;
+							try { worker.terminate(); } catch (e2) { /* noop */ }
+							cbs.onUnavailable();
+						}, HP_WATCHDOG_IDLE_MS);
+					}
+					worker.onmessage = function (e) {
+						var d = e.data || {};
+						if (d.type === 'progress') {
+							cbs.onProgress(d.it, d.total);
+							armWatchdog();
+						} else if (d.type === 'result') {
+							if (settled) return;
+							settled = true;
+							clearTimeout(watchdog);
+							try { worker.terminate(); } catch (e2) { /* noop */ }
+							cbs.onResult({ N: d.N, matrix: d.matrix });
+						} else if (d.type === 'error') {
+							if (settled) return;
+							settled = true;
+							clearTimeout(watchdog);
+							try { worker.terminate(); } catch (e2) { /* noop */ }
+							cbs.onError({ error: d.error });
+						}
+					};
+					worker.onerror = function () {
+						if (settled) return;
+						settled = true;
+						clearTimeout(watchdog);
+						try { worker.terminate(); } catch (e2) { /* noop */ }
+						cbs.onUnavailable();
+					};
+					armWatchdog();
+					worker.postMessage({
+						route: payload.route,
+						width: payload.width,
+						height: payload.height,
+						planeBuffers: planeBuffers,
+						enabledMask: payload.enabledMask,
+						unmixMatrix: payload.unmixMatrix,
+						numOutputs: payload.numOutputs
+					}, planeBuffers);
+				}
+				// Reset status at request start so a stale 'Generated NxN' from a prior
+				// run cannot false-green the next request before this fetch resolves.
+				$status.text('').css('color', '#a09d95');
+				// FINDING 1: clear the prior run's .done state (green bar + lit/green pips)
+				// before showing the new run, else a rerun starts visibly stale-green.
+				_hpResetProgress();
+				_hpStatusBand('work');
+				_hpSetProgress(0);
+				if (__HP_USE_WORKER) {
+					_hpRunWorker(payload, {
+						onProgress: function (it, total) {
+							// The BAR owns the live iteration display: label reads "N / total · NN%"
+							// and the pip strip lights one pip per iteration. ~7s/iter × 10 ≈ 72s run —
+							// the bar (not #picassoStatus) signals a long-but-healthy run is not hung.
+							// #picassoStatus is reserved for the idle/success/unavailable banners.
+							_hpSetProgress(Math.round(it / total * 100), it, total);
+						},
+						onResult: function (body) { _hpDoneProgress(); handleResult(body); },
+						onError: function (body) { _hpHideProgress(); _hpErrorStatus(body); },
+						onUnavailable: function () {
+							// The in-browser worker is the default runtime; the Python/Flask
+							// server is opt-in only (window.__HP_SERVER_OVERRIDE). A genuine
+							// worker failure (idle timeout / onerror / no Worker) shows an honest
+							// banner — it does NOT silently fall through to a (likely absent) server.
+							if (window.__HP_SERVER_OVERRIDE) {
+								_hpServerFallback(payload);
+							} else {
+								_hpHideProgress();
+								$status.text('In-browser optimizer unavailable (worker failed to run)').css('color', '#c45050');
+								_hpStatusBand('err');
+							}
+						}
+					});
+				} else {
+					if (window.__HP_SERVER_OVERRIDE) {
+						_hpServerFallback(payload);
+					} else {
+						_hpHideProgress();
+						$status.text('In-browser optimizer unavailable (Web Worker not supported on this page)').css('color', '#c45050');
+						_hpStatusBand('err');
+					}
+				}
+			}
+			$('#hpExtractBtn').off('click').on('click', function () {
+				window.__hpExtract = undefined;
+				_hpExtractFOV();
+				if (window.__hpExtract === undefined) return;
+				var route = (viewer.drawer && viewer.drawer._unmixEnabled === true) ? 'hyperpicasso' : 'picasso';
+				_hpGenerate(route);
 			});
 
 			_initPicassoPanel();

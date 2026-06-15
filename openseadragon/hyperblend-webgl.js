@@ -134,8 +134,9 @@
         '    //   Mode 1 (Linear only):          _linearFBOTextures[0..1] in units 0..1;',
         '    //                                   units 2..3 cleared so r8..r15 = 0',
         '    //   Mode 2 (PICASSO only):         _picassoTex_Out[0..3]',
-        '    //   Mode 3 (Linear→PICASSO):       _picassoTex_Out[0..3] (chain output;',
-        '    //                                   unreachable in R1 — L1325 throw still armed)',
+        '    //   Mode 3 (Linear→PICASSO):       N≤4: _picassoTex_Out[0..3] (chain output);',
+        '    //                                   N>4: _picassoOut2[0..1] on units 0+1 (ch0..7),',
+        '    //                                   units 2..3 cleared so ch8..15 = 0',
         '    // The HTML side guarantees channels 4..15 are disabled whenever',
         '    // unmixing is active (see _pushUnmixChannelConfig); the drawer also',
         '    // console.asserts the invariant inside updateChannelConfig.',
@@ -356,6 +357,46 @@
         ].join('\n');
     }
 
+    // Shared 2-texel block-pass fragment builder. Generalises the
+    // "sample input texels -> per-output-column MAD -> epilogue -> write one
+    // RGBA texel" shape used by buildLinearPassFragmentSrc. PICASSO N>4 uses it
+    // with two mat4 blocks (uPaa*xA + uPab*xB); Linear is NOT routed through it
+    // unless the golden-string parity test (Part G.3) confirms a byte-identical
+    // emit — until then buildLinearPassFragmentSrc stays verbatim above.
+    //
+    // The wide PICASSO kernel reads input channels ch0..7 ONLY (the two input
+    // state texels on units 0+1); ch8..15 are not part of an N≤8 unmix.
+    //
+    // opts: { outputTexel: 0|1, fused: bool }
+    //   outputTexel 0 -> uses blocks (AA, AB) [rows 0..3 of the 8x8]
+    //   outputTexel 1 -> uses blocks (BA, BB) [rows 4..7]
+    //   fused=false: plain kernel (float->float mid iteration), gl_FragColor = max(y,0)
+    //   fused=true : final/K=1 pass (float|uint8 -> uint8), max->clamp255->/255
+    function buildPicassoBlockPassSrc(opts) {
+        var fused = !!opts.fused;
+        var lines = [
+            'precision highp float;',
+            'uniform sampler2D uSrcA;',     // input state texel 0 (ch0..3) @ unit 0
+            'uniform sampler2D uSrcB;',     // input state texel 1 (ch4..7) @ unit 1
+            'uniform mat4 uPaa;',           // this output texel vs input A
+            'uniform mat4 uPab;',           // this output texel vs input B
+            'varying vec2 vTexCoord;',
+            'void main() {',
+            '    vec4 xA = texture2D(uSrcA, vTexCoord);',
+            '    vec4 xB = texture2D(uSrcB, vTexCoord);',
+            '    vec4 y = uPaa * xA + uPab * xB;',  // one output texel = two block-MADs
+            '    y = max(y, vec4(0.0));'            // PICASSO non-negativity (always)
+        ];
+        if (fused) {
+            lines.push('    y = clamp(y, 0.0, 255.0);');
+            lines.push('    gl_FragColor = (y + vec4(0.5)) / 255.0;');
+        } else {
+            lines.push('    gl_FragColor = y;');
+        }
+        lines.push('}');
+        return lines.join('\n');
+    }
+
     // PICASSO kernel: vec4 y = uP * x; clamp at ≥0. Port of FS_PICASSO from
     // demo/picasso-osd-demo.html L353–359. precision highp is required —
     // mediump would saturate the [0..255]-range float ping-pong.
@@ -381,6 +422,24 @@
         '    vec4 v = texture2D(uSrc, vTexCoord);',
         '    v = clamp(v, 0.0, 255.0);',
         '    gl_FragColor = (v + vec4(0.5)) / 255.0;',
+        '}'
+    ].join('\n');
+
+    // PICASSO fused kernel+cast (v5.2 2.2): applies the final kernel matrix AND
+    // the uint8 cast in one pass. Used for the K-1 iteration (and the sole pass
+    // when K=1), eliminating the dedicated cast pass. precision highp is required
+    // — mediump would saturate the [0..255]-range float ping-pong. Carries BOTH
+    // uSrc and uP (unlike the plain cast which has only uSrc).
+    var PICASSO_KERNEL_CAST_FRAGMENT_SHADER_SRC = [
+        'precision highp float;',
+        'uniform sampler2D uSrc;',
+        'uniform mat4 uP;',
+        'varying vec2 vTexCoord;',
+        'void main() {',
+        '    vec4 x = texture2D(uSrc, vTexCoord);',
+        '    vec4 y = max(uP * x, vec4(0.0));',
+        '    y = clamp(y, 0.0, 255.0);',
+        '    gl_FragColor = (y + vec4(0.5)) / 255.0;',
         '}'
     ].join('\n');
 
@@ -540,31 +599,42 @@
             this._linearOutputReady = false;
 
             // PICASSO stage state — lazy alloc on first activation.
-            // Per-layer ping-pong: 4 layers x { fboA float, fboB float, fbo_out uint8 }.
+            // Ping-pong A/B are now SHARED single scalars (one float fboA + one float fboB),
+            // reused per layer because the kernel processes layers strictly sequentially.
+            // Out stays PER-LAYER (4 uint8 textures) — units 0..3 need 4 distinct,
+            // concurrently-bound textures.  (v5.2 2.1)
             // Square N×N matrix stacked K times; never rectangular Cout×Cin.
             this._picassoSupported = null;          // null until first probe
             this._picassoActive = false;
             this._picassoMatrices = null;           // Array of K Float32Array(16), row-major
             this._picassoTransposed = null;         // Array of K Float32Array(16), col-major + iter-0 scale
+            this._picassoTransposed8 = null;        // N>4: Array of K {AA,AB,BA,BB} col-major mat4 blocks
+            this._picassoOut2 = null;               // N>4: 2 uint8 output texels [{fbo,tex}]
+            this._picassoFloat2 = null;             // N>4 K>1: {A:[2 {fbo,tex}], B:[2 {fbo,tex}]} float ping-pong
+            this._picassoBlockPlain = null;         // N>4 plain block-pass program {program,uniforms,attribs}
+            this._picassoBlockFused = null;         // N>4 fused-cast block-pass program {program,uniforms,attribs}
             this._picassoMatricesUploaded = false;
             this._picassoK = 0;
             this._picassoN = 0;
             this._picassoFBOsAllocated = false;
             this._picassoOutputReady = false;      // cached Out textures valid across fast-path frames (v5.2 1.5)
-            this._picassoFBO_A = [];
-            this._picassoFBO_B = [];
-            this._picassoFBO_Out = [];
-            this._picassoTex_A = [];
-            this._picassoTex_B = [];
-            this._picassoTex_Out = [];
+            this._picassoFBO_A = null;             // shared float ping-pong A (v5.2 2.1)
+            this._picassoFBO_B = null;             // shared float ping-pong B (v5.2 2.1)
+            this._picassoFBO_Out = [];             // per-layer uint8 output (units 0..3)
+            this._picassoTex_A = null;             // shared float ping-pong A texture (v5.2 2.1)
+            this._picassoTex_B = null;             // shared float ping-pong B texture (v5.2 2.1)
+            this._picassoTex_Out = [];             // per-layer uint8 output textures
             this._picassoFBOWidth = 0;
             this._picassoFBOHeight = 0;
             this._picassoProgram = null;
             this._picassoCastProgram = null;
+            this._picassoKernelCastProgram = null;  // fused kernel+cast (v5.2 2.2)
             this._picassoUniforms = {};
             this._picassoCastUniforms = {};
+            this._picassoKernelCastUniforms = {};
             this._picassoAttribs = {};
             this._picassoCastAttribs = {};
+            this._picassoKernelCastAttribs = {};
 
             try {
                 this._initWebGL();
@@ -622,14 +692,15 @@
                 // let updatePicassoConfig lazy-realloc on next activation.
                 self._picassoFBOsAllocated = false;
                 self._picassoOutputReady = false;  // v5.2 1.5: Out textures nulled below
-                self._picassoFBO_A = [];
-                self._picassoFBO_B = [];
+                self._picassoFBO_A = null;         // shared scalar (v5.2 2.1)
+                self._picassoFBO_B = null;         // shared scalar (v5.2 2.1)
                 self._picassoFBO_Out = [];
-                self._picassoTex_A = [];
-                self._picassoTex_B = [];
+                self._picassoTex_A = null;         // shared scalar (v5.2 2.1)
+                self._picassoTex_B = null;         // shared scalar (v5.2 2.1)
                 self._picassoTex_Out = [];
                 self._picassoProgram = null;
                 self._picassoCastProgram = null;
+                self._picassoKernelCastProgram = null;  // fused program (v5.2 2.2)
                 self._picassoFBOWidth = 0;
                 self._picassoFBOHeight = 0;
                 // The lost context invalidated the float-FBO extension objects
@@ -823,21 +894,43 @@
                 if (this._postProcessProgram) gl.deleteProgram(this._postProcessProgram);
                 if (this._fboTexture) gl.deleteTexture(this._fboTexture);
                 if (this._fbo) gl.deleteFramebuffer(this._fbo);
-                // PICASSO resources (12 FBOs + 12 textures + 2 programs)
-                for (var pi = 0; pi < this._picassoFBO_A.length; pi++) {
-                    if (this._picassoFBO_A[pi]) gl.deleteFramebuffer(this._picassoFBO_A[pi]);
-                    if (this._picassoTex_A[pi]) gl.deleteTexture(this._picassoTex_A[pi]);
-                }
-                for (var pj = 0; pj < this._picassoFBO_B.length; pj++) {
-                    if (this._picassoFBO_B[pj]) gl.deleteFramebuffer(this._picassoFBO_B[pj]);
-                    if (this._picassoTex_B[pj]) gl.deleteTexture(this._picassoTex_B[pj]);
-                }
+                // PICASSO resources (6 FBOs + 6 textures + 2 programs)
+                // v5.2 2.1: A/B are shared single scalars; Out stays per-layer.
+                if (this._picassoFBO_A) gl.deleteFramebuffer(this._picassoFBO_A);
+                if (this._picassoTex_A) gl.deleteTexture(this._picassoTex_A);
+                if (this._picassoFBO_B) gl.deleteFramebuffer(this._picassoFBO_B);
+                if (this._picassoTex_B) gl.deleteTexture(this._picassoTex_B);
                 for (var pk = 0; pk < this._picassoFBO_Out.length; pk++) {
                     if (this._picassoFBO_Out[pk]) gl.deleteFramebuffer(this._picassoFBO_Out[pk]);
                     if (this._picassoTex_Out[pk]) gl.deleteTexture(this._picassoTex_Out[pk]);
                 }
+                // N>4 wide-path resources (2 uint8 Out2 + up to 4 float ping-pong).
+                if (this._picassoOut2) {
+                    for (var po2 = 0; po2 < this._picassoOut2.length; po2++) {
+                        if (this._picassoOut2[po2]) {
+                            if (this._picassoOut2[po2].fbo) gl.deleteFramebuffer(this._picassoOut2[po2].fbo);
+                            if (this._picassoOut2[po2].tex) gl.deleteTexture(this._picassoOut2[po2].tex);
+                        }
+                    }
+                }
+                if (this._picassoFloat2) {
+                    var pf2sides = [this._picassoFloat2.A, this._picassoFloat2.B];
+                    for (var ps = 0; ps < pf2sides.length; ps++) {
+                        var side = pf2sides[ps] || [];
+                        for (var pe = 0; pe < side.length; pe++) {
+                            if (side[pe]) {
+                                if (side[pe].fbo) gl.deleteFramebuffer(side[pe].fbo);
+                                if (side[pe].tex) gl.deleteTexture(side[pe].tex);
+                            }
+                        }
+                    }
+                }
                 if (this._picassoProgram) gl.deleteProgram(this._picassoProgram);
                 if (this._picassoCastProgram) gl.deleteProgram(this._picassoCastProgram);
+                if (this._picassoKernelCastProgram) gl.deleteProgram(this._picassoKernelCastProgram);
+                // Block-pass programs (plain + fused-cast); freed alongside the N≤4 programs.
+                if (this._picassoBlockPlain && this._picassoBlockPlain.program) gl.deleteProgram(this._picassoBlockPlain.program);
+                if (this._picassoBlockFused && this._picassoBlockFused.program) gl.deleteProgram(this._picassoBlockFused.program);
                 // Linear pre-blend resources (v5.0 R1)
                 for (var lpi = 0; lpi < this._linearFBOs.length; lpi++) {
                     if (this._linearFBOs[lpi]) gl.deleteFramebuffer(this._linearFBOs[lpi]);
@@ -848,12 +941,16 @@
             }
             this._layerFBOs = [];
             this._layerFBOTextures = [];
-            this._picassoFBO_A = [];
-            this._picassoFBO_B = [];
+            this._picassoFBO_A = null;  // shared scalar (v5.2 2.1)
+            this._picassoFBO_B = null;  // shared scalar (v5.2 2.1)
             this._picassoFBO_Out = [];
-            this._picassoTex_A = [];
-            this._picassoTex_B = [];
+            this._picassoTex_A = null;  // shared scalar (v5.2 2.1)
+            this._picassoTex_B = null;  // shared scalar (v5.2 2.1)
             this._picassoTex_Out = [];
+            this._picassoOut2 = null;
+            this._picassoFloat2 = null;
+            this._picassoBlockPlain = null;
+            this._picassoBlockFused = null;
             this._linearFBOs = [null, null];
             this._linearFBOTextures = [null, null];
             this._linearProgram = null;
@@ -1300,22 +1397,21 @@
             var loc = this._uniformLocations;
 
             // 3.2: only re-upload channel uniforms when they actually changed
-            // (config push, tone-mode switch, unmix engage/disengage, or
-            // init/context-restore). useProgram, attrib setup and drawArrays
-            // below stay unconditional.
+            // (config push, tone-mode switch, or init/context-restore). useProgram,
+            // attrib setup and drawArrays below stay unconditional.
             if (this._channelUniformsDirty) {
                 // Fill pre-allocated uniform arrays
                 var gArr = this._uGain, eArr = this._uEnabled;
                 for (var ci = 0; ci < 16; ci++) {
                     var cfg = this._channelConfig[ci];
                     gArr[ci] = cfg.gain;
-                    // RGB mode masks alpha slots (3/7/11/15 carry no input data) — but NOT
-                    // the layer-0/1 output lanes (ci<8) under Linear unmixing, where they hold
-                    // genuine output abundances (output 3 = layer-0 alpha, output 7 = layer-1
-                    // alpha). Layer-2/3 alpha (ch11/ch15) stay locked — never unmix outputs.
-                    // _unmixEnabled flips mark _channelUniformsDirty (see updateUnmixConfig)
-                    // so this lock re-evaluates after a post-push engage/disengage.
-                    var locked = this._lockedChannels.has(ci) && !(this._unmixEnabled && ci < 8);
+                    // RGB mode masks alpha slots (3/7/11/15 carry no input data) — but
+                    // NOT the layer-0/1 output lanes (ci<8) under Linear unmixing OR PICASSO,
+                    // where they hold genuine output abundances (output 3 = layer-0 alpha,
+                    // output 7 = layer-1 alpha). Layer-2/3 alpha (ch11/ch15) stay locked —
+                    // they are never unmix/PICASSO outputs. Reactive: a post-push
+                    // _unmixEnabled / _picassoActive flip re-evaluates this with no channel re-push.
+                    var locked = this._lockedChannels.has(ci) && !((this._unmixEnabled || this._picassoActive) && ci < 8);
                     eArr[ci] = (cfg.enabled && !locked) ? 1.0 : 0.0;
                 }
                 gl.uniform3fv(loc.uChannelColor, this._uColor);
@@ -1422,8 +1518,8 @@
                 // NB: RGB-mode alpha-slot locking is NOT applied here. Doing so would
                 // destructively clear .enabled during the Apply push that runs BEFORE
                 // _unmixEnabled is set, permanently killing genuine unmix outputs. The
-                // lock is instead applied reactively at the per-frame uniform build in
-                // draw(), gated on _unmixEnabled (see eArr fill).
+                // lock is instead applied reactively at the uniform build in draw(),
+                // gated on _unmixEnabled (see eArr fill).
             }
             // v5.0 R1 channel-config invariant (master plan §5.1 Evaluator
             // fix #3, option b): when Linear unmixing is engaged, channels
@@ -1511,6 +1607,74 @@
 
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
             return result;
+        }
+
+        /**
+         * Read a rectangular region of raw channel intensities from the layer FBOs.
+         * Strict block generalization of readPixelChannels() — a thin readback only.
+         *
+         * IMPORTANT (orientation): the returned bytes are in GL framebuffer order,
+         * i.e. BOTTOM-UP rows (the first row in each plane is the lower-left of the
+         * region). This method does NOT flip pixel rows and does NOT de-interleave
+         * into 16 planes — that is intentional so there is a SINGLE Y-flip authority
+         * downstream (the Python PNG-render step). Do not add a second flip here.
+         *
+         * @param {number} x - region origin X relative to OSD container (CSS pixels)
+         * @param {number} y - region origin Y relative to OSD container (CSS pixels)
+         * @param {number} w - region width (CSS pixels)
+         * @param {number} h - region height (CSS pixels)
+         * @returns {{width:number, height:number, planes:Uint8Array[]}|null}
+         *          planes is a 4-element array (one per layer FBO), each a
+         *          Uint8Array(width*height*4) of RGBA bytes, or null if unavailable.
+         */
+        readChannelRegion(x, y, w, h) {
+            var gl = this._gl;
+            if (!gl || this._contextLost || this._layerFBOs.length === 0) return null;
+
+            // Ensure FBOs contain current data before reading (identical settle guard)
+            if (!this._texturesValid && this.viewer && this.viewer.world) {
+                var tiledImages = [];
+                for (var wi = 0; wi < this.viewer.world.getItemCount(); wi++) {
+                    tiledImages.push(this.viewer.world.getItemAt(wi));
+                }
+                this.draw(tiledImages);
+            }
+            if (!this._texturesValid) return null;
+
+            // DPR + integer rect ONCE for the whole block (not per pixel)
+            var dpr = OpenSeadragon.pixelDensityRatio;
+            var gx = Math.round(x * dpr);
+            var gy = Math.round(y * dpr);
+            var gw = Math.round(w * dpr);
+            var gh = Math.round(h * dpr);
+
+            // CLAMP to canvas bounds BEFORE readPixels. An off-canvas rect makes
+            // gl.readPixels emit INVALID_VALUE and silently zero-fill, which would
+            // feed all-zeros to the optimizer and converge on garbage.
+            var cw = this.canvas.width;
+            var ch = this.canvas.height;
+            if (gx < 0) { gw += gx; gx = 0; }
+            if (gy < 0) { gh += gy; gy = 0; }
+            if (gx > cw) gx = cw;
+            if (gy > ch) gy = ch;
+            if (gw > cw - gx) gw = cw - gx;
+            if (gh > ch - gy) gh = ch - gy;
+            if (gw <= 0 || gh <= 0) return null;
+
+            // Y-flip the BLOCK ORIGIN once (block lower-left in GL space). No -1:
+            // readPixels reads upward gh rows from glY.
+            var glY = ch - gy - gh;
+
+            var planes = [];
+            for (var i = 0; i < this._layerFBOs.length; i++) {
+                var buf = new Uint8Array(gw * gh * 4);
+                gl.bindFramebuffer(gl.FRAMEBUFFER, this._layerFBOs[i]);
+                gl.readPixels(gx, glY, gw, gh, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+                planes.push(buf);
+            }
+
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            return { width: gw, height: gh, planes: planes };
         }
 
         /**
@@ -1680,11 +1844,6 @@
                         // next draw runs the pre-blend pass and rebinds units.
                         this._unmixEnabled = true;
                         this._texturesValid = false;
-                        // Unlock the layer-0/1 alpha output lanes (ci<8) on the
-                        // next draw: the alpha-lock in Pass 1 is gated on
-                        // _unmixEnabled, so the dirty-gated uniform upload must
-                        // recompute eArr now that the flag flipped.
-                        this._channelUniformsDirty = true;
                     } else {
                         // Disable path — ordering per master plan §3.4 to
                         // avoid a torn read where downstream callers see
@@ -1704,10 +1863,6 @@
                         this._unmixEnabled = false;
                         this._linearOutputReady = false;
                         this._texturesValid = false;
-                        // Re-lock the alpha output lanes on the next draw (mirror
-                        // of the enable path): the lock re-evaluates only on a
-                        // dirty uniform upload, so flag it now that unmix is off.
-                        this._channelUniformsDirty = true;
                     }
                 }
             }
@@ -1727,6 +1882,10 @@
                 // draw re-runs the kernel under the new chain semantics.
                 this._picassoOutputReady = false;
             }
+            // The draw() locked-channel mask depends on _unmixEnabled; force a uniform
+            // rebuild so an unmix on/off toggle re-evaluates it even when no channel
+            // config push follows (e.g. Clear restoring raw blending).
+            this._channelUniformsDirty = true;
             if (this.viewer) {
                 this.viewer.forceRedraw();
             }
@@ -1747,7 +1906,9 @@
          *
          * @param {Object} config
          * @param {boolean} [config.active]
-         * @param {Array<Float32Array>} [config.matrices] - K matrices, 16 floats each, row-major
+         * @param {Array<Float32Array>} [config.matrices] - K matrices, native N×N (N²
+         *        floats), row-major. N<4 is padded to a 4×4 GL uniform internally.
+         * @param {number} [config.N] - matrix side, 2..4 (default 4 when absent)
          * @param {number} [config.K] - optional iteration count; must equal matrices.length
          */
         updatePicassoConfig(config) {
@@ -1765,36 +1926,57 @@
                 if (typeof config.K !== 'undefined' && config.K !== ms.length) {
                     throw new Error('PICASSO K=' + config.K + ' declared but ' + ms.length + ' matrices provided');
                 }
+                // Dynamic N (≤4): matrices are native N×N (N²-element). N comes from
+                // config.N (2..4); when absent it defaults to 4 for back-compat with
+                // legacy 16-float uploads (e.g. the N=4/K=5 integration harness).
+                // The GPU kernel is RGBA-packed (mat4 uP × vec4 x), so N<4 cannot be
+                // expressed natively — it is padded block-diagonally into a 4×4 with
+                // identity on the unused lanes (see _picassoPadTransposeAndScale). The
+                // used N×N block is exact; unused lanes pass through and are never read.
+                // N>8 needs >2 RGBA texels — not supported. 5≤N≤8 uses the
+                // mirror-Linear 2-texel path (four mat4 blocks); 2≤N≤4 keeps the
+                // shipped single-4×4 pad path bit-identical.
+                var derivedN = (typeof config.N === 'number') ? config.N : 4;
+                if (!Number.isInteger(derivedN) || derivedN < 2 || derivedN > 8) {
+                    throw new Error('PICASSO N must be an integer in 2..8 (2-texel kernel supports up to 8 channels); got ' + derivedN);
+                }
+                // RGB tiles ARE supported for N>4. PICASSO output channels live in
+                // ch0..7, which the reactive alpha-slot lock (uChannelEnabled fill,
+                // ~L1414) UNLOCKS when PICASSO/unmix output occupies them — the v3.1
+                // RGB-tile rule (raw-INPUT alpha lock != unmix-OUTPUT channel). Mode 3
+                // feeds clean Linear outputs; Mode 2 standalone reads raw texels exactly
+                // as the N<=4 path already does. No RGB reject (mirrors N<=4).
+                var elemN = derivedN * derivedN;
                 for (var mi = 0; mi < ms.length; mi++) {
                     var m = ms[mi];
-                    if (!(m instanceof Float32Array) || m.length !== 16) {
-                        throw new Error('PICASSO block #' + mi + ' has invalid shape; expected 16-element Float32Array (4x4 row-major)');
+                    if (!(m instanceof Float32Array) || m.length !== elemN) {
+                        throw new Error('PICASSO block #' + mi + ' has invalid shape; expected ' + elemN + '-element Float32Array (' + derivedN + 'x' + derivedN + ' row-major)');
                     }
-                    for (var mj = 0; mj < 16; mj++) {
+                    for (var mj = 0; mj < elemN; mj++) {
                         if (!isFinite(m[mj])) {
                             throw new Error('PICASSO matrix contains NaN or Inf at block ' + mi + ', index ' + mj);
                         }
                     }
                 }
-                // N is the matrix side derived from 16 floats — always 4 in Phase 3.
-                // Hard-gated here for defense-in-depth: even if the parser were
-                // bypassed, the drawer refuses anything but N=4.
-                var derivedN = 4;
-                if (derivedN !== 4) {
-                    throw new Error('PICASSO Phase 3 is hard-wired for N=4; matrix #0 shape derived as ' + derivedN + 'x' + derivedN);
-                }
 
-                // Stash matrices and pre-compute the transposed/scaled uniforms.
-                // Phase 1 trick: bake the [0..1]→[0..255] scale into iter-0's matrix
-                // so the first FS pass converts the uint8-sampled source in one step.
-                // See picasso-osd-demo.html L546–552 transposeAndScale.
+                // Stash matrices as native N×N (so the CPU reference kernel and
+                // self-check 7 stay correct), and pre-compute the padded/transposed/
+                // scaled 4×4 GL uniforms. Phase 1 trick: bake the [0..1]→[0..255]
+                // scale into iter-0's matrix so the first FS pass converts the
+                // uint8-sampled source in one step. See picasso-osd-demo.html L546–552.
                 this._picassoMatrices = [];
-                this._picassoTransposed = [];
+                this._picassoTransposed = [];     // N≤4: Array of Float32Array(16)
+                this._picassoTransposed8 = [];    // N>4 : Array of {AA,AB,BA,BB}
                 for (var ki = 0; ki < ms.length; ki++) {
-                    var copy = new Float32Array(16);
+                    var copy = new Float32Array(elemN);
                     copy.set(ms[ki]);
                     this._picassoMatrices.push(copy);
-                    this._picassoTransposed.push(this._picassoTransposeAndScale(ms[ki], ki === 0 ? 255.0 : 1.0));
+                    var scale = (ki === 0) ? 255.0 : 1.0;
+                    if (derivedN <= 4) {
+                        this._picassoTransposed.push(this._picassoPadTransposeAndScale(ms[ki], derivedN, scale));
+                    } else {
+                        this._picassoTransposed8.push(this._picassoPadTransposeAndScale8(ms[ki], derivedN, scale));
+                    }
                 }
                 this._picassoK = ms.length;
                 this._picassoN = derivedN;
@@ -1848,6 +2030,12 @@
                     // when leaving they must hold the raw layer FBO textures.
                     this._texturesValid = false;
                     this._picassoOutputReady = false;  // v5.2 1.5: re-run kernel on re-engage
+                    // The draw() locked-channel mask depends on _picassoActive (RGB mode:
+                    // ch0..7 are PICASSO outputs, unlocked at ~L1414). Force a uniform
+                    // rebuild so an engage/disengage re-evaluates it even when no channel
+                    // config push follows (#picassoApply pushes none) — symmetric with
+                    // updateUnmixConfig's _unmixEnabled-toggle rebuild.
+                    this._channelUniformsDirty = true;
                 }
             }
 
@@ -1872,7 +2060,7 @@
             if (this._picassoMatrices) {
                 matricesCopy = [];
                 for (var i = 0; i < this._picassoMatrices.length; i++) {
-                    var c = new Float32Array(16);
+                    var c = new Float32Array(this._picassoMatrices[i].length);
                     c.set(this._picassoMatrices[i]);
                     matricesCopy.push(c);
                 }
@@ -1974,11 +2162,11 @@
             var checks = [];
             var gl = this._gl;
 
-            // [1] Parser shape gate: K in 1..10 AND N === 4.
+            // [1] Parser shape gate: K in 1..10 AND N in 2..4 (RGBA-packed kernel).
             (function (self) {
-                var ok = self._picassoN === 4 && self._picassoK >= 1 && self._picassoK <= 10;
+                var ok = self._picassoN >= 2 && self._picassoN <= 8 && self._picassoK >= 1 && self._picassoK <= 10;
                 checks.push({
-                    name: 'parser shape gate (N=4, 1≤K≤10)',
+                    name: 'parser shape gate (2≤N≤8, 1≤K≤10)',
                     result: ok,
                     detail: 'N=' + self._picassoN + ' K=' + self._picassoK
                 });
@@ -2004,34 +2192,69 @@
                 });
             })(this);
 
-            // [3] FBO completeness across all 12 (4 layers × {A, B, Out}).
+            // [3] FBO completeness across all 6 (2 shared float A/B + 4 per-layer Out).
             (function (self) {
                 var details = [];
                 var ok = true;
                 if (!gl || !self._picassoFBOsAllocated) {
                     ok = false;
                     details.push('FBOs not allocated');
+                } else if (self._picassoN > 4) {
+                    // ---- N>4: wide path uses _picassoOut2 (2 uint8) + (K>1)
+                    //      _picassoFloat2.A/B (4 float). Float pair is OPTIONAL —
+                    //      null on a float-incapable context is NOT a failure (K=1
+                    //      headline path never reads it); only assert it when present. ----
+                    function checkOneW(label, fbo) {
+                        if (!fbo) { ok = false; details.push(label + '=null'); return; }
+                        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+                        var status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+                        if (status !== gl.FRAMEBUFFER_COMPLETE) { ok = false; details.push(label + '=0x' + status.toString(16)); }
+                    }
+                    if (!self._picassoOut2 || self._picassoOut2.length < 2) {
+                        ok = false; details.push('_picassoOut2 not allocated');
+                    } else {
+                        checkOneW('Out2[0]', self._picassoOut2[0] && self._picassoOut2[0].fbo);
+                        checkOneW('Out2[1]', self._picassoOut2[1] && self._picassoOut2[1].fbo);
+                    }
+                    if (self._picassoFloat2) {   // present only if float alloc succeeded
+                        for (var fi = 0; fi < 2; fi++) {
+                            checkOneW('Float2.A[' + fi + ']', self._picassoFloat2.A[fi] && self._picassoFloat2.A[fi].fbo);
+                            checkOneW('Float2.B[' + fi + ']', self._picassoFloat2.B[fi] && self._picassoFloat2.B[fi].fbo);
+                        }
+                    } else {
+                        details.push('Float2=null (K=1 OK; K>1 N>4 unavailable)');
+                    }
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 } else {
-                    var sets = [
-                        { label: 'A', arr: self._picassoFBO_A },
-                        { label: 'B', arr: self._picassoFBO_B },
-                        { label: 'Out', arr: self._picassoFBO_Out }
-                    ];
-                    for (var s = 0; s < sets.length; s++) {
-                        for (var i = 0; i < sets[s].arr.length; i++) {
-                            gl.bindFramebuffer(gl.FRAMEBUFFER, sets[s].arr[i]);
-                            var status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-                            var complete = (status === gl.FRAMEBUFFER_COMPLETE);
-                            if (!complete) {
-                                ok = false;
-                                details.push(sets[s].label + i + '=0x' + status.toString(16));
-                            }
+                    // ---- N≤4 path (UNCHANGED, verbatim) ----
+                    // v5.2 2.1: A/B are shared single scalars — check individually.
+                    function checkOne(label, fbo) {
+                        if (!fbo) {
+                            ok = false;
+                            details.push(label + '=null');
+                            return;
+                        }
+                        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+                        var status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+                        if (status !== gl.FRAMEBUFFER_COMPLETE) {
+                            ok = false;
+                            details.push(label + '=0x' + status.toString(16));
+                        }
+                    }
+                    checkOne('A', self._picassoFBO_A);
+                    checkOne('B', self._picassoFBO_B);
+                    for (var i = 0; i < self._picassoFBO_Out.length; i++) {
+                        gl.bindFramebuffer(gl.FRAMEBUFFER, self._picassoFBO_Out[i]);
+                        var status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+                        if (status !== gl.FRAMEBUFFER_COMPLETE) {
+                            ok = false;
+                            details.push('Out' + i + '=0x' + status.toString(16));
                         }
                     }
                     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 }
                 checks.push({
-                    name: 'FBO completeness (12 FBOs)',
+                    name: self._picassoN > 4 ? 'FBO completeness (wide: 2 Out + ≤4 float)' : 'FBO completeness (6 FBOs)',
                     result: ok,
                     detail: ok ? 'all COMPLETE' : details.join(', ')
                 });
@@ -2041,7 +2264,24 @@
             (function (self) {
                 var ok = false;
                 var detail = 'skipped';
-                if (gl && self._picassoProgram && self._picassoTransposed && self._picassoTransposed.length > 0) {
+                if (self._picassoN > 4) {
+                    if (gl && self._picassoBlockFused && self._picassoTransposed8 && self._picassoTransposed8.length > 0) {
+                        var bk = self._picassoTransposed8[self._picassoTransposed8.length - 1];   // final block set
+                        gl.useProgram(self._picassoBlockFused.program);
+                        gl.uniformMatrix4fv(self._picassoBlockFused.uniforms.uPaa, false, bk.AA);
+                        var gotW = gl.getUniform(self._picassoBlockFused.program, self._picassoBlockFused.uniforms.uPaa);
+                        var maxDeltaW = 0;
+                        for (var iw = 0; iw < 16; iw++) {
+                            var dw = Math.abs(gotW[iw] - bk.AA[iw]);
+                            if (dw > maxDeltaW) maxDeltaW = dw;
+                        }
+                        ok = maxDeltaW < 1e-6;
+                        detail = 'wide probe uPaa(final) max|Δ|=' + maxDeltaW.toExponential(2);
+                    } else {
+                        detail = 'wide: block program or _picassoTransposed8 missing';
+                    }
+                } else if (gl && self._picassoProgram && self._picassoTransposed && self._picassoTransposed.length > 0) {
+                    // ---- N≤4 path (UNCHANGED, verbatim) ----
                     var probeK = Math.min(2, self._picassoTransposed.length - 1);
                     gl.useProgram(self._picassoProgram);
                     gl.uniformMatrix4fv(self._picassoUniforms.uP, false, self._picassoTransposed[probeK]);
@@ -2062,33 +2302,86 @@
             })(this);
 
             // [5] Ping-pong direction correctness — simulated traversal mirroring
-            // _runPicassoKernel; dst must never equal src.
+            // the v5.2 2.2 FUSED _runPicassoKernel sequence: iter-0 samples the raw
+            // source into FBO A; mid iters (1..K-2) ping-pong A<->B; the final iter
+            // (K-1) is the fused kernel+cast pass writing into _picassoFBO_Out[li].
+            // dst must never equal src on any iter, and the final dst must be the
+            // per-layer Out FBO (not A/B). For K=1 the sole pass is the fused final
+            // pass: src=initialSrcTex, dst=Out (no A/B touched).
             (function (self) {
-                var violations = 0;
-                var trace = [];
-                for (var li = 0; li < self._picassoFBO_A.length; li++) {
-                    if (!self._picassoFBO_A[li] || !self._picassoFBO_B[li]) continue;
-                    var srcTex = self._layerFBOTextures[li];
-                    var dstFbo = self._picassoFBO_A[li];
-                    var dstTex = self._picassoTex_A[li];
-                    var altFbo = self._picassoFBO_B[li];
-                    var altTex = self._picassoTex_B[li];
-                    for (var k = 0; k < self._picassoK; k++) {
-                        if (dstTex === srcTex || dstFbo === null) violations++;
-                        var prevDstTex = dstTex;
-                        var prevDstFbo = dstFbo;
-                        srcTex = prevDstTex;
-                        dstFbo = altFbo;
-                        dstTex = altTex;
-                        altFbo = prevDstFbo;
-                        altTex = prevDstTex;
+                if (self._picassoN > 4) {
+                    var okW = true;
+                    var detailW;
+                    if (self._picassoK <= 1) {
+                        // K=1: two fused draws straight to _picassoOut2[0]/[1]; no ping-pong.
+                        okW = !!(self._picassoOut2 && self._picassoOut2[0] && self._picassoOut2[1] &&
+                                self._picassoOut2[0].tex !== self._picassoOut2[1].tex);
+                        detailW = 'wide K=1: 2 fused draws → Out2[0]/[1] distinct=' + okW;
+                    } else if (!self._picassoFloat2) {
+                        // K>1 needs the 4 float FBOs; absent ⇒ the wide kernel early-returns
+                        // (Part E.5 guard) rather than crashing. Report as a (non-fatal) pass
+                        // with a marker — the kernel will refuse to run, not produce garbage.
+                        okW = true;
+                        detailW = 'wide K>1 but _picassoFloat2=null (kernel will early-return; no run)';
+                    } else {
+                        // K>1: the 4 float FBOs (A[0],A[1],B[0],B[1]) must be 4 distinct stores.
+                        var t = [self._picassoFloat2.A[0], self._picassoFloat2.A[1],
+                                 self._picassoFloat2.B[0], self._picassoFloat2.B[1]];
+                        for (var a = 0; a < 4 && okW; a++) {
+                            if (!t[a] || !t[a].tex) { okW = false; break; }
+                            for (var b = a + 1; b < 4; b++) {
+                                if (t[b] && t[a].tex === t[b].tex) { okW = false; break; }
+                            }
+                        }
+                        detailW = 'wide K=' + self._picassoK + ': 4 float FBOs distinct=' + okW;
                     }
-                    trace.push('layer' + li + ' iters=' + self._picassoK);
+                    checks.push({
+                        name: 'ping-pong direction correctness',
+                        result: okW,
+                        detail: detailW
+                    });
+                    return;
+                }
+                // ---- N≤4 path (UNCHANGED, verbatim) ----
+                var violations = 0;
+                var finalErrors = 0;
+                var trace = [];
+                // v5.2 2.1: A/B are shared scalars; Out is per-layer.
+                for (var li = 0; li < self._picassoFBO_Out.length; li++) {
+                    if (!self._picassoFBO_A || !self._picassoFBO_B) continue;
+                    // iter-0 source is the raw layer FBO texture (chained-mode select
+                    // is irrelevant to the direction invariant — distinctness is what
+                    // matters); mid passes ping-pong starting dst=A.
+                    var srcTex = self._layerFBOTextures[li];
+                    var dstFbo = self._picassoFBO_A;
+                    var dstTex = self._picassoTex_A;
+                    var altFbo = self._picassoFBO_B;
+                    var altTex = self._picassoTex_B;
+                    for (var k = 0; k < self._picassoK; k++) {
+                        var isFinal = (k === self._picassoK - 1);
+                        if (isFinal) {
+                            // Fused final pass: writes into Out[li], samples prior src.
+                            if (self._picassoTex_Out[li] === srcTex) violations++;
+                            if (self._picassoFBO_Out[li] === null) finalErrors++;
+                            // (no swap; loop ends)
+                        } else {
+                            // Mid pass: float ping-pong A<->B; dst must differ from src.
+                            if (dstTex === srcTex || dstFbo === null) violations++;
+                            var prevDstTex = dstTex;
+                            var prevDstFbo = dstFbo;
+                            srcTex = prevDstTex;
+                            dstFbo = altFbo;
+                            dstTex = altTex;
+                            altFbo = prevDstFbo;
+                            altTex = prevDstTex;
+                        }
+                    }
+                    trace.push('layer' + li + ' iters=' + self._picassoK + ' final→Out');
                 }
                 checks.push({
                     name: 'ping-pong direction correctness',
-                    result: violations === 0,
-                    detail: trace.join(', ') + '; violations=' + violations
+                    result: violations === 0 && finalErrors === 0,
+                    detail: trace.join(', ') + '; violations=' + violations + ' finalErrors=' + finalErrors
                 });
             })(this);
 
@@ -2118,27 +2411,21 @@
                 // FBO-aliasing sub-assert: every Linear FBO/texture must be
                 // distinct from every PICASSO FBO/texture across all layers.
                 // Null entries are skipped — un-allocated slots cannot alias.
+                // v5.2 2.1: A/B are shared single scalars — compare directly;
+                // Out stays a per-layer array.
                 var aliasViolation = null;
                 var lFBOs = self._linearFBOs || [];
                 var lTex  = self._linearFBOTextures || [];
-                var pFBO_A = self._picassoFBO_A || [];
-                var pFBO_B = self._picassoFBO_B || [];
                 var pFBO_O = self._picassoFBO_Out || [];
-                var pTex_A = self._picassoTex_A || [];
-                var pTex_B = self._picassoTex_B || [];
                 var pTex_O = self._picassoTex_Out || [];
                 for (var lfi = 0; lfi < lFBOs.length && !aliasViolation; lfi++) {
                     var lf = lFBOs[lfi];
                     if (!lf) continue;
-                    for (var pi = 0; pi < pFBO_A.length && !aliasViolation; pi++) {
-                        if (pFBO_A[pi] && lf === pFBO_A[pi]) {
-                            aliasViolation = '_linearFBOs[' + lfi + '] === _picassoFBO_A[' + pi + ']';
-                        }
+                    if (self._picassoFBO_A && lf === self._picassoFBO_A) {
+                        aliasViolation = '_linearFBOs[' + lfi + '] === _picassoFBO_A';
                     }
-                    for (var pi2 = 0; pi2 < pFBO_B.length && !aliasViolation; pi2++) {
-                        if (pFBO_B[pi2] && lf === pFBO_B[pi2]) {
-                            aliasViolation = '_linearFBOs[' + lfi + '] === _picassoFBO_B[' + pi2 + ']';
-                        }
+                    if (!aliasViolation && self._picassoFBO_B && lf === self._picassoFBO_B) {
+                        aliasViolation = '_linearFBOs[' + lfi + '] === _picassoFBO_B';
                     }
                     for (var pi3 = 0; pi3 < pFBO_O.length && !aliasViolation; pi3++) {
                         if (pFBO_O[pi3] && lf === pFBO_O[pi3]) {
@@ -2149,19 +2436,59 @@
                 for (var lti = 0; lti < lTex.length && !aliasViolation; lti++) {
                     var lt = lTex[lti];
                     if (!lt) continue;
-                    for (var qi = 0; qi < pTex_A.length && !aliasViolation; qi++) {
-                        if (pTex_A[qi] && lt === pTex_A[qi]) {
-                            aliasViolation = '_linearFBOTextures[' + lti + '] === _picassoTex_A[' + qi + ']';
-                        }
+                    if (self._picassoTex_A && lt === self._picassoTex_A) {
+                        aliasViolation = '_linearFBOTextures[' + lti + '] === _picassoTex_A';
                     }
-                    for (var qi2 = 0; qi2 < pTex_B.length && !aliasViolation; qi2++) {
-                        if (pTex_B[qi2] && lt === pTex_B[qi2]) {
-                            aliasViolation = '_linearFBOTextures[' + lti + '] === _picassoTex_B[' + qi2 + ']';
-                        }
+                    if (!aliasViolation && self._picassoTex_B && lt === self._picassoTex_B) {
+                        aliasViolation = '_linearFBOTextures[' + lti + '] === _picassoTex_B';
                     }
                     for (var qi3 = 0; qi3 < pTex_O.length && !aliasViolation; qi3++) {
                         if (pTex_O[qi3] && lt === pTex_O[qi3]) {
                             aliasViolation = '_linearFBOTextures[' + lti + '] === _picassoTex_Out[' + qi3 + ']';
+                        }
+                    }
+                }
+
+                // Wide-path (N>4) texel stores must not alias Linear's texels/FBOs.
+                // Mode 3 reads Linear texels as INPUT while the wide kernel writes
+                // PICASSO Out2 — prove the stores stayed distinct (no feedback alias).
+                // Null/absent entries skipped (un-allocated slots cannot alias; the
+                // FBO-handle scan mirrors the per-layer loops above on the .tex side).
+                // Mirrors the per-layer loops above.
+                function collectWideTex(self) {
+                    var out = [];
+                    if (self._picassoOut2) {
+                        for (var i = 0; i < self._picassoOut2.length; i++) {
+                            if (self._picassoOut2[i] && self._picassoOut2[i].tex) out.push({ tag: '_picassoOut2[' + i + ']', tex: self._picassoOut2[i].tex });
+                        }
+                    }
+                    if (self._picassoFloat2) {
+                        var sides = { A: self._picassoFloat2.A, B: self._picassoFloat2.B };
+                        for (var s in sides) {
+                            var arr = sides[s] || [];
+                            for (var j = 0; j < arr.length; j++) {
+                                if (arr[j] && arr[j].tex) out.push({ tag: '_picassoFloat2.' + s + '[' + j + ']', tex: arr[j].tex });
+                            }
+                        }
+                    }
+                    return out;
+                }
+                var wideTex = collectWideTex(self);
+                for (var wti = 0; wti < lTex.length && !aliasViolation; wti++) {
+                    var wlt = lTex[wti];
+                    if (!wlt) continue;
+                    for (var wpi = 0; wpi < wideTex.length && !aliasViolation; wpi++) {
+                        if (wlt === wideTex[wpi].tex) {
+                            aliasViolation = '_linearFBOTextures[' + wti + '] === ' + wideTex[wpi].tag;
+                        }
+                    }
+                }
+                // Wide stores must also be internally distinct (4 float FBOs + 2 Out
+                // = 6 stores that the K>1 kernel needs simultaneously, Part D.5).
+                for (var wa = 0; wa < wideTex.length && !aliasViolation; wa++) {
+                    for (var wb = wa + 1; wb < wideTex.length && !aliasViolation; wb++) {
+                        if (wideTex[wa].tex === wideTex[wb].tex) {
+                            aliasViolation = wideTex[wa].tag + ' === ' + wideTex[wb].tag;
                         }
                     }
                 }
@@ -2191,37 +2518,88 @@
                     var py = Math.floor(h / 2);
                     var mp = { N: self._picassoN, K: self._picassoK, P: self._picassoMatrices };
                     var buf = new Uint8Array(4);
-                    for (var li = 0; li < self._layerFBOs.length; li++) {
-                        // v5.2 1.6: in Mode-3 chained PICASSO the kernel skips
-                        // layers 1..3 (their _picassoFBO_Out are stale), so the
-                        // CPU/GPU round-trip is only meaningful for layer 0.
-                        // Skip li>0 when chained to keep the check honest. (The
-                        // harness runs this in Mode 2 where all layers are valid;
-                        // this guard protects against accidental Mode-3 runs.)
-                        if (self._chainAllowed() && li > 0) continue;
-                        // Sample raw layer
-                        gl.bindFramebuffer(gl.FRAMEBUFFER, self._layerFBOs[li]);
-                        gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-                        var mixed = new Float32Array([buf[0], buf[1], buf[2], buf[3]]);
-                        // Run CPU reference
-                        var cpu = self._picassoCPUKernel(mixed, mp);
-                        // Sample GPU output
-                        gl.bindFramebuffer(gl.FRAMEBUFFER, self._picassoFBO_Out[li]);
-                        gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-                        var maxD = 0;
-                        for (var c = 0; c < 4; c++) {
-                            var d = Math.abs(buf[c] - cpu[c]);
-                            if (d > maxD) maxD = d;
+                    if (self._picassoN > 4) {
+                        // ---- N>4: outputs live in _picassoOut2 (NOT _picassoFBO_Out). ----
+                        // Read BOTH output texels into an 8-element buffer and compare
+                        // against the N-generic CPU oracle at mp.N = _picassoN. No li loop:
+                        // the two texels hold all N components (ch0..3 + ch4..7).
+                        if (!self._picassoOut2 || self._picassoOut2.length < 2) {
+                            ok = false;
+                            details.push('N>4 but _picassoOut2 not allocated');
+                        } else {
+                            // CPU oracle input: the two raw input state texels at (px,py),
+                            // mirroring what the wide kernel reads (Mode 2: raw layers 0+1;
+                            // Mode 3: linear texels — both excluded here by the Mode-2 harness
+                            // guard, identical to the N≤4 chained-skip rationale above).
+                            var inBufA = new Uint8Array(4);
+                            var inBufB = new Uint8Array(4);
+                            gl.bindFramebuffer(gl.FRAMEBUFFER, self._layerFBOs[0]);
+                            gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, inBufA);
+                            gl.bindFramebuffer(gl.FRAMEBUFFER, self._layerFBOs[1]);
+                            gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, inBufB);
+                            var mixed8 = new Float32Array(8);
+                            for (var mc = 0; mc < 4; mc++) {
+                                mixed8[mc] = inBufA[mc];
+                                mixed8[mc + 4] = inBufB[mc];
+                            }
+                            // _picassoCPUKernel is N-generic (loops j<mp.N); mp.N=_picassoN.
+                            var cpu8 = self._picassoCPUKernel(mixed8, mp);
+                            // GPU: read both output texels.
+                            var gpuA = new Uint8Array(4);
+                            var gpuB = new Uint8Array(4);
+                            gl.bindFramebuffer(gl.FRAMEBUFFER, self._picassoOut2[0].fbo);
+                            gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, gpuA);
+                            gl.bindFramebuffer(gl.FRAMEBUFFER, self._picassoOut2[1].fbo);
+                            gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, gpuB);
+                            var gpu8 = new Float32Array(8);
+                            for (var gc = 0; gc < 4; gc++) {
+                                gpu8[gc] = gpuA[gc];
+                                gpu8[gc + 4] = gpuB[gc];
+                            }
+                            var maxD8 = 0;
+                            for (var cc = 0; cc < self._picassoN; cc++) {
+                                var dd = Math.abs(gpu8[cc] - cpu8[cc]);
+                                if (dd > maxD8) maxD8 = dd;
+                            }
+                            if (maxD8 > 1) ok = false;
+                            details.push('N=' + self._picassoN + ' mixed=[' + Array.from(mixed8).join(',') +
+                                '] cpu=[' + Array.from(cpu8).join(',') +
+                                '] gpu=[' + Array.from(gpu8).join(',') + '] max|Δ|=' + maxD8);
                         }
-                        if (maxD > 1) ok = false;
-                        details.push('L' + li + ' mixed=[' + Array.from(mixed).join(',') +
-                            '] cpu=[' + Array.from(cpu).join(',') +
-                            '] gpu=[' + Array.from(buf).join(',') + '] max|Δ|=' + maxD);
+                    } else {
+                        // ---- N≤4 path (UNCHANGED, verbatim — reads _picassoFBO_Out[li]). ----
+                        for (var li = 0; li < self._layerFBOs.length; li++) {
+                            // v5.2 1.6: in Mode-3 chained PICASSO the kernel skips
+                            // layers 1..3 (their _picassoFBO_Out are stale), so the
+                            // CPU/GPU round-trip is only meaningful for layer 0.
+                            // Skip li>0 when chained to keep the check honest. (The
+                            // harness runs this in Mode 2 where all layers are valid;
+                            // this guard protects against accidental Mode-3 runs.)
+                            if (self._chainAllowed() && li > 0) continue;
+                            // Sample raw layer
+                            gl.bindFramebuffer(gl.FRAMEBUFFER, self._layerFBOs[li]);
+                            gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+                            var mixed = new Float32Array([buf[0], buf[1], buf[2], buf[3]]);
+                            // Run CPU reference
+                            var cpu = self._picassoCPUKernel(mixed, mp);
+                            // Sample GPU output
+                            gl.bindFramebuffer(gl.FRAMEBUFFER, self._picassoFBO_Out[li]);
+                            gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+                            var maxD = 0;
+                            for (var c = 0; c < 4; c++) {
+                                var d = Math.abs(buf[c] - cpu[c]);
+                                if (d > maxD) maxD = d;
+                            }
+                            if (maxD > 1) ok = false;
+                            details.push('L' + li + ' mixed=[' + Array.from(mixed).join(',') +
+                                '] cpu=[' + Array.from(cpu).join(',') +
+                                '] gpu=[' + Array.from(buf).join(',') + '] max|Δ|=' + maxD);
+                        }
                     }
                     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 }
                 checks.push({
-                    name: 'CPU/GPU round-trip per layer (canvas center)',
+                    name: self._picassoN > 4 ? 'CPU/GPU round-trip (wide 2-texel, canvas center)' : 'CPU/GPU round-trip per layer (canvas center)',
                     result: ok,
                     detail: details.join('; ')
                 });
@@ -2229,13 +2607,17 @@
 
             // [8] Row-major → column-major transpose verified at element (0,1).
             (function (self) {
-                var ok = false;
-                var detail = 'skipped';
-                if (self._picassoMatrices && self._picassoMatrices.length > 1) {
+                // K=1 (the single-matrix default) has no 2nd block to probe — the
+                // check is not applicable and counts as a pass, not a failure. For
+                // K>1 it validates block #1 with the N-aware pad helper (correct N≤4).
+                var ok = true;
+                var detail = 'skipped (K=1, single matrix)';
+                if (self._picassoN <= 4 && self._picassoMatrices && self._picassoMatrices.length > 1) {
+                    var N = self._picassoN;
                     var rm = self._picassoMatrices[1];
-                    var tr = self._picassoTransposeAndScale(rm, 1.0);
+                    var tr = self._picassoPadTransposeAndScale(rm, N, 1.0);
                     var got00 = tr[0], want00 = rm[0];
-                    var got10 = tr[1], want10 = rm[1 * 4 + 0];   // file row=1 col=0 → uniform col=0 row=1
+                    var got10 = tr[1], want10 = rm[1 * N + 0];   // file row=1 col=0 → uniform col=0 row=1
                     var got01 = tr[4], want01 = rm[1];           // file row=0 col=1 → uniform col=1 row=0
                     ok = (got00 === want00) && (got10 === want10) && (got01 === want01);
                     detail = '(0,0): file=' + want00.toFixed(4) + ' uniform=' + got00.toFixed(4) +
@@ -2346,9 +2728,76 @@
                 gl.deleteShader(vs2);
                 gl.deleteShader(fs2);
             }
+
+            // Fused kernel+cast program (v5.2 2.2): final-iteration matrix + uint8
+            // cast in one pass. For K=1 this single program replaces blit+kernel+cast.
+            var vs3 = this._compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC);
+            var fs3 = this._compileShader(gl, gl.FRAGMENT_SHADER, PICASSO_KERNEL_CAST_FRAGMENT_SHADER_SRC);
+            if (vs3 && fs3) {
+                var kcprog = gl.createProgram();
+                gl.attachShader(kcprog, vs3);
+                gl.attachShader(kcprog, fs3);
+                gl.linkProgram(kcprog);
+                if (gl.getProgramParameter(kcprog, gl.LINK_STATUS)) {
+                    this._picassoKernelCastProgram = kcprog;
+                    this._picassoKernelCastUniforms = {
+                        uSrc: gl.getUniformLocation(kcprog, 'uSrc'),
+                        uP: gl.getUniformLocation(kcprog, 'uP')
+                    };
+                    this._picassoKernelCastAttribs = {
+                        aPosition: gl.getAttribLocation(kcprog, 'aPosition'),
+                        aTexCoord: gl.getAttribLocation(kcprog, 'aTexCoord')
+                    };
+                } else {
+                    $.console.error('[HyperBlendWebGLDrawer] PICASSO fused kernel+cast program link failed:', gl.getProgramInfoLog(kcprog));
+                    this._picassoSupported = false;
+                }
+                gl.deleteShader(vs3);
+                gl.deleteShader(fs3);
+            }
+
+            // --- N>4 (2-texel) block-pass programs (mirror Linear A/B). ---
+            // Two source strings (plain, fused-cast); each is used for BOTH
+            // output texels (texel choice is a uniform binding, not a shader).
+            // Linked here so first N>4 activation is allocation-only.
+            var self = this;
+            function linkBlock(srcStr, label) {
+                var vs = self._compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC);
+                var fs = self._compileShader(gl, gl.FRAGMENT_SHADER, srcStr);
+                if (!vs || !fs) { self._picassoSupported = false; return null; }
+                var prog = gl.createProgram();
+                gl.attachShader(prog, vs);
+                gl.attachShader(prog, fs);
+                gl.linkProgram(prog);
+                var ok = gl.getProgramParameter(prog, gl.LINK_STATUS);
+                if (!ok) {
+                    $.console.error('[HyperBlendWebGLDrawer] PICASSO block program (' + label + ') link failed:', gl.getProgramInfoLog(prog));
+                    self._picassoSupported = false;
+                }
+                gl.deleteShader(vs);
+                gl.deleteShader(fs);
+                if (!ok) return null;
+                return {
+                    program: prog,
+                    uniforms: {
+                        uSrcA: gl.getUniformLocation(prog, 'uSrcA'),
+                        uSrcB: gl.getUniformLocation(prog, 'uSrcB'),
+                        uPaa: gl.getUniformLocation(prog, 'uPaa'),
+                        uPab: gl.getUniformLocation(prog, 'uPab')
+                    },
+                    attribs: {
+                        aPosition: gl.getAttribLocation(prog, 'aPosition'),
+                        aTexCoord: gl.getAttribLocation(prog, 'aTexCoord')
+                    }
+                };
+            }
+            this._picassoBlockPlain = linkBlock(buildPicassoBlockPassSrc({ fused: false }), 'plain');
+            this._picassoBlockFused = linkBlock(buildPicassoBlockPassSrc({ fused: true }), 'fused-cast');
         }
 
-        // ---- Internal: allocate 12 PICASSO FBOs (4 layers × {A float, B float, Out uint8}) ----
+        // ---- Internal: allocate PICASSO FBOs (2 shared float A/B + 4 uint8 Out = 6 FBOs) ----
+        // v5.2 2.1: A/B are shared single scalars (the kernel processes layers
+        // sequentially, rewriting A/B each layer); Out stays per-layer (units 0..3).
         // Mirrors Phase 2 createFBO at picasso-osd-demo.html L516–531 with the
         // completeness probe per FBO. On ANY failure free everything and set
         // _picassoSupported=false so the gate in updatePicassoConfig skips PICASSO.
@@ -2380,46 +2829,92 @@
                 return { tex: tex, fbo: fbo, ok: status === gl.FRAMEBUFFER_COMPLETE, status: status };
             }
 
-            this._picassoFBO_A = [];
-            this._picassoFBO_B = [];
+            this._picassoFBO_A = null;
+            this._picassoFBO_B = null;
             this._picassoFBO_Out = [];
-            this._picassoTex_A = [];
-            this._picassoTex_B = [];
+            this._picassoTex_A = null;
+            this._picassoTex_B = null;
             this._picassoTex_Out = [];
 
-            for (var i = 0; i < 4; i++) {
-                var a = makeFBO(gl.FLOAT);
-                var b = makeFBO(gl.FLOAT);
-                var o = makeFBO(gl.UNSIGNED_BYTE);
-                if (!a.ok || !b.ok || !o.ok) {
-                    ok = false;
-                    $.console.error('[HyperBlendWebGLDrawer] PICASSO FBO incomplete (layer ' + i + '): A=0x' +
-                        a.status.toString(16) + ' B=0x' + b.status.toString(16) + ' Out=0x' + o.status.toString(16));
-                    break;
+            // v5.2 2.1: allocate the two SHARED float ping-pong FBOs once (not per layer).
+            var a = makeFBO(gl.FLOAT);
+            var b = makeFBO(gl.FLOAT);
+            if (!a.ok || !b.ok) {
+                ok = false;
+                $.console.error('[HyperBlendWebGLDrawer] PICASSO shared float FBO incomplete: A=0x' +
+                    a.status.toString(16) + ' B=0x' + b.status.toString(16));
+            } else {
+                this._picassoFBO_A = a.fbo;
+                this._picassoTex_A = a.tex;
+                this._picassoFBO_B = b.fbo;
+                this._picassoTex_B = b.tex;
+            }
+
+            // Per-layer uint8 Out FBOs (units 0..3 bound concurrently — must persist).
+            if (ok) {
+                for (var i = 0; i < 4; i++) {
+                    var o = makeFBO(gl.UNSIGNED_BYTE);
+                    if (!o.ok) {
+                        ok = false;
+                        $.console.error('[HyperBlendWebGLDrawer] PICASSO Out FBO incomplete (layer ' + i + '): Out=0x' +
+                            o.status.toString(16));
+                        break;
+                    }
+                    this._picassoFBO_Out.push(o.fbo);
+                    this._picassoTex_Out.push(o.tex);
                 }
-                this._picassoFBO_A.push(a.fbo);
-                this._picassoFBO_B.push(b.fbo);
-                this._picassoFBO_Out.push(o.fbo);
-                this._picassoTex_A.push(a.tex);
-                this._picassoTex_B.push(b.tex);
-                this._picassoTex_Out.push(o.tex);
+            }
+
+            // --- N>4 (2-texel) extra FBOs: 2 uint8 output texels + (for K>1)
+            //     4 float ping-pong FBOs. Allocated unconditionally here (cheap:
+            //     2 uint8 + 4 float at canvas size); the K=1 path touches only
+            //     _picassoOut2. Float pair gated separately at draw if needed.
+            //     Uses the _allocTexelFBO factory (PICASSO-internal; Linear stays frozen). ---
+            this._picassoOut2 = null;
+            this._picassoFloat2 = null;
+            if (ok) {
+                this._picassoOut2 = [];
+                for (var oi = 0; oi < 2; oi++) {
+                    var ot = this._allocTexelFBO(created, w, h, gl.UNSIGNED_BYTE, gl.NEAREST);
+                    if (!ot.ok) { ok = false; $.console.error('[HyperBlendWebGLDrawer] PICASSO Out2 FBO ' + oi + ' incomplete: 0x' + ot.status.toString(16)); break; }
+                    this._picassoOut2.push({ fbo: ot.fbo, tex: ot.tex });
+                }
+            }
+            if (ok && this._picassoSupported !== false) {
+                this._picassoFloat2 = { A: [], B: [] };
+                var floatOk = true;
+                for (var fi2 = 0; fi2 < 2; fi2++) {
+                    var fa = this._allocTexelFBO(created, w, h, gl.FLOAT, gl.NEAREST);
+                    var fb = this._allocTexelFBO(created, w, h, gl.FLOAT, gl.NEAREST);
+                    if (!fa.ok || !fb.ok) { floatOk = false; break; }
+                    this._picassoFloat2.A.push({ fbo: fa.fbo, tex: fa.tex });
+                    this._picassoFloat2.B.push({ fbo: fb.fbo, tex: fb.tex });
+                }
+                if (!floatOk) {
+                    // K>1,N>4 unavailable on this context; K=1,N>4 still works
+                    // (fused-cast path never reads _picassoFloat2). Leave a marker.
+                    this._picassoFloat2 = null;
+                }
             }
 
             if (!ok) {
-                // Free everything created so far — leave the drawer in a clean
-                // state where _picassoActive cannot be true.
+                // Free everything created so far (makeFBO recorded shared A/B + any
+                // Out into `created`) — leave the drawer in a clean state where
+                // _picassoActive cannot be true.
                 for (var fi = 0; fi < created.framebuffers.length; fi++) {
                     gl.deleteFramebuffer(created.framebuffers[fi]);
                 }
                 for (var ti = 0; ti < created.textures.length; ti++) {
                     gl.deleteTexture(created.textures[ti]);
                 }
-                self._picassoFBO_A = [];
-                self._picassoFBO_B = [];
+                self._picassoFBO_A = null;
+                self._picassoFBO_B = null;
                 self._picassoFBO_Out = [];
-                self._picassoTex_A = [];
-                self._picassoTex_B = [];
+                self._picassoTex_A = null;
+                self._picassoTex_B = null;
                 self._picassoTex_Out = [];
+                self._picassoOut2 = null;
+                self._picassoFloat2 = null;
                 self._picassoSupported = false;
                 self._picassoActive = false;
                 return;
@@ -2428,6 +2923,30 @@
             this._picassoFBOsAllocated = true;
             this._picassoFBOWidth = w;
             this._picassoFBOHeight = h;
+        }
+
+        // ---- Internal: allocate one texel FBO+texture (PICASSO-internal, D.1). ----
+        // `created` (optional) accumulates resources for rollback on failure.
+        // Linear's _resizeLinearFBOs does NOT route through this (it reuses
+        // textures + sets UNPACK_PREMULTIPLY_ALPHA — behaviours not replicated here,
+        // see Part D.1); this is the PICASSO A/B/Out + wide Out2/Float2 allocator.
+        _allocTexelFBO(created, w, h, dtype, filter) {
+            var gl = this._gl;
+            var internalFmt = (dtype === gl.FLOAT) ? this._picassoFloatInternalFmt : gl.RGBA;
+            var tex = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.texImage2D(gl.TEXTURE_2D, 0, internalFmt, w, h, 0, gl.RGBA, dtype, null);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            var fbo = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+            var status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            if (created) { created.textures.push(tex); created.framebuffers.push(fbo); }
+            return { tex: tex, fbo: fbo, ok: status === gl.FRAMEBUFFER_COMPLETE, status: status };
         }
 
         // ---- Internal: resize PICASSO FBO textures to match canvas ----
@@ -2439,13 +2958,40 @@
             // (texImage2D with null wipes content) — cached Out is now invalid.
             this._picassoOutputReady = false;
             var floatFmt = this._picassoFloatInternalFmt;
-            for (var i = 0; i < this._picassoTex_A.length; i++) {
-                gl.bindTexture(gl.TEXTURE_2D, this._picassoTex_A[i]);
+            // v5.2 2.1: shared A/B resize once (scalar, null-guarded).
+            if (this._picassoTex_A) {
+                gl.bindTexture(gl.TEXTURE_2D, this._picassoTex_A);
                 gl.texImage2D(gl.TEXTURE_2D, 0, floatFmt, w, h, 0, gl.RGBA, gl.FLOAT, null);
-                gl.bindTexture(gl.TEXTURE_2D, this._picassoTex_B[i]);
+            }
+            if (this._picassoTex_B) {
+                gl.bindTexture(gl.TEXTURE_2D, this._picassoTex_B);
                 gl.texImage2D(gl.TEXTURE_2D, 0, floatFmt, w, h, 0, gl.RGBA, gl.FLOAT, null);
+            }
+            // Per-layer Out uint8 resize.
+            for (var i = 0; i < this._picassoTex_Out.length; i++) {
                 gl.bindTexture(gl.TEXTURE_2D, this._picassoTex_Out[i]);
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+            }
+            // --- N>4 wide-path FBOs (mirror the A/B + Out resize above). ---
+            if (this._picassoOut2) {
+                for (var oi = 0; oi < this._picassoOut2.length; oi++) {
+                    if (this._picassoOut2[oi] && this._picassoOut2[oi].tex) {
+                        gl.bindTexture(gl.TEXTURE_2D, this._picassoOut2[oi].tex);
+                        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+                    }
+                }
+            }
+            if (this._picassoFloat2) {
+                for (var ri = 0; ri < 2; ri++) {
+                    if (this._picassoFloat2.A[ri] && this._picassoFloat2.A[ri].tex) {
+                        gl.bindTexture(gl.TEXTURE_2D, this._picassoFloat2.A[ri].tex);
+                        gl.texImage2D(gl.TEXTURE_2D, 0, floatFmt, w, h, 0, gl.RGBA, gl.FLOAT, null);
+                    }
+                    if (this._picassoFloat2.B[ri] && this._picassoFloat2.B[ri].tex) {
+                        gl.bindTexture(gl.TEXTURE_2D, this._picassoFloat2.B[ri].tex);
+                        gl.texImage2D(gl.TEXTURE_2D, 0, floatFmt, w, h, 0, gl.RGBA, gl.FLOAT, null);
+                    }
+                }
             }
             gl.bindTexture(gl.TEXTURE_2D, null);
             this._picassoFBOWidth = w;
@@ -2453,16 +2999,23 @@
         }
 
         // ---- Internal: run K iterations of max(0, P^(k) @ x) per active layer ----
-        // Per-layer flow: raw layer FBO → initial blit into A (float) → K kernel
-        // passes ping-pong A↔B with the existing _blitProgram REPLACED by
-        // _picassoProgram and the per-iter transposed matrix → final cast to Out
-        // (uint8) → rebind Out to texture unit i. Ported from picasso-osd-demo.html
+        // Per-layer flow (v5.2 2.2, K+2→K passes): iteration 0 samples the raw
+        // source texture directly (blit folded in — its ×255 promotion is baked
+        // into _picassoTransposed[0]); mid iterations ping-pong A↔B with
+        // _picassoProgram; the FINAL iteration (k===K-1) uses the fused
+        // _picassoKernelCastProgram (kernel matrix + clamp + uint8 cast) writing
+        // straight into Out (uint8) → rebind Out to texture unit i. For K=1 the
+        // fused program is the sole pass. Ported from picasso-osd-demo.html
         // L765–792 (_runPicassoKernel); split across layers per spec §1.3.
         _runPicassoKernel(activeLayers) {
             var gl = this._gl;
             // v5.2 1.5: return false on every early-return so draw() does NOT
             // mark _picassoOutputReady when the body did not execute.
-            if (!gl || !this._picassoFBOsAllocated || !this._picassoProgram || !this._picassoCastProgram) return false;
+            if (!gl || !this._picassoFBOsAllocated || !this._picassoProgram || !this._picassoCastProgram || !this._picassoKernelCastProgram) return false;
+            if (this._picassoN > 4) {
+                return this._runPicassoKernelWide(activeLayers);
+            }
+            // ---- N≤4: existing single-4×4 path below (UNCHANGED, bit-identical). ----
             if (!this._picassoTransposed || this._picassoK <= 0) return false;
             if (window.__hyperBenchEnabled) __bench.picassoKernelRuns++;
 
@@ -2470,10 +3023,10 @@
             var h = this._picassoFBOHeight;
             var aPosKernel = this._picassoAttribs.aPosition;
             var aTexKernel = this._picassoAttribs.aTexCoord;
-            var aPosCast = this._picassoCastAttribs.aPosition;
-            var aTexCast = this._picassoCastAttribs.aTexCoord;
-            var aPosBlit = this._blitAttribs.aPosition;
-            var aTexBlit = this._blitAttribs.aTexCoord;
+            // v5.2 2.2: fused kernel+cast attribs (blit attribs retired — the blit
+            // pass is folded into iteration 0; the dedicated cast pass into K-1).
+            var aPosKC = this._picassoKernelCastAttribs.aPosition;
+            var aTexKC = this._picassoKernelCastAttribs.aTexCoord;
 
             // Bind the static full-screen quad geometry shared with Pass 1.
             gl.bindBuffer(gl.ARRAY_BUFFER, this._posBuffer);
@@ -2496,7 +3049,9 @@
             var chained = this._chainAllowed() && this._linearOutputReady;
 
             for (var li = 0; li < activeLayers.length; li++) {
-                if (!activeLayers[li] || li >= this._picassoFBO_A.length) continue;
+                // v5.2 2.1: Out is the per-layer array (length 4); A/B are shared scalars.
+                if (!activeLayers[li] || li >= this._picassoFBO_Out.length ||
+                    !this._picassoFBO_A || !this._picassoFBO_B) continue;
                 if (!this._layerFBOTextures[li]) continue;
                 // v5.2 1.6: skip provably-inert layers 1..3 in Mode-3 chained
                 // PICASSO. Only layer 0's output (ch0..3) feeds enabled HyperBlend
@@ -2507,16 +3062,13 @@
                 // Mode 3 with _linearOutputReady false) still runs all 4 layers.
                 if (chained && li > 0) continue;
 
-                // --- Initial blit: raw uint8 layer FBO texture → _picassoFBO_A[li] (float). ---
-                // Reuse the existing _blitProgram (no scale; the kernel's iter-0 matrix
-                // bakes in the ×255 promotion via transposeAndScale at upload time).
-                gl.useProgram(this._blitProgram);
-                gl.uniform1i(this._blitUniforms.uTile, 0);
-                gl.bindFramebuffer(gl.FRAMEBUFFER, this._picassoFBO_A[li]);
-                gl.viewport(0, 0, w, h);
-                gl.clearColor(0, 0, 0, 0);
-                gl.clear(gl.COLOR_BUFFER_BIT);
-                gl.activeTexture(gl.TEXTURE0);
+                // v5.2 2.2: blit + cast are fused into the kernel iterations.
+                // Iteration 0 samples the raw source texture directly (the old
+                // dedicated no-scale blit is gone — its ×255 promotion was always
+                // baked into _picassoTransposed[0] via transposeAndScale(ms[0],255)).
+                // The final iteration (k===K-1) uses the fused kernel+cast program,
+                // writing the uint8 result straight into _picassoFBO_Out[li].
+                //
                 // Phase 5 N=4 hard-gate: chained PICASSO reads from
                 // _linearFBOTextures[0] for layer 0 only. Layers 1..3 still
                 // sample their raw FBO inputs (their PICASSO outputs land in
@@ -2529,66 +3081,65 @@
                 } else {
                     initialSrcTex = this._layerFBOTextures[li];
                 }
-                gl.bindTexture(gl.TEXTURE_2D, initialSrcTex);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this._posBuffer);
-                gl.enableVertexAttribArray(aPosBlit);
-                gl.vertexAttribPointer(aPosBlit, 2, gl.FLOAT, false, 0, 0);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this._texBufferFBO);
-                gl.enableVertexAttribArray(aTexBlit);
-                gl.vertexAttribPointer(aTexBlit, 2, gl.FLOAT, false, 0, 0);
-                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-                // --- K iterations of ping-pong with PICASSO kernel. ---
-                gl.useProgram(this._picassoProgram);
-                gl.uniform1i(this._picassoUniforms.uSrc, 0);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this._posBuffer);
-                gl.enableVertexAttribArray(aPosKernel);
-                gl.vertexAttribPointer(aPosKernel, 2, gl.FLOAT, false, 0, 0);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this._texBufferFBO);
-                gl.enableVertexAttribArray(aTexKernel);
-                gl.vertexAttribPointer(aTexKernel, 2, gl.FLOAT, false, 0, 0);
+                // Ping-pong bookkeeping for the float A/B passes (iters 0..K-2).
+                // v5.2 2.1: A/B are shared scalars (only one layer is in flight at a time).
+                // iter-0 writes into FBO A sampling initialSrcTex; subsequent mid
+                // iters alternate A<->B sampling the previous dst. The final fused
+                // iter writes into Out[li] sampling whatever the prior pass produced
+                // (initialSrcTex when K===1).
+                var dstFbo = this._picassoFBO_A;
+                var dstTex = this._picassoTex_A;
+                var altFbo = this._picassoFBO_B;
+                var altTex = this._picassoTex_B;
+                var srcTex = initialSrcTex;
 
-                // Start: src = _picassoTex_A (the just-blit output), dst = _picassoFBO_B.
-                // Note: dst tex parallels dst fbo so we can use it as the next src.
-                var srcTex = this._picassoTex_A[li];
-                var dstFbo = this._picassoFBO_B[li];
-                var dstTex = this._picassoTex_B[li];
-                var altFbo = this._picassoFBO_A[li];
-                var altTex = this._picassoTex_A[li];
-                var lastDstTex = null;
                 for (var k = 0; k < this._picassoK; k++) {
-                    gl.bindFramebuffer(gl.FRAMEBUFFER, dstFbo);
-                    gl.viewport(0, 0, w, h);
-                    gl.activeTexture(gl.TEXTURE0);
-                    gl.bindTexture(gl.TEXTURE_2D, srcTex);
-                    gl.uniformMatrix4fv(this._picassoUniforms.uP, false, this._picassoTransposed[k]);
-                    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-                    if (window.__hyperBenchEnabled) __bench.picassoPassCount++;
-                    lastDstTex = dstTex;
-                    // Swap: next src = current dst; next dst = the other FBO/tex.
-                    var prevDstFbo = dstFbo;
-                    var prevDstTex = dstTex;
-                    srcTex = prevDstTex;
-                    dstFbo = altFbo;
-                    dstTex = altTex;
-                    altFbo = prevDstFbo;
-                    altTex = prevDstTex;
+                    if (k < this._picassoK - 1) {
+                        // --- Mid iteration: plain PICASSO kernel into float ping-pong. ---
+                        gl.useProgram(this._picassoProgram);
+                        gl.uniform1i(this._picassoUniforms.uSrc, 0);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, this._posBuffer);
+                        gl.enableVertexAttribArray(aPosKernel);
+                        gl.vertexAttribPointer(aPosKernel, 2, gl.FLOAT, false, 0, 0);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, this._texBufferFBO);
+                        gl.enableVertexAttribArray(aTexKernel);
+                        gl.vertexAttribPointer(aTexKernel, 2, gl.FLOAT, false, 0, 0);
+                        gl.bindFramebuffer(gl.FRAMEBUFFER, dstFbo);
+                        gl.viewport(0, 0, w, h);
+                        gl.activeTexture(gl.TEXTURE0);
+                        gl.bindTexture(gl.TEXTURE_2D, srcTex);
+                        gl.uniformMatrix4fv(this._picassoUniforms.uP, false, this._picassoTransposed[k]);
+                        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                        if (window.__hyperBenchEnabled) __bench.picassoPassCount++;
+                        // Swap: next src = current dst; next dst = the other FBO/tex.
+                        var prevDstFbo = dstFbo;
+                        var prevDstTex = dstTex;
+                        srcTex = prevDstTex;
+                        dstFbo = altFbo;
+                        dstTex = altTex;
+                        altFbo = prevDstFbo;
+                        altTex = prevDstTex;
+                    } else {
+                        // --- Final iteration (k===K-1): fused kernel+cast into uint8 Out. ---
+                        // For K===1 srcTex is still initialSrcTex (no mid passes ran).
+                        gl.useProgram(this._picassoKernelCastProgram);
+                        gl.uniform1i(this._picassoKernelCastUniforms.uSrc, 0);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, this._posBuffer);
+                        gl.enableVertexAttribArray(aPosKC);
+                        gl.vertexAttribPointer(aPosKC, 2, gl.FLOAT, false, 0, 0);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, this._texBufferFBO);
+                        gl.enableVertexAttribArray(aTexKC);
+                        gl.vertexAttribPointer(aTexKC, 2, gl.FLOAT, false, 0, 0);
+                        gl.bindFramebuffer(gl.FRAMEBUFFER, this._picassoFBO_Out[li]);
+                        gl.viewport(0, 0, w, h);
+                        gl.activeTexture(gl.TEXTURE0);
+                        gl.bindTexture(gl.TEXTURE_2D, srcTex);
+                        gl.uniformMatrix4fv(this._picassoKernelCastUniforms.uP, false, this._picassoTransposed[k]);
+                        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                        if (window.__hyperBenchEnabled) __bench.picassoPassCount++;
+                    }
                 }
-
-                // --- Final cast: float final → uint8 Out FBO. ---
-                gl.useProgram(this._picassoCastProgram);
-                gl.uniform1i(this._picassoCastUniforms.uSrc, 0);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this._posBuffer);
-                gl.enableVertexAttribArray(aPosCast);
-                gl.vertexAttribPointer(aPosCast, 2, gl.FLOAT, false, 0, 0);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this._texBufferFBO);
-                gl.enableVertexAttribArray(aTexCast);
-                gl.vertexAttribPointer(aTexCast, 2, gl.FLOAT, false, 0, 0);
-                gl.bindFramebuffer(gl.FRAMEBUFFER, this._picassoFBO_Out[li]);
-                gl.viewport(0, 0, w, h);
-                gl.activeTexture(gl.TEXTURE0);
-                gl.bindTexture(gl.TEXTURE_2D, lastDstTex);
-                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
 
             // Unbind FBO so subsequent Pass 1 hits the default framebuffer.
@@ -2599,6 +3150,98 @@
             // v5.2 1.6: pass the SAME `chained` boolean computed above so the
             // rebind restriction stays in lockstep with the loop skip.
             this._rebindPicassoOutputs(activeLayers, chained);
+            return true;
+        }
+
+        // ---- Internal: N>4 (5..8) 2-texel kernel — mirror Linear A/B. ----
+        // 8 channels = 2 RGBA texels. K=1 => 2 draws (one fused-cast pass per
+        // output texel). K>1 => 2 plain draws/iter through 4 float FBOs, final
+        // iter fused-cast to the 2 uint8 Out texels. Input texels:
+        //   Mode 2 (standalone): raw layers 0+1 (_layerFBOTextures[0],[1]).
+        //   Mode 3 (chained):    _linearFBOTextures[0] AND [1] (Pass B ran
+        //                        because _numOutputs===_picassoN>4 ⇒ >4).
+        // Output texels -> _picassoOut2[0] (ch0..3), _picassoOut2[1] (ch4..7),
+        // rebound to units 0+1 for HyperBlend Pass 1 (ch8..15 stay disabled).
+        // The wide kernel reads input channels ch0..7 ONLY.
+        _runPicassoKernelWide(activeLayers) {
+            var gl = this._gl;
+            if (!this._picassoBlockPlain || !this._picassoBlockFused) return false;
+            if (!this._picassoOut2 || this._picassoOut2.length < 2) return false;
+            if (!this._picassoTransposed8 || this._picassoK <= 0) return false;
+            // K>1 requires the 4 float ping-pong FBOs; _createPicassoFBOs (Part E.6)
+            // sets _picassoFloat2 = null on a float-incapable context. The mid-iter
+            // loop below reads _picassoFloat2.A[ping]/.B[ping] with no per-access null
+            // check, so bail HERE rather than null-deref mid-draw. K=1 never reads
+            // _picassoFloat2 (the two fused-cast passes write straight to uint8 Out),
+            // so K=1,N>4 survives float-incapable contexts (Part C float-capability note).
+            if (this._picassoK > 1 && (!this._picassoFloat2 || !this._picassoFloat2.A || !this._picassoFloat2.B ||
+                this._picassoFloat2.A.length < 2 || this._picassoFloat2.B.length < 2)) {
+                $.console.warn('[HyperBlendWebGLDrawer] PICASSO K>1, N>4 needs float FBOs (_picassoFloat2) — unavailable on this context; skipping kernel.');
+                return false;
+            }
+            if (window.__hyperBenchEnabled) __bench.picassoKernelRuns++;
+            var w = this._picassoFBOWidth, h = this._picassoFBOHeight;
+
+            var chained = this._chainAllowed() && this._linearOutputReady;
+            // Select the two input state texels (units 0 + 1).
+            var inA, inB;
+            if (chained && this._linearFBOTextures[0] && this._linearFBOTextures[1]) {
+                inA = this._linearFBOTextures[0];   // Linear ch0..3
+                inB = this._linearFBOTextures[1];   // Linear ch4..7
+            } else {
+                inA = this._layerFBOTextures[0];    // raw ch0..3
+                inB = this._layerFBOTextures[1];    // raw ch4..7
+            }
+            if (!inA || !inB) return false;
+
+            // Bind a {plain|fused} block program for ONE output texel, feeding
+            // (srcA,srcB) on units 0,1 and the (Paa,Pab) blocks for that texel.
+            var self = this;
+            function pass(progInfo, srcA, srcB, Paa, Pab, dstFbo) {
+                gl.useProgram(progInfo.program);
+                gl.uniform1i(progInfo.uniforms.uSrcA, 0);
+                gl.uniform1i(progInfo.uniforms.uSrcB, 1);
+                gl.bindBuffer(gl.ARRAY_BUFFER, self._posBuffer);
+                gl.enableVertexAttribArray(progInfo.attribs.aPosition);
+                gl.vertexAttribPointer(progInfo.attribs.aPosition, 2, gl.FLOAT, false, 0, 0);
+                gl.bindBuffer(gl.ARRAY_BUFFER, self._texBufferFBO);
+                gl.enableVertexAttribArray(progInfo.attribs.aTexCoord);
+                gl.vertexAttribPointer(progInfo.attribs.aTexCoord, 2, gl.FLOAT, false, 0, 0);
+                gl.uniformMatrix4fv(progInfo.uniforms.uPaa, false, Paa);
+                gl.uniformMatrix4fv(progInfo.uniforms.uPab, false, Pab);
+                gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, srcA);
+                gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, srcB);
+                gl.bindFramebuffer(gl.FRAMEBUFFER, dstFbo);
+                gl.viewport(0, 0, w, h);
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                if (window.__hyperBenchEnabled) __bench.picassoPassCount++;
+            }
+
+            var srcA = inA, srcB = inB;
+            // Mid iterations (k < K-1): plain kernel, 4-FBO ping-pong.
+            // src{A,B} and dst{A,B} must be 4 DISTINCT float FBOs (off-diagonal
+            // blocks couple the two output texels; cannot overwrite src before
+            // both dst computed). Ping index alternates per iteration.
+            var ping = 0;
+            for (var k = 0; k < this._picassoK - 1; k++) {
+                var dstA = this._picassoFloat2.A[ping];
+                var dstB = this._picassoFloat2.B[ping];
+                var b = this._picassoTransposed8[k];
+                pass(this._picassoBlockPlain, srcA, srcB, b.AA, b.AB, dstA.fbo);
+                pass(this._picassoBlockPlain, srcA, srcB, b.BA, b.BB, dstB.fbo);
+                srcA = dstA.tex; srcB = dstB.tex;
+                ping = 1 - ping;
+            }
+            // Final iteration (k===K-1; sole pass when K=1): fused-cast to uint8.
+            var bf = this._picassoTransposed8[this._picassoK - 1];
+            pass(this._picassoBlockFused, srcA, srcB, bf.AA, bf.AB, this._picassoOut2[0].fbo);
+            pass(this._picassoBlockFused, srcA, srcB, bf.BA, bf.BB, this._picassoOut2[1].fbo);
+
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            // Rebind both output texels to units 0+1 (units 2,3 keep raw/cleared
+            // content; ch8..15 disabled in Pass 1).
+            gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this._picassoOut2[0].tex);
+            gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this._picassoOut2[1].tex);
             return true;
         }
 
@@ -2625,6 +3268,15 @@
         _rebindPicassoOutputs(activeLayers, chained) {
             var gl = this._gl;
             if (!gl) return;
+            if (this._picassoN > 4) {
+                // N>4: the 2 output texels live in _picassoOut2 (units 0+1).
+                if (this._picassoOut2 && this._picassoOut2[0] && this._picassoOut2[1]) {
+                    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this._picassoOut2[0].tex);
+                    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this._picassoOut2[1].tex);
+                }
+                return;
+            }
+            // ---- N≤4 path (UNCHANGED) ----
             for (var bi = 0; bi < activeLayers.length; bi++) {
                 if (!activeLayers[bi] || bi >= this._picassoTex_Out.length) continue;
                 // v5.2 1.6: in chained Mode 3 only unit 0 is meaningful; units
@@ -2646,6 +3298,67 @@
                 }
             }
             return out;
+        }
+
+        // ---- Internal: pad a native N×N (N≤4) row-major matrix into the 4×4
+        //      column-major GL uniform the RGBA-packed kernel expects. ----
+        // The used N×N block is transposed (row-major → GL column-major) and scaled;
+        // the unused i≥N diagonal is set to identity (1.0, NOT scaled) so the unused
+        // RGBA lanes pass through unchanged. Off-block entries stay 0, so the used
+        // output lanes depend only on the used input lanes — the N×N math is exact
+        // and unused lanes are inert (never read downstream). N=4 reduces to the
+        // plain _picassoTransposeAndScale (no padding). See doc/plans/picasso-dynamic-N-rework.md.
+        _picassoPadTransposeAndScale(rowMajor, N, scale) {
+            var out = new Float32Array(16);
+            for (var d = N; d < 4; d++) {
+                out[d * 4 + d] = 1.0;   // identity passthrough on unused lanes
+            }
+            for (var i = 0; i < N; i++) {
+                for (var j = 0; j < N; j++) {
+                    out[j * 4 + i] = rowMajor[i * N + j] * scale;
+                }
+            }
+            return out;
+        }
+
+        // ---- Internal: pad a native N×N (5≤N≤8) row-major matrix into the four
+        //      4×4 column-major mat4 blocks the 2-texel kernel expects. ----
+        // Builds a logical 8×8 (used N×N block top-left, identity on the i≥N
+        // diagonal so unused lanes pass through, zeros off-block), then slices
+        // it into AA/AB/BA/BB and transposes each row-major 4×4 -> GL col-major,
+        // scaling the USED entries by `scale` (×255 on iter-0). The identity-pad
+        // diagonal is set to 1.0 and NOT scaled (mirrors _picassoPadTransposeAndScale
+        // L2824–2826). Padded lanes (index ≥ N) only ever feed disabled HyperBlend
+        // channels (guaranteed by _numOutputs===_picassoN), so their inert value
+        // never reaches the tone-mapped sum. Returns {AA, AB, BA, BB}, each
+        // Float32Array(16) col-major. N=8 has no identity pad. Clean-room: standard
+        // block partition of an 8×8 — derived from picasso-algorithm-spec.md only.
+        _picassoPadTransposeAndScale8(rowMajor, N, scale) {
+            // 1. Build logical 8×8 row-major.
+            var M8 = new Float32Array(64);
+            for (var d = N; d < 8; d++) {
+                M8[d * 8 + d] = 1.0;                 // identity passthrough (unscaled)
+            }
+            for (var i = 0; i < N; i++) {
+                for (var j = 0; j < N; j++) {
+                    M8[i * 8 + j] = rowMajor[i * N + j] * scale;
+                }
+            }
+            // 2. Slice into four 4×4 blocks and transpose each to col-major.
+            //    block(rBase,cBase)[colMajor j*4+i] = M8[(rBase+i)*8 + (cBase+j)]
+            function block(rBase, cBase) {
+                var out = new Float32Array(16);
+                for (var ii = 0; ii < 4; ii++) {
+                    for (var jj = 0; jj < 4; jj++) {
+                        out[jj * 4 + ii] = M8[(rBase + ii) * 8 + (cBase + jj)];
+                    }
+                }
+                return out;
+            }
+            return {
+                AA: block(0, 0), AB: block(0, 4),
+                BA: block(4, 0), BB: block(4, 4)
+            };
         }
 
         // ---- Internal: CPU reference kernel (used by self-check 7) ----
@@ -2694,18 +3407,21 @@
          * Consumers in R3+: throw text + self-check 6 rephrasing, HTML status
          * branches. Document inline so a future reader can find the contract.
          *
-         * Phase 5 hard-gates PICASSO to N=4 (see updatePicassoConfig L1356),
-         * so chainAllowed === true also implies numOutputs === 4. Future
-         * phases that generalise N must keep the equality. Per
-         * doc/picasso-math.md §4 the equality is design, not coincidence.
+         * PICASSO supports N in 2..8 (see updatePicassoConfig): N≤4 uses the
+         * single-RGBA-texel kernel, N=5..8 the 2-RGBA-texel wide kernel. The
+         * numOutputs === _picassoN equality holds for every N and is the Mode-3
+         * dimension contract. Per doc/picasso-math.md §4 the equality is design,
+         * not coincidence.
          *
-         * v5.2 1.6 DEPENDENCY: the Mode-3 layer-skip optimization in
-         * _runPicassoKernel (skip li>0) and the rebind restriction in
-         * _rebindPicassoOutputs (unit 0 only) BOTH rely on this N=4 implication —
-         * only layer 0's PICASSO output (ch0..3) feeds enabled HyperBlend
-         * channels; layers 1..3 produce ch4..15 which are disabled. If a future
-         * phase generalises N>4 such that layers 1..3 carry enabled channels,
-         * revisit those two skip conditions or the optimization will drop data.
+         * v5.2 1.6 DEPENDENCY (N≤4 ONLY): the Mode-3 layer-skip optimization in
+         * _runPicassoKernel (skip li>0) and the unit-0-only rebind in
+         * _rebindPicassoOutputs BOTH rely on the N≤4 implication that only layer
+         * 0's PICASSO output (ch0..3) feeds enabled HyperBlend channels; layers
+         * 1..3 produce ch4..15 which are disabled. The N>4 wide path is SEPARATE:
+         * _runPicassoKernelWide has NO li loop — it reads input texels 0+1 and
+         * writes both output texels into _picassoOut2[0]/[1] (ch0..7), rebound to
+         * units 0+1 (so ch4..7 ARE enabled there). The N≤4 skip conditions do not
+         * apply to the wide path and are not reached when _picassoN > 4.
          */
         _chainAllowed() {
             // The plan (§3.2) phrases the matrix check as `_unmixMatrix != null`.
@@ -2756,9 +3472,9 @@
                 this._probePicassoExtensions();
             }
             if (this._picassoSupported === false) return false;
-            if (!this._picassoProgram || !this._picassoCastProgram) {
+            if (!this._picassoProgram || !this._picassoCastProgram || !this._picassoKernelCastProgram) {
                 this._initPicassoPrograms();
-                if (!this._picassoProgram || !this._picassoCastProgram) return false;
+                if (!this._picassoProgram || !this._picassoCastProgram || !this._picassoKernelCastProgram) return false;
             }
             if (!this._picassoFBOsAllocated) {
                 this._createPicassoFBOs(w, h);
@@ -3294,8 +4010,10 @@
             }
 
             gl.useProgram(this._blitProgram);
-            // Defensive: PICASSO's initial blit sets uTile=0; restore for the composite.
-            gl.uniform1i(this._blitUniforms.uTile, 5);
+            // v5.2 2.2: PICASSO no longer touches _blitProgram (blit folded into the
+            // fused kernel pass), so the only uTile=0 writer is gone — uTile stays at
+            // its link-time default of 5 (set once at program-link). The former
+            // defensive reset here is now dead and removed.
             gl.activeTexture(gl.TEXTURE5);  // temp unit (0-3 = layers, 4 = post-process FBO)
 
             // Blit tex coords: full tile (static buffer)
