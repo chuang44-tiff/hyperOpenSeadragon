@@ -113,16 +113,8 @@ def pack_channels(channels, pack_mode):
         padded.append(pyvips.Image.black(width, height).cast("uchar"))
 
     joined = padded[0].bandjoin(padded[1:])
-    # These 4 bands are INDEPENDENT channel data, not RGBA. Tag as `multiband`:
-    #  (a) it still emits real 4-band PNG tiles (avoids the old `b-w`-inherited
-    #      2-band Gray+Alpha collapse that `srgb` was originally added to fix —
-    #      verified: full-res PNG stays 4-band), AND
-    #  (b) it stops libvips from treating band 4 (= ch4/8/12/16 data) as alpha.
-    # With `srgb`, hasalpha()==1 forced dzsave onto its alpha-aware shrink, which
-    # silently ignored region_shrink and drove sparse far-channel signal to zero
-    # at coarse pyramid levels -> the "ch13-16 vanish when zoomed out" bug.
-    # `multiband` makes region_shrink (set in generate_tile_source) actually honored.
-    return joined.copy(interpretation="multiband")
+    # Force srgb interpretation so dzsave generates true 4-band RGBA PNGs
+    return joined.copy(interpretation="srgb")
 
 
 def load_rgb_tile_source(path, pack_mode, force_8bit=True):

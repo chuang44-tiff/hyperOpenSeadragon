@@ -14,12 +14,14 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 - **Pan, zoom, and rotate** — Explore your full-resolution image at any magnification, just like a digital slide scanner.
 - **Linear spectral unmixing** — Load a spectral unmixing matrix to decompose overlapping fluorescence spectra into pure component channels. The matrix editor is built into the viewer.
 - **Spectrum Inspector** — Inspect the spectrum of a pixel by right-clicking the image. Then click "Add to Matrix" to add the spectrum to the unmixing matrix.
+- **PICASSO unmixing** — Apply iterative non-negative unmixing [2].
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
 
-## New in v3.0
+## New in v3.2
 
-- **PICASSO unmixing** — Apply iterative non-negative unmixing [2]. To generate a PICASSO unmixing matrix, see the [original author's repo](https://github.com/biomicrodev/picasso).
+- **PICASSO unmixing Matrix Generation** — Generate a PICASSO unmixing matrix using the web interface. The matrix is generated using the built-in optimizer.
+![hyperOpenSeadragon Logo](PICASSO.png)
 
 ## How It Works
 
@@ -140,11 +142,11 @@ hyperOpenSeadragon includes a built-in linear unmixing pipeline for hyperspectra
 
    To fully disengage AND close the panel, uncheck the **Linear Unmixing** toggle in the Post-Processing section. While engaged, the **Zero**, **Reload**, and output-count dropdown are locked to prevent matrix/GPU state mismatches.
 
-## PICASSO Unmixing (v3.0 beta)
+## PICASSO Unmixing
 
 PICASSO applies iterative non-negative unmixing on top of linear unmixing (or as a standalone stage). It's currently **beta** — it works well on synthetic and calibrated datasets but quality on arbitrary real-world data varies. Treat as a preview.
 
-To generate a PICASSO matrix from your data, see the [original author's repo](https://github.com/biomicrodev/picasso) and the hyperPICASSO adaptation [3].
+To generate a PICASSO matrix from your data, you can generate it directly in the web browser using the built-in optimizer (by clicking the **Generate from current view** button in the PICASSO panel). Alternatively, you can pre-generate it using the [original author's repo](https://github.com/biomicrodev/picasso) and the hyperPICASSO adaptation [3].
 
 **Matrix file format** (plain text, `.txt`):
 
