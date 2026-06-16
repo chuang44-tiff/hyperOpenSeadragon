@@ -862,7 +862,7 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
         f"\t\tvar imageSources = [             // DZI tile source paths (grouped by z-level)\n"
         f"\t\t\t{sources_js},\n"
         f"\t\t];\n"
-        f"\t\tvar matrixFileName = '';                   // empty by default; set to a filename to auto-load a matrix on startup\n"
+        f"\t\tvar matrixFileName = 'unmix_matrix.txt';  // relative to HTML file, same format as imageSources\n"
         f"\t\tvar defaultUnmixing = false;              // true = auto-Apply Linear Unmixing on startup\n"
         f"\t\tvar picassoMatrixFileName = '';\n"
         f"\t\tvar defaultPicasso = false;\n"
@@ -870,6 +870,8 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
         f"\t\tvar defaultTrichrome = false;\n"
         f"\t\tvar defaultReinhard = false;\n"
         f"\t\tvar defaultChannelHues = {{}};\n"
+        f"\t\tvar animationTime = 0.7;\n"
+        f"\t\tvar springStiffness = 8.0;\n"
         f"\t\t// ===== END DATASET CONFIGURATION ====="
     )
 
