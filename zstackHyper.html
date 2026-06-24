@@ -142,6 +142,9 @@
 								Trichrome</span></label>
 						<label class="pp-toggle"><input type="checkbox" id="reinhardToggle"><span>Reinhard Tone
 								Mapping</span></label>
+						<label class="pp-toggle"><input type="checkbox" id="denoiseToggle" title="Display-only denoise — original tiles and pixel values are unchanged; do not quantify the on-screen image."><span>Denoise (Guided)</span></label>
+						<div id="denoiseStrengthRow"><label for="denoiseStrength">Strength</label><input type="range" id="denoiseStrength" min="0" max="100" step="1" value="50"><span id="denoiseStrengthVal">50</span></div>
+						<div id="denoiseDisplayNote">Display-only denoise — original tiles and pixel values are unchanged; do not quantify the on-screen image.</div>
 					</div>
 				</div>
 				<!-- Linear Unmixing Panel (shown when toggle is on) -->
@@ -1823,6 +1826,35 @@
 			$('#reinhardToggle').off('change.hyperblend').on('change.hyperblend', function () {
 				if (viewer.drawer && viewer.drawer.setToneMappingMode) {
 					viewer.drawer.setToneMappingMode($(this).is(':checked') ? 'reinhard' : 'knee');
+					viewer.forceRedraw();
+				}
+			});
+
+			// Denoise (Guided) toggle checkbox.
+			// Guided is the only denoise filter. When the GPU can't run it (float FBOs /
+			// programs / texture units unavailable) the toggle is disabled+hidden by the
+			// labeling pass below, so this handler always sends filter:'guided'.
+			$('#denoiseToggle').off('change.hyperblend').on('change.hyperblend', function () {
+				if (viewer.drawer && viewer.drawer.setDenoiseConfig) {
+					var strength = parseInt($('#denoiseStrength').val(), 10);
+					if (isNaN(strength)) { strength = 50; }
+					viewer.drawer.setDenoiseConfig({ active: this.checked, filter: 'guided', strength: strength });
+					viewer.forceRedraw();
+				}
+			});
+
+			// Denoise strength slider (→ ε). Request path (c). SLIDER EVENT CONTRACT: 'input'
+			// updates the readout span AND re-applies ε via setDenoiseConfig + forceRedraw on
+			// every move (uniform-only fast path, no full re-composite — acceptable per spec).
+			$('#denoiseStrength').off('input.hyperblend').on('input.hyperblend', function () {
+				var strength = parseInt(this.value, 10);
+				if (isNaN(strength)) { strength = 50; }
+				$('#denoiseStrengthVal').text(strength);
+				if (viewer.drawer && viewer.drawer.setDenoiseConfig &&
+					viewer.drawer._guidedSupported !== false) {
+					viewer.drawer.setDenoiseConfig({
+						active: $('#denoiseToggle').is(':checked'), filter: 'guided', strength: strength
+					});
 					viewer.forceRedraw();
 				}
 			});
@@ -3910,6 +3942,50 @@
 			// Apply initial state of checkboxes (handles pre-checked defaults)
 			if ($('#reinhardToggle').is(':checked') && viewer.drawer && viewer.drawer.setToneMappingMode) {
 				viewer.drawer.setToneMappingMode('reinhard');
+			}
+			// BLOCKER FIX (findings #2/#3/#5/#13): resolve guided readiness BEFORE any
+			// routing OR UI-labeling decision. The constructor seeds _guidedSupported=false
+			// and it is otherwise only resolved inside _ensureGuidedReady, which draw()
+			// calls solely when guided is ALREADY active. If the resync setDenoiseConfig
+			// below ran first it would read the stale false and the relabel guard (reading
+			// the now-resolved _guidedSupported) could disagree with the drawer state.
+			// EAGER-ALLOC FIX: use the PROBE-ONLY _resolveGuidedSupport()
+			// here (capability only, NO float-FBO allocation) so init does not pay the
+			// ~228MB (4K: ~1.2GB) RGBA32F cost for an off-by-default feature; the FBO
+			// allocation stays deferred to draw()'s active guided gate.
+			if (viewer.drawer && viewer.drawer._resolveGuidedSupport) {
+				viewer.drawer._resolveGuidedSupport();
+			}
+			// Request path (b): default-apply on init. Re-applies the active filter (guided
+			// by default, with the current slider strength) so a pre-checked toggle / drawer
+			// recreation restores guided + strength. Guided is the only filter; if it is
+			// unsupported the toggle is force-unchecked by the guard below, so no apply runs.
+			if ($('#denoiseToggle').is(':checked') && viewer.drawer && viewer.drawer.setDenoiseConfig &&
+				viewer.drawer._guidedSupported === true) {
+				var _dnStrength = parseInt($('#denoiseStrength').val(), 10);
+				if (isNaN(_dnStrength)) { _dnStrength = 50; }
+				viewer.drawer.setDenoiseConfig({ active: true, filter: 'guided', strength: _dnStrength });
+			}
+			// UNSUPPORTED-GUARD — guided-or-off (prevents a black-screen footgun on GPUs
+			// where the guided shaders fail to link or float FBOs are unavailable):
+			//   (i)  guided ok    -> guided + strength slider (label 'Denoise (Guided)')
+			//   (ii) guided false -> disable+hide the toggle + show the unavailable note
+			if (viewer.drawer) {
+				// LAZY-LINK: the guided programs link on first activation, so _filterRegistry
+				// is empty at init — gate the LABEL on CAPABILITY (_guidedSupported, resolved
+				// just above), NOT on registry presence. The drawer's per-frame denoiseActive
+				// predicate still gates on the post-activation registry entry, so an
+				// unlinkable filter no-ops safely.
+				if (viewer.drawer._guidedSupported === true) {
+					$('#denoiseToggle').closest('.pp-toggle').find('span').text('Denoise (Guided)');
+					$('#denoiseStrengthRow').show();
+					$('#denoiseDisplayNote').show();
+				} else {
+					$('#denoiseToggle').prop('checked', false).prop('disabled', true)
+						.closest('.pp-toggle').hide();
+					$('#denoiseStrengthRow').hide();
+					$('#denoiseDisplayNote').text('Denoise unavailable — this GPU lacks float render-target support.').show();
+				}
 			}
 
 			_pushChannelConfigToDrawer();

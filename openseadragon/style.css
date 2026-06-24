@@ -681,6 +681,51 @@ li {
     letter-spacing: 0.3px;
 }
 
+#denoiseDisplayNote {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    font-weight: 400;
+    color: #8a8678;
+    line-height: 1.35;
+    padding: 2px 0 4px 23px;
+    letter-spacing: 0.2px;
+}
+
+/* Guided-denoise strength slider row — native range styled to the light instrument
+   aesthetic. Aligns under the denoise checkbox (23px left pad matches the note). */
+#denoiseStrengthRow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0 2px 23px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    color: #6a665c;
+    letter-spacing: 0.3px;
+}
+
+#denoiseStrengthRow label {
+    flex-shrink: 0;
+}
+
+#denoiseStrengthRow input[type="range"] {
+    flex: 1 1 auto;
+    height: 4px;
+    margin: 0;
+    accent-color: #3d7c3f;
+    background: #e0ddd6;
+    border-radius: 2px;
+    cursor: pointer;
+}
+
+#denoiseStrengthVal {
+    flex-shrink: 0;
+    min-width: 22px;
+    text-align: right;
+    color: #3a3832;
+}
+
 .pp-label {
     font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
     font-size: 10px;

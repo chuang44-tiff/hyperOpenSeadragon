@@ -269,6 +269,115 @@
         '}'
     ].join('\n');
 
+    // -----------------------------------------------------------------------
+    //  GUIDED FILTER v2 — self-guided (guide I == input p == post-blend RGB),
+    //  component-wise R/G/B, edge-preserving averaging smoother. Default Pass-2
+    //  filter, exposed with a STRENGTH slider (→ ε). Clean-room GLSL ES 1.0.
+    //
+    //  Algorithm (He et al., self-guided):
+    //    meanI = box(I,r); meanII = box(I*I,r); var = meanII - meanI*meanI
+    //    a = var/(var+ε);  b = meanI*(1-a)
+    //    q = box(a,r)*I + box(b,r)
+    //  radius r FIXED ≈4. Box filter SEPARABLE (H then V, unrolled 2r+1=9 taps).
+    //  Float FBOs REQUIRED for I*I/mean/var/a/b (small/negative intermediates).
+    //
+    //  Four shader programs drive the chain (all reuse VERTEX_SHADER_SRC):
+    //    GUIDED_SQUARE_SRC   — out = (I*I, 1)         [reads uBoxInput @ unit 5]
+    //    GUIDED_BOX_SRC      — separable box, uBoxAxis selects H(1,0)/V(0,1)
+    //    GUIDED_COEFF_SRC    — uCoeffMode 0→a, 1→b
+    //    GUIDED_RECOMBINE_SRC— q = meanA*I + meanB
+    //  INTERMEDIATE ALPHA contract: every guided stage EXCEPT recombine writes
+    //  gl_FragColor.a = 1.0 (no undefined float alpha leaks into a later .rgba
+    //  read). Recombine copies alpha SOLELY from uInput (matching the median
+    //  center-alpha copy).
+    // -----------------------------------------------------------------------
+
+    // Square pass: I*I (component-wise). Writes a=1.0 (defined constant).
+    var GUIDED_SQUARE_SRC = [
+        'precision highp float;',
+        'varying vec2 vTexCoord;',
+        'uniform sampler2D uBoxInput;',  // unit 5
+        'void main() {',
+        '    vec3 I = texture2D(uBoxInput, vTexCoord).rgb;',
+        '    gl_FragColor = vec4(I * I, 1.0);',
+        '}'
+    ].join('\n');
+
+    // Separable box filter (radius 4 → 9 taps, unrolled). uBoxAxis = vec2:
+    // (1,0) for the horizontal pass, (0,1) for the vertical pass. CLAMP_TO_EDGE
+    // replication at borders matches the numpy oracle. Writes a=1.0.
+    var GUIDED_BOX_SRC = [
+        'precision highp float;',
+        'varying vec2 vTexCoord;',
+        'uniform sampler2D uBoxInput;',  // unit 5
+        'uniform vec2 uTexel;',
+        'uniform vec2 uBoxAxis;',
+        'void main() {',
+        '    vec2 step = uTexel * uBoxAxis;',
+        '    vec3 sum = vec3(0.0);',
+        '    sum += texture2D(uBoxInput, vTexCoord + step * -4.0).rgb;',
+        '    sum += texture2D(uBoxInput, vTexCoord + step * -3.0).rgb;',
+        '    sum += texture2D(uBoxInput, vTexCoord + step * -2.0).rgb;',
+        '    sum += texture2D(uBoxInput, vTexCoord + step * -1.0).rgb;',
+        '    sum += texture2D(uBoxInput, vTexCoord).rgb;',
+        '    sum += texture2D(uBoxInput, vTexCoord + step *  1.0).rgb;',
+        '    sum += texture2D(uBoxInput, vTexCoord + step *  2.0).rgb;',
+        '    sum += texture2D(uBoxInput, vTexCoord + step *  3.0).rgb;',
+        '    sum += texture2D(uBoxInput, vTexCoord + step *  4.0).rgb;',
+        '    gl_FragColor = vec4(sum / 9.0, 1.0);',
+        '}'
+    ].join('\n');
+
+    // Coefficient pass. uCoeffMode 0 → output a; 1 → output b. Writes a=1.0.
+    //   mode 0: var = meanII - meanI*meanI; a = var/(var+ε)   reads uMeanI(6),uMeanII(7),uEpsilon
+    //   mode 1: b = meanI*(1-a)                                reads uMeanI(6),uA(7)
+    var GUIDED_COEFF_SRC = [
+        'precision highp float;',
+        'varying vec2 vTexCoord;',
+        'uniform sampler2D uMeanI;',   // unit 6
+        'uniform sampler2D uMeanII;',  // unit 7 (mode 0 only)
+        'uniform sampler2D uA;',       // unit 7 (mode 1 only)
+        'uniform float uEpsilon;',
+        'uniform int uCoeffMode;',
+        'void main() {',
+        '    vec3 meanI = texture2D(uMeanI, vTexCoord).rgb;',
+        '    vec3 outRGB;',
+        '    if (uCoeffMode == 0) {',
+        '        vec3 meanII = texture2D(uMeanII, vTexCoord).rgb;',
+        '        vec3 varI = meanII - meanI * meanI;',
+        '        outRGB = varI / (varI + uEpsilon);',
+        '    } else {',
+        '        vec3 a = texture2D(uA, vTexCoord).rgb;',
+        '        outRGB = meanI * (1.0 - a);',
+        '    }',
+        '    gl_FragColor = vec4(outRGB, 1.0);',
+        '}'
+    ].join('\n');
+
+    // Recombine pass: q = meanA*I + meanB. Alpha copied SOLELY from uInput.
+    var GUIDED_RECOMBINE_SRC = [
+        'precision highp float;',
+        'varying vec2 vTexCoord;',
+        'uniform sampler2D uInput;',  // unit 5 — original post-blend I (+ alpha)
+        'uniform sampler2D uMeanA;',  // unit 6
+        'uniform sampler2D uMeanB;',  // unit 7
+        'void main() {',
+        '    vec4 inFull = texture2D(uInput, vTexCoord);',
+        '    vec3 I = inFull.rgb;',
+        '    vec3 meanA = texture2D(uMeanA, vTexCoord).rgb;',
+        '    vec3 meanB = texture2D(uMeanB, vTexCoord).rgb;',
+        '    gl_FragColor = vec4(meanA * I + meanB, inFull.a);',
+        '}'
+    ].join('\n');
+
+    // Expose the real shader sources so the Playwright GPU fixture can compile them.
+    if (typeof window !== 'undefined') {
+        window.__HB_GUIDED_SQUARE_SRC = GUIDED_SQUARE_SRC;
+        window.__HB_GUIDED_BOX_SRC = GUIDED_BOX_SRC;
+        window.__HB_GUIDED_COEFF_SRC = GUIDED_COEFF_SRC;
+        window.__HB_GUIDED_RECOMBINE_SRC = GUIDED_RECOMBINE_SRC;
+    }
+
     // 3.4: module-level constant returned by getSupportedDataFormats() — avoids
     // allocating a fresh array literal on every (frequent) OSD call.
     var SUPPORTED_FORMATS = ['context2d', 'image'];
@@ -556,6 +665,54 @@
             this._fboWidth = 0;
             this._fboHeight = 0;
 
+            // Runtime denoise state — standalone Pass 2 (Option B).
+            // threshold stored NORMALIZED 0..1 (display 0..255 divided by 255).
+            // F5: default filter is 'guided' (shipped flagship); denoise is OFF by
+            // default (active:false). strength is the 0..100 slider value (→ ε).
+            this._denoiseConfig = { active: false, filter: 'guided', threshold: 8 / 255, strength: 50 };
+            // epsilon derived from strength via _strengthToEpsilon (see setDenoiseConfig);
+            // seed it so _runGuidedFilter has a valid ε even before any UI push.
+            this._denoiseConfig.epsilon = this._strengthToEpsilon(this._denoiseConfig.strength);
+            this._fbo2 = null;
+            this._fbo2Texture = null;
+            this._fbo2Width = 0;
+            this._fbo2Height = 0;
+            this._filterRegistry = {};          // name -> { program, uniforms, attribs }
+
+            // ---- Guided Filter v2 state (F1/F2/F4 — lazy link, units 5/6/7) ----
+            // _guidedProgramsLinked is set true at the 4-program link-success site
+            // (LAZILY, on first denoise activation). _guidedSupported is resolved by
+            // _ensureGuidedReady (the single resolve point) BEFORE the draw()
+            // routing decision — never set only inside _runGuidedFilter.
+            this._guidedProgramsLinked = false;
+            this._guidedSupported = false;
+            this._guidedSquareProgram = null;
+            this._guidedSquareUniforms = {};
+            this._guidedSquareAttribs = {};
+            this._guidedBoxProgram = null;
+            this._guidedBoxUniforms = {};
+            this._guidedBoxAttribs = {};
+            this._guidedCoeffProgram = null;
+            this._guidedCoeffUniforms = {};
+            this._guidedCoeffAttribs = {};
+            this._guidedRecombineProgram = null;
+            this._guidedRecombineUniforms = {};
+            this._guidedRecombineAttribs = {};
+            // Named float-FBO pairs (each pair = 1 texture + 1 framebuffer; do NOT
+            // double-allocate). Ping1/Ping2 are separable-box scratch buffers.
+            this._guidedTex_sq = null;     this._guidedFBO_sq = null;     // I*I
+            this._guidedTex_meanI = null;  this._guidedFBO_meanI = null;  // box(I)
+            this._guidedTex_meanII = null; this._guidedFBO_meanII = null; // box(I*I)
+            this._guidedTex_a = null;      this._guidedFBO_a = null;      // coeff a
+            this._guidedTex_b = null;      this._guidedFBO_b = null;      // coeff b
+            this._guidedTex_meanA = null;  this._guidedFBO_meanA = null;  // box(a)
+            this._guidedTex_meanB = null;  this._guidedFBO_meanB = null;  // box(b)
+            this._guidedTex_ping1 = null;  this._guidedFBO_ping1 = null;  // box H scratch
+            this._guidedTex_ping2 = null;  this._guidedFBO_ping2 = null;  // box H scratch
+            this._guidedFBOsAllocated = false;
+            this._guidedFBOWidth = 0;
+            this._guidedFBOHeight = 0;
+
             // Pre-allocated uniform arrays (avoid per-frame GC)
             this._uColor = new Float32Array(48);  // 16 channels × 3 RGB (pre-computed from HSV)
             this._uGain = new Float32Array(16);
@@ -677,6 +834,38 @@
                 self._layerFBOHeight = 0;
                 self._fboWidth = 0;
                 self._fboHeight = 0;
+                // Denoise FBO2 is bound to the lost context too — _initWebGL below
+                // re-creates _fbo2/_fbo2Texture at 1x1, so drop the stale handles
+                // and reset sizes so the realloc'd texture isn't mistaken for
+                // correctly-sized on the next denoise frame.
+                self._fbo2 = null;
+                self._fbo2Texture = null;
+                self._fbo2Width = 0;
+                self._fbo2Height = 0;
+                // Guided filter resources are bound to the lost context too. Programs
+                // re-link in _initWebGL below; the float FBOs re-alloc lazily via
+                // _ensureGuidedReady. F4 note: the float-format fields are re-probed
+                // lazily in the guided resolve path because _picassoSupported is reset
+                // to null at the PICASSO block below — _ensureGuidedReady re-runs
+                // _probePicassoExtensions() before reading _picassoFloatInternalFmt.
+                self._guidedSquareProgram = null;
+                self._guidedBoxProgram = null;
+                self._guidedCoeffProgram = null;
+                self._guidedRecombineProgram = null;
+                self._guidedTex_sq = null;     self._guidedFBO_sq = null;
+                self._guidedTex_meanI = null;  self._guidedFBO_meanI = null;
+                self._guidedTex_meanII = null; self._guidedFBO_meanII = null;
+                self._guidedTex_a = null;      self._guidedFBO_a = null;
+                self._guidedTex_b = null;      self._guidedFBO_b = null;
+                self._guidedTex_meanA = null;  self._guidedFBO_meanA = null;
+                self._guidedTex_meanB = null;  self._guidedFBO_meanB = null;
+                self._guidedTex_ping1 = null;  self._guidedFBO_ping1 = null;
+                self._guidedTex_ping2 = null;  self._guidedFBO_ping2 = null;
+                self._guidedFBOsAllocated = false;
+                self._guidedFBOWidth = 0;
+                self._guidedFBOHeight = 0;
+                self._guidedProgramsLinked = false;
+                self._guidedSupported = false;
                 self._lastTileCounts = [];
                 self._lastTileChecksums = [];
                 self._lastTileSumChecksums = [];
@@ -894,6 +1083,32 @@
                 if (this._postProcessProgram) gl.deleteProgram(this._postProcessProgram);
                 if (this._fboTexture) gl.deleteTexture(this._fboTexture);
                 if (this._fbo) gl.deleteFramebuffer(this._fbo);
+                // Denoise resources (FBO2 — shared denoise/Beer's intermediate)
+                if (this._fbo2Texture) gl.deleteTexture(this._fbo2Texture);
+                if (this._fbo2) gl.deleteFramebuffer(this._fbo2);
+                // Guided filter resources (3+1 programs + named float-FBO pairs)
+                if (this._guidedSquareProgram) gl.deleteProgram(this._guidedSquareProgram);
+                if (this._guidedBoxProgram) gl.deleteProgram(this._guidedBoxProgram);
+                if (this._guidedCoeffProgram) gl.deleteProgram(this._guidedCoeffProgram);
+                if (this._guidedRecombineProgram) gl.deleteProgram(this._guidedRecombineProgram);
+                if (this._guidedTex_sq) gl.deleteTexture(this._guidedTex_sq);
+                if (this._guidedFBO_sq) gl.deleteFramebuffer(this._guidedFBO_sq);
+                if (this._guidedTex_meanI) gl.deleteTexture(this._guidedTex_meanI);
+                if (this._guidedFBO_meanI) gl.deleteFramebuffer(this._guidedFBO_meanI);
+                if (this._guidedTex_meanII) gl.deleteTexture(this._guidedTex_meanII);
+                if (this._guidedFBO_meanII) gl.deleteFramebuffer(this._guidedFBO_meanII);
+                if (this._guidedTex_a) gl.deleteTexture(this._guidedTex_a);
+                if (this._guidedFBO_a) gl.deleteFramebuffer(this._guidedFBO_a);
+                if (this._guidedTex_b) gl.deleteTexture(this._guidedTex_b);
+                if (this._guidedFBO_b) gl.deleteFramebuffer(this._guidedFBO_b);
+                if (this._guidedTex_meanA) gl.deleteTexture(this._guidedTex_meanA);
+                if (this._guidedFBO_meanA) gl.deleteFramebuffer(this._guidedFBO_meanA);
+                if (this._guidedTex_meanB) gl.deleteTexture(this._guidedTex_meanB);
+                if (this._guidedFBO_meanB) gl.deleteFramebuffer(this._guidedFBO_meanB);
+                if (this._guidedTex_ping1) gl.deleteTexture(this._guidedTex_ping1);
+                if (this._guidedFBO_ping1) gl.deleteFramebuffer(this._guidedFBO_ping1);
+                if (this._guidedTex_ping2) gl.deleteTexture(this._guidedTex_ping2);
+                if (this._guidedFBO_ping2) gl.deleteFramebuffer(this._guidedFBO_ping2);
                 // PICASSO resources (6 FBOs + 6 textures + 2 programs)
                 // v5.2 2.1: A/B are shared single scalars; Out stays per-layer.
                 if (this._picassoFBO_A) gl.deleteFramebuffer(this._picassoFBO_A);
@@ -958,6 +1173,25 @@
             this._linearProgramB = null;
             this._linearMatrixUploadedB = false;
             this._linearOutputReady = false;
+            // Guided filter handle reset (post-destroy clean state).
+            this._guidedSquareProgram = null;
+            this._guidedBoxProgram = null;
+            this._guidedCoeffProgram = null;
+            this._guidedRecombineProgram = null;
+            this._guidedTex_sq = null;     this._guidedFBO_sq = null;
+            this._guidedTex_meanI = null;  this._guidedFBO_meanI = null;
+            this._guidedTex_meanII = null; this._guidedFBO_meanII = null;
+            this._guidedTex_a = null;      this._guidedFBO_a = null;
+            this._guidedTex_b = null;      this._guidedFBO_b = null;
+            this._guidedTex_meanA = null;  this._guidedFBO_meanA = null;
+            this._guidedTex_meanB = null;  this._guidedFBO_meanB = null;
+            this._guidedTex_ping1 = null;  this._guidedFBO_ping1 = null;
+            this._guidedTex_ping2 = null;  this._guidedFBO_ping2 = null;
+            this._guidedFBOsAllocated = false;
+            this._guidedFBOWidth = 0;
+            this._guidedFBOHeight = 0;
+            this._guidedProgramsLinked = false;
+            this._guidedSupported = false;
             this.canvas.width = 1;
             this.canvas.height = 1;
             this.container.removeChild(this.canvas);
@@ -1381,9 +1615,27 @@
 
             // ---- Determine if post-processing is active ----
             var postActive = this._postProcessConfig.active && this._postProcessProgram;
+            // F1/F3: resolve guided reachability BEFORE the routing predicate (single
+            // resolve point) so a guided no-op can NEVER be discovered later inside the
+            // orchestrator — if guided can't run, denoiseActive is false and Pass 1
+            // routes straight to canvas (no black canvas, Beer's reads a valid _fbo).
+            var dFilter = this._denoiseConfig.filter;
+            if (this._denoiseConfig.active && dFilter === 'guided') {
+                // Lazy program link + float FBO alloc on first activation (CRASH FIX:
+                // nothing linked at init).
+                this._ensureGuidedReady(canvasW, canvasH);
+            }
+            // Guided-only predicate: gates on _guidedSupported (graceful no-op if the
+            // guided programs failed to link or float FBOs are unavailable, F9).
+            var denoiseActive = this._denoiseConfig.active &&
+                dFilter === 'guided' &&
+                this._filterRegistry.guided &&
+                this._guidedSupported === true;
 
             // ---- PASS 1: HyperBlend shader ----
-            if (postActive) {
+            // Render Pass 1 to _fbo whenever any later pass needs its output as
+            // input (Beer's law OR denoise). Otherwise Pass 1 goes to canvas.
+            if (postActive || denoiseActive) {
                 // Render to FBO for post-processing
                 this._resizeFBO(canvasW, canvasH);
                 gl.bindFramebuffer(gl.FRAMEBUFFER, this._fbo);
@@ -1437,7 +1689,27 @@
             gl.vertexAttribPointer(aTex, 2, gl.FLOAT, false, 0, 0);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-            // ---- PASS 2: Beer's law post-processing ----
+            // ---- PASS 2: Runtime denoise (Guided) — Option B ----
+            // Runs on the tone-mapped post-blend RGB written to _fbo by Pass 1.
+            // Routing (the four combos):
+            //   neither active        -> Pass 1 already went to canvas (skip).
+            //   denoise only          -> _fbo -> canvas (dOut = null).
+            //   denoise + Beer's law  -> _fbo -> _fbo2; Beer's law reads _fbo2.
+            //   Beer's law only       -> Beer's law reads _fbo (skip this block).
+            if (denoiseActive) {
+                var dOut = postActive ? this._fbo2 : null;  // null = render to canvas
+                if (dOut === this._fbo2) {
+                    this._resizeFBO2(canvasW, canvasH);
+                }
+                // Multi-pass guided orchestrator. Pass-2 routing contract:
+                // q → _fbo2 when Beer's follows, else → canvas.
+                this._runGuidedFilter(
+                    this._fboTexture, dOut, canvasW, canvasH,
+                    { radius: 4, epsilon: this._denoiseConfig.epsilon }
+                );
+            }
+
+            // ---- PASS 3: Beer's law post-processing ----
             if (postActive) {
                 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 gl.clearColor(0, 0, 0, 1);
@@ -1446,9 +1718,11 @@
 
                 gl.useProgram(this._postProcessProgram);
 
-                // Bind FBO texture to texture unit 4
+                // Bind input to texture unit 4: when denoise ran into _fbo2, read
+                // its output; otherwise read Pass 1's _fbo directly (byte-identical
+                // to pre-denoise behavior when denoise is off).
                 gl.activeTexture(gl.TEXTURE4);
-                gl.bindTexture(gl.TEXTURE_2D, this._fboTexture);
+                gl.bindTexture(gl.TEXTURE_2D, (postActive && denoiseActive) ? this._fbo2Texture : this._fboTexture);
 
                 var pp = this._postProcessUniforms;
                 var ppc = this._postProcessConfig;
@@ -1684,6 +1958,68 @@
         setToneMappingMode(mode) {
             this._toneMode = (mode === 'reinhard') ? 1 : 0;
             this._channelUniformsDirty = true;  // 3.2: uToneMode is in the gated block
+            if (this.viewer) {
+                this.viewer.forceRedraw();
+            }
+        }
+
+        /**
+         * Map the 0..100 guided-filter STRENGTH slider to ε (regularization).
+         * Larger ε ⇒ more smoothing. ε is defined on the 0..1 RGB domain.
+         *
+         * Curve (documented): a smooth EXPONENTIAL interpolation from a gentle
+         * floor to a strong ceiling so the slider top is clearly strong:
+         *   s=0   → ε ≈ 1e-4  (gentle; preserves nearly all texture)
+         *   s=100 → ε ≈ 4e-2  (strong; flattens flat regions hard)
+         *   ε(s) = 1e-4 * (4e-2 / 1e-4) ^ (s/100)   [geometric / log-uniform]
+         * Geometric interpolation gives perceptually-even steps across the ~400×
+         * dynamic range (a linear ramp would crowd all useful change near s=0).
+         * @param {Number} strength 0..100 (clamped)
+         * @returns {Number} ε on the 0..1 RGB domain
+         */
+        _strengthToEpsilon(strength) {
+            var s = strength;
+            if (typeof s !== 'number' || isNaN(s)) { s = 50; }
+            if (s < 0) { s = 0; }
+            if (s > 100) { s = 100; }
+            var EPS_MIN = 1e-4, EPS_MAX = 4e-2;
+            return EPS_MIN * Math.pow(EPS_MAX / EPS_MIN, s / 100);
+        }
+
+        /**
+         * Set runtime denoise config.
+         * @param {Object} cfg - { active:bool, filter:string, threshold:Number, strength:Number }
+         *   threshold is ALWAYS in display 0–255 units; stored normalized 0..1.
+         *   strength is the 0..100 guided slider value; mapped to ε via
+         *   _strengthToEpsilon and stored as _denoiseConfig.epsilon (uEpsilon).
+         * Uniform-only fast path — does NOT invalidate textures. Each slider
+         * 'input' re-applies ε + forceRedraw (acceptable — uniform-only).
+         */
+        setDenoiseConfig(cfg) {
+            cfg = cfg || {};
+            if (typeof cfg.active === 'boolean') {
+                this._denoiseConfig.active = cfg.active;
+            }
+            if (typeof cfg.filter === 'string') {
+                // 'guided' is the only valid denoise filter (median3/median5 removed).
+                this._denoiseConfig.filter = 'guided';
+            }
+            if (typeof cfg.threshold === 'number') {
+                // threshold is ALWAYS display 0–255; clamp then normalize to 0..1.
+                var t = cfg.threshold;
+                if (t < 0) { t = 0; }
+                if (t > 255) { t = 255; }
+                this._denoiseConfig.threshold = t / 255;
+            }
+            if (typeof cfg.strength === 'number') {
+                var st = cfg.strength;
+                if (st < 0) { st = 0; }
+                if (st > 100) { st = 100; }
+                this._denoiseConfig.strength = st;
+                this._denoiseConfig.epsilon = this._strengthToEpsilon(st);
+            }
+            // Uniform-only fast path — leaves _texturesValid untouched so no FBO
+            // re-composite is forced (mirrors setToneMappingMode).
             if (this.viewer) {
                 this.viewer.forceRedraw();
             }
@@ -3901,6 +4237,34 @@
                 if (beersFragShader) gl.deleteShader(beersFragShader);
             }
 
+            // ---- Guided Filter denoise: LAZY program linking ----
+            // CRASH FIX (GPU TDR on load): the guided shader programs are NOT
+            // compiled+linked here at init. Eagerly linking a heavy, data-dependent
+            // denoise program made the real NVIDIA/ANGLE->D3D shader compiler stall
+            // >2s at linkProgram, tripping the Windows GPU TDR watchdog and crashing
+            // the browser AND every other GPU client (e.g. VSCode) on page load —
+            // even though denoise defaults OFF. (Headless SwiftShader has no D3D/TDR
+            // path, so it linked cleanly and masked the bug.) The guided programs now
+            // link on the FIRST denoise activation via _ensureGuidedReady(), exactly
+            // as PICASSO/Linear programs already defer. Here we set only the cheap
+            // flags — NO compile/link at init.
+            this._guidedProgramsLinked = false;
+            this._guidedSquareProgram = null;
+            this._guidedBoxProgram = null;
+            this._guidedCoeffProgram = null;
+            this._guidedRecombineProgram = null;
+            // Drop any denoise registry entry carried from a previous context (this
+            // path also runs on webglcontextrestored) so the lazy linker re-links.
+            delete this._filterRegistry.guided;
+            // Guided CAPABILITY (_guidedSupported) for the UI label is resolved by the
+            // host's init call to the guided-support resolver and by the guided-ready
+            // path on first activation — both capability-only now (no link needed). We
+            // do NOT call the resolver here so its first textual occurrence stays its
+            // own definition (keeps the static-scan extract-by-header guard valid).
+
+            // (guided programs now link LAZILY on first denoise activation —
+            //  see _ensureGuidedReady().)
+
             // ---- FBO for post-process intermediate render target ----
             this._fbo = gl.createFramebuffer();
             this._fboTexture = gl.createTexture();
@@ -3918,6 +4282,28 @@
             }
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
             gl.bindTexture(gl.TEXTURE_2D, null);
+
+            // ---- FBO2 for denoise intermediate render target (Option B Pass 2) ----
+            // Mirrors _fbo exactly; only allocated/used when denoise + Beer's law
+            // are both active (denoise renders into _fbo2, Beer's law reads it).
+            this._fbo2 = gl.createFramebuffer();
+            this._fbo2Texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, this._fbo2Texture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, this._fbo2);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._fbo2Texture, 0);
+            var fbo2Status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+            if (fbo2Status !== gl.FRAMEBUFFER_COMPLETE) {
+                $.console.error('[HyperBlendWebGLDrawer] Denoise FBO2 incomplete: 0x' + fbo2Status.toString(16));
+            }
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+            this._fbo2Width = 1;
+            this._fbo2Height = 1;
         }
 
         // =====================================================================
@@ -3954,6 +4340,468 @@
             gl.bindTexture(gl.TEXTURE_2D, null);
             this._fboWidth = width;
             this._fboHeight = height;
+        }
+
+        // ---- Internal: resize denoise FBO2 texture to match canvas ----
+        // Mirrors _resizeFBO exactly (size-checked early-return + RGBA8 realloc).
+
+        _resizeFBO2(width, height) {
+            if (width === this._fbo2Width && height === this._fbo2Height) return;
+            var gl = this._gl;
+            if (!gl || !this._fbo2Texture) return;
+            gl.bindTexture(gl.TEXTURE_2D, this._fbo2Texture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+            this._fbo2Width = width;
+            this._fbo2Height = height;
+        }
+
+        // ---- Lazy denoise-program linker (CRASH FIX: never compiled at init) ----
+        // Compile+link the 4 guided programs (square/box/coeff/recombine) on FIRST
+        // guided activation, binding the static 5/6/7 sampler units (units 0-3=layers,
+        // 4=Beer's, 5=denoise). Idempotent. On any failure frees partials, leaves
+        // _guidedProgramsLinked=false / guided unregistered, returns false (no throw).
+        _ensureGuidedPrograms() {
+            var gl = this._gl;
+            if (!gl) { return false; }
+            if (this._guidedProgramsLinked === true) { return true; }   // already linked
+            var self_g = this;
+            function buildGuidedProgram(fragSrc, uniformNames) {
+                var vs = self_g._compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC);
+                var fs = self_g._compileShader(gl, gl.FRAGMENT_SHADER, fragSrc);
+                if (!vs || !fs) {
+                    if (vs) { gl.deleteShader(vs); }
+                    if (fs) { gl.deleteShader(fs); }
+                    return null;
+                }
+                var prog = gl.createProgram();
+                gl.attachShader(prog, vs);
+                gl.attachShader(prog, fs);
+                gl.linkProgram(prog);
+                var linked = gl.getProgramParameter(prog, gl.LINK_STATUS);
+                gl.deleteShader(vs);
+                gl.deleteShader(fs);
+                if (!linked) {
+                    $.console.warn('[HyperBlendWebGLDrawer] Guided program link failed:',
+                        gl.getProgramInfoLog(prog));
+                    gl.deleteProgram(prog);
+                    return null;
+                }
+                var uniforms = {};
+                for (var ui = 0; ui < uniformNames.length; ui++) {
+                    uniforms[uniformNames[ui]] = gl.getUniformLocation(prog, uniformNames[ui]);
+                }
+                var attribs = {
+                    aPosition: gl.getAttribLocation(prog, 'aPosition'),
+                    aTexCoord: gl.getAttribLocation(prog, 'aTexCoord')
+                };
+                return { program: prog, uniforms: uniforms, attribs: attribs };
+            }
+            var gSq = buildGuidedProgram(GUIDED_SQUARE_SRC, ['uBoxInput']);
+            var gBox = buildGuidedProgram(GUIDED_BOX_SRC, ['uBoxInput', 'uTexel', 'uBoxAxis']);
+            var gCoeff = buildGuidedProgram(GUIDED_COEFF_SRC,
+                ['uMeanI', 'uMeanII', 'uA', 'uEpsilon', 'uCoeffMode']);
+            var gRecomb = buildGuidedProgram(GUIDED_RECOMBINE_SRC,
+                ['uInput', 'uMeanA', 'uMeanB']);
+            if (!gSq || !gBox || !gCoeff || !gRecomb) {
+                if (gSq) { gl.deleteProgram(gSq.program); }
+                if (gBox) { gl.deleteProgram(gBox.program); }
+                if (gCoeff) { gl.deleteProgram(gCoeff.program); }
+                if (gRecomb) { gl.deleteProgram(gRecomb.program); }
+                $.console.warn('[HyperBlendWebGLDrawer] Guided filter disabled (one or more programs failed)');
+                return false;
+            }
+            this._guidedSquareProgram = gSq.program;
+            this._guidedSquareUniforms = gSq.uniforms;
+            this._guidedSquareAttribs = gSq.attribs;
+            this._guidedBoxProgram = gBox.program;
+            this._guidedBoxUniforms = gBox.uniforms;
+            this._guidedBoxAttribs = gBox.attribs;
+            this._guidedCoeffProgram = gCoeff.program;
+            this._guidedCoeffUniforms = gCoeff.uniforms;
+            this._guidedCoeffAttribs = gCoeff.attribs;
+            this._guidedRecombineProgram = gRecomb.program;
+            this._guidedRecombineUniforms = gRecomb.uniforms;
+            this._guidedRecombineAttribs = gRecomb.attribs;
+            // Static sampler binds — units 5/6/7 ONLY (never >7).
+            gl.useProgram(gSq.program);
+            gl.uniform1i(gSq.uniforms.uBoxInput, 5);
+            gl.useProgram(gBox.program);
+            gl.uniform1i(gBox.uniforms.uBoxInput, 5);
+            gl.useProgram(gCoeff.program);
+            gl.uniform1i(gCoeff.uniforms.uMeanI, 6);
+            gl.uniform1i(gCoeff.uniforms.uMeanII, 7);  // mode 0
+            gl.uniform1i(gCoeff.uniforms.uA, 7);       // mode 1 (unit 7 reused; uMeanII unused in mode 1)
+            gl.useProgram(gRecomb.program);
+            gl.uniform1i(gRecomb.uniforms.uInput, 5);
+            gl.uniform1i(gRecomb.uniforms.uMeanA, 6);
+            gl.uniform1i(gRecomb.uniforms.uMeanB, 7);
+            this._guidedProgramsLinked = true;
+            this._filterRegistry.guided = {
+                program: gSq.program  // sentinel for registry presence; the orchestrator
+                // uses the named program handles, not this entry's .program. Kept so
+                // _filterRegistry['guided'] is truthy for the draw() predicate and the
+                // HTML unsupported-guard.
+            };
+            return true;
+        }
+
+        _resolveGuidedSupport() {
+            var gl = this._gl;
+            if (!gl) { this._guidedSupported = false; return false; }
+            // F4: re-probe float capability after a context restore (which nulls
+            // _picassoSupported). READ-ONLY reuse — _probePicassoExtensions writes
+            // only _picasso* fields.
+            if (this._picassoSupported === null) {
+                this._probePicassoExtensions();
+            }
+            // F2 defensive pre-gate: WebGL1 guarantees only units 0-7; guided needs
+            // 5/6/7. Disable if the driver reports fewer than 8.
+            // CAPABILITY ONLY: programs link lazily via _ensureGuidedPrograms(), so this
+            // (called at init for the UI label) must NOT require _guidedProgramsLinked.
+            var maxUnits = gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS);
+            this._guidedSupported = (this._picassoSupported === true &&
+                maxUnits >= 8);
+            return this._guidedSupported === true;
+        }
+
+        _ensureGuidedReady(w, h) {
+            var gl = this._gl;
+            if (!gl || w <= 0 || h <= 0) { this._guidedSupported = false; return false; }
+            // Resolve capability (probe-only, shared with the init/labeling path), link
+            // the guided programs lazily (CRASH FIX), then allocate the float FBOs —
+            // all only reached when guided is active.
+            if (!this._resolveGuidedSupport()) { return false; }
+            if (!this._ensureGuidedPrograms()) { this._guidedSupported = false; return false; }
+            if (!this._guidedFBOsAllocated) {
+                this._createGuidedFBOs(w, h);
+            } else {
+                this._resizeGuidedFBOs(w, h);
+            }
+            return this._guidedSupported === true && this._guidedFBOsAllocated;
+        }
+
+        // ---- Internal: allocate guided float FBOs (clone of _createPicassoFBOs) ----
+        // FBO-LIFECYCLE ISOLATION: failure sets ONLY this._guidedSupported=false and
+        // MUST NOT write any _picasso* state/handle. Reuses _picassoFloatInternalFmt
+        // + _picassoIsWebGL2 READ-ONLY. NEAREST + CLAMP_TO_EDGE matches the numpy
+        // CLAMP_TO_EDGE oracle for deterministic GPU≈oracle parity.
+        _createGuidedFBOs(w, h) {
+            var gl = this._gl;
+            if (!gl) { this._guidedSupported = false; return; }
+            if (w <= 0 || h <= 0) { this._guidedSupported = false; return; }
+            // F4: ensure float-format fields are fresh (context-restore nulls the probe).
+            if (this._picassoSupported === null) {
+                this._probePicassoExtensions();
+            }
+            if (this._picassoSupported === false) { this._guidedSupported = false; return; }
+
+            var created = { textures: [], framebuffers: [] };
+            var ok = true;
+            var self = this;
+
+            function makeFloatFBO() {
+                var internalFmt = self._picassoFloatInternalFmt;  // RGBA32F (WebGL2) or RGBA (WebGL1+float ext)
+                var tex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texImage2D(gl.TEXTURE_2D, 0, internalFmt, w, h, 0, gl.RGBA, gl.FLOAT, null);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                var fbo = gl.createFramebuffer();
+                gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+                gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+                var status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+                gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                created.textures.push(tex);
+                created.framebuffers.push(fbo);
+                return { tex: tex, fbo: fbo, ok: status === gl.FRAMEBUFFER_COMPLETE, status: status };
+            }
+
+            // Allocate the 9 named float-FBO pairs.
+            var pairs = [
+                'sq', 'meanI', 'meanII', 'a', 'b', 'meanA', 'meanB', 'ping1', 'ping2'
+            ];
+            var made = {};
+            for (var pi = 0; pi < pairs.length; pi++) {
+                var f = makeFloatFBO();
+                if (!f.ok) {
+                    ok = false;
+                    $.console.error('[HyperBlendWebGLDrawer] Guided float FBO incomplete (' +
+                        pairs[pi] + '): 0x' + f.status.toString(16));
+                    break;
+                }
+                made[pairs[pi]] = f;
+            }
+
+            if (!ok) {
+                // Free everything created so far. ISOLATION: set ONLY _guidedSupported.
+                for (var fi = 0; fi < created.framebuffers.length; fi++) {
+                    gl.deleteFramebuffer(created.framebuffers[fi]);
+                }
+                for (var ti = 0; ti < created.textures.length; ti++) {
+                    gl.deleteTexture(created.textures[ti]);
+                }
+                this._guidedSupported = false;
+                this._guidedFBOsAllocated = false;
+                return;
+            }
+
+            this._guidedTex_sq = made.sq.tex;        this._guidedFBO_sq = made.sq.fbo;
+            this._guidedTex_meanI = made.meanI.tex;  this._guidedFBO_meanI = made.meanI.fbo;
+            this._guidedTex_meanII = made.meanII.tex;this._guidedFBO_meanII = made.meanII.fbo;
+            this._guidedTex_a = made.a.tex;          this._guidedFBO_a = made.a.fbo;
+            this._guidedTex_b = made.b.tex;          this._guidedFBO_b = made.b.fbo;
+            this._guidedTex_meanA = made.meanA.tex;  this._guidedFBO_meanA = made.meanA.fbo;
+            this._guidedTex_meanB = made.meanB.tex;  this._guidedFBO_meanB = made.meanB.fbo;
+            this._guidedTex_ping1 = made.ping1.tex;  this._guidedFBO_ping1 = made.ping1.fbo;
+            this._guidedTex_ping2 = made.ping2.tex;  this._guidedFBO_ping2 = made.ping2.fbo;
+            this._guidedFBOsAllocated = true;
+            this._guidedFBOWidth = w;
+            this._guidedFBOHeight = h;
+        }
+
+        // ---- Internal: resize guided float FBOs (clone of _resizePicassoFBOs) ----
+        // ISOLATION: touches only guided state. Reuses _picassoFloatInternalFmt READ-ONLY.
+        // F3 honest degradation (findings 1/3): a resize allocation can fail (out of
+        // VRAM, driver float-FBO limits). After reallocating, REVALIDATE every
+        // tex/FBO pair with checkFramebufferStatus + getError; on ANY failure set
+        // _guidedSupported=false (so the next draw() routing predicate routes Pass 1
+        // straight to canvas instead of an invalid off-screen target) and DO NOT
+        // record the new size. Touches only guided state — never any _picasso* field.
+        _resizeGuidedFBOs(w, h) {
+            if (w === this._guidedFBOWidth && h === this._guidedFBOHeight) return;
+            var gl = this._gl;
+            if (!gl || !this._guidedFBOsAllocated) return;
+            var floatFmt = this._picassoFloatInternalFmt;
+            // Paired (tex, fbo) targets so we can rebind + validate each one.
+            var pairs = [
+                [this._guidedTex_sq, this._guidedFBO_sq],
+                [this._guidedTex_meanI, this._guidedFBO_meanI],
+                [this._guidedTex_meanII, this._guidedFBO_meanII],
+                [this._guidedTex_a, this._guidedFBO_a],
+                [this._guidedTex_b, this._guidedFBO_b],
+                [this._guidedTex_meanA, this._guidedFBO_meanA],
+                [this._guidedTex_meanB, this._guidedFBO_meanB],
+                [this._guidedTex_ping1, this._guidedFBO_ping1],
+                [this._guidedTex_ping2, this._guidedFBO_ping2]
+            ];
+            gl.getError(); // clear any pre-existing error so our check is meaningful
+            var ok = true;
+            for (var i = 0; i < pairs.length; i++) {
+                var tex = pairs[i][0];
+                var fbo = pairs[i][1];
+                if (!tex || !fbo) { ok = false; break; }
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texImage2D(gl.TEXTURE_2D, 0, floatFmt, w, h, 0, gl.RGBA, gl.FLOAT, null);
+                if (gl.getError() !== gl.NO_ERROR) { ok = false; break; }
+                gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+                if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+                    ok = false;
+                    break;
+                }
+            }
+            gl.bindTexture(gl.TEXTURE_2D, null);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            if (!ok) {
+                // ISOLATION: set ONLY guided state. Do NOT record the new size so a
+                // later successful realloc is re-attempted; mark unsupported so the
+                // draw routing predicate degrades honestly before the next frame.
+                $.console.error('[HyperBlendWebGLDrawer] Guided float FBO resize incomplete ' +
+                    '(' + w + 'x' + h + ') — disabling guided (honest degradation).');
+                this._guidedSupported = false;
+                return;
+            }
+            this._guidedFBOWidth = w;
+            this._guidedFBOHeight = h;
+        }
+
+        // ---- Internal: guided-filter multi-pass orchestrator ----
+        // Self-guided guided filter; writes q to outputFBO (null=canvas, _fbo2 when
+        // Beer's follows — SAME Pass-2 routing contract as median).
+        //
+        // DRAW ORDER (separable, radius 4):
+        //   1. square:    sq      = I*I                       [in=inputTex@5 → _guidedFBO_sq]
+        //   2. box(I):    meanI   = boxV(boxH(I))             [ping1=H, meanI=V]
+        //   3. box(I*I):  meanII  = boxV(boxH(sq))            [ping2=H, meanII=V]
+        //   4. coeff a:   a       = var/(var+ε)               [meanI@6,meanII@7 → _guidedFBO_a]
+        //   5. coeff b:   b       = meanI*(1-a)               [meanI@6,a@7 → _guidedFBO_b]
+        //   6. box(a):    meanA   = boxV(boxH(a))             [ping1=H, meanA=V]
+        //   7. box(b):    meanB   = boxV(boxH(b))             [ping2=H, meanB=V]
+        //   8. recombine: q       = meanA*I + meanB           [in@5,meanA@6,meanB@7 → outputFBO]
+        // F2 UNIT MAP: box.uBoxInput=5; coeff uMeanI=6,uMeanII/uA=7; recombine
+        // uInput=5,uMeanA=6,uMeanB=7. NEVER bind a sampler unit > 7.
+        _runGuidedFilter(inputTex, outputFBO, w, h, opts) {
+            var gl = this._gl;
+            if (!gl) return;
+            // Defensive: if FBOs/programs are somehow not ready, blit pass-through
+            // (NEVER no-op) so canvas/Beer's input is never stale (F3).
+            if (!this._guidedFBOsAllocated || !this._guidedProgramsLinked) {
+                this._runGuidedPassthrough(inputTex, outputFBO, w, h);
+                return;
+            }
+            var epsilon = (opts && typeof opts.epsilon === 'number') ? opts.epsilon : 1e-3;
+            var texel = [1 / w, 1 / h];
+            var self = this;
+
+            // Bind the shared full-screen quad geometry once; per-program attrib
+            // pointers are set inside _guidedDrawQuad (locations differ per program).
+            function pass(program, attribs, fbo, setup) {
+                gl.bindFramebuffer(gl.FRAMEBUFFER, fbo || null);
+                gl.viewport(0, 0, w, h);
+                gl.useProgram(program);
+                if (setup) setup();
+                self._guidedDrawQuad(attribs);
+            }
+
+            // --- 1. square: I*I (input @ unit 5) ---
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, inputTex);
+            pass(this._guidedSquareProgram, this._guidedSquareAttribs, this._guidedFBO_sq, null);
+
+            // --- 2. box(I): meanI = V(H(I)) ---
+            this._guidedBoxSeparable(inputTex, this._guidedFBO_ping1, this._guidedTex_ping1,
+                this._guidedFBO_meanI, texel);
+            // --- 3. box(I*I): meanII = V(H(sq)) ---
+            this._guidedBoxSeparable(this._guidedTex_sq, this._guidedFBO_ping2, this._guidedTex_ping2,
+                this._guidedFBO_meanII, texel);
+
+            // --- 4. coeff a: var=meanII-meanI^2; a=var/(var+ε) (meanI@6, meanII@7) ---
+            gl.activeTexture(gl.TEXTURE6);
+            gl.bindTexture(gl.TEXTURE_2D, this._guidedTex_meanI);
+            gl.activeTexture(gl.TEXTURE7);
+            gl.bindTexture(gl.TEXTURE_2D, this._guidedTex_meanII);
+            pass(this._guidedCoeffProgram, this._guidedCoeffAttribs, this._guidedFBO_a, function () {
+                gl.uniform1i(self._guidedCoeffUniforms.uCoeffMode, 0);
+                gl.uniform1f(self._guidedCoeffUniforms.uEpsilon, epsilon);
+            });
+
+            // --- 5. coeff b: b=meanI*(1-a) (meanI@6, a@7) ---
+            gl.activeTexture(gl.TEXTURE6);
+            gl.bindTexture(gl.TEXTURE_2D, this._guidedTex_meanI);
+            gl.activeTexture(gl.TEXTURE7);
+            gl.bindTexture(gl.TEXTURE_2D, this._guidedTex_a);
+            pass(this._guidedCoeffProgram, this._guidedCoeffAttribs, this._guidedFBO_b, function () {
+                gl.uniform1i(self._guidedCoeffUniforms.uCoeffMode, 1);
+            });
+
+            // --- 6. box(a): meanA = V(H(a)) ---
+            this._guidedBoxSeparable(this._guidedTex_a, this._guidedFBO_ping1, this._guidedTex_ping1,
+                this._guidedFBO_meanA, texel);
+            // --- 7. box(b): meanB = V(H(b)) ---
+            this._guidedBoxSeparable(this._guidedTex_b, this._guidedFBO_ping2, this._guidedTex_ping2,
+                this._guidedFBO_meanB, texel);
+
+            // --- 8. recombine: q = meanA*I + meanB (input@5, meanA@6, meanB@7) ---
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, inputTex);
+            gl.activeTexture(gl.TEXTURE6);
+            gl.bindTexture(gl.TEXTURE_2D, this._guidedTex_meanA);
+            gl.activeTexture(gl.TEXTURE7);
+            gl.bindTexture(gl.TEXTURE_2D, this._guidedTex_meanB);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, outputFBO || null);
+            gl.clearColor(0, 0, 0, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.viewport(0, 0, w, h);
+            gl.useProgram(this._guidedRecombineProgram);
+            this._guidedDrawQuad(this._guidedRecombineAttribs);
+        }
+
+        // ---- Internal: separable box (H into ping, V into dstFBO), unit 5 ----
+        // srcTex → boxH → pingTex (pingFBO) → boxV → dstFBO.
+        _guidedBoxSeparable(srcTex, pingFBO, pingTex, dstFBO, texel) {
+            var gl = this._gl;
+            // Horizontal pass: src @ unit 5 → pingFBO.
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, srcTex);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, pingFBO);
+            gl.viewport(0, 0, this._guidedFBOWidth, this._guidedFBOHeight);
+            gl.useProgram(this._guidedBoxProgram);
+            gl.uniform2f(this._guidedBoxUniforms.uTexel, texel[0], texel[1]);
+            gl.uniform2f(this._guidedBoxUniforms.uBoxAxis, 1.0, 0.0);
+            this._guidedDrawQuad(this._guidedBoxAttribs);
+            // Vertical pass: ping @ unit 5 → dstFBO.
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, pingTex);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, dstFBO);
+            gl.viewport(0, 0, this._guidedFBOWidth, this._guidedFBOHeight);
+            gl.useProgram(this._guidedBoxProgram);
+            gl.uniform2f(this._guidedBoxUniforms.uTexel, texel[0], texel[1]);
+            gl.uniform2f(this._guidedBoxUniforms.uBoxAxis, 0.0, 1.0);
+            this._guidedDrawQuad(this._guidedBoxAttribs);
+        }
+
+        // ---- Internal: bind the shared quad + draw (per-program attribs) ----
+        _guidedDrawQuad(attribs) {
+            var gl = this._gl;
+            gl.bindBuffer(gl.ARRAY_BUFFER, this._posBuffer);
+            gl.enableVertexAttribArray(attribs.aPosition);
+            gl.vertexAttribPointer(attribs.aPosition, 2, gl.FLOAT, false, 0, 0);
+            gl.bindBuffer(gl.ARRAY_BUFFER, this._texBufferFBO);
+            gl.enableVertexAttribArray(attribs.aTexCoord);
+            gl.vertexAttribPointer(attribs.aTexCoord, 2, gl.FLOAT, false, 0, 0);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+
+        // ---- Internal: guided pass-through (F3 — never leave canvas/_fbo2 stale/black) ----
+        // If the guided chain cannot run at draw time (should not happen — the
+        // _ensureGuidedReady gate makes denoiseActive false when guided can't run —
+        // but defensive), copy inputTex → outputFBO so canvas/Beer's input is never
+        // stale. F3 (Codex/gate findings) requires this to be a TRUE inputTex→outputFBO
+        // pass-through and EXPLICITLY FORBIDS a black/no-op output: a black clear must
+        // NEVER be the terminal state of this method.
+        //
+        // Identity copy = _blitProgram (BLIT_FRAGMENT_SRC: samples uTile@unit5 with
+        // vTexCoord — a true identity full-screen copy). _blitProgram is a CORE program
+        // built unconditionally in _initWebGL (it is the tile compositor); it is always
+        // present whenever the drawer has rendered a single frame, so it links/exists
+        // independently of the guided/median programs. Each program path draws a
+        // full-screen quad that OVERWRITES every destination texel — NO gl.clear is
+        // issued anywhere in this method, because F3 explicitly forbids a black clear
+        // (it could become the terminal output if a draw ever failed). Fallback:
+        // guided box program with step=0 (mean(I)==I identity) if _blitProgram is
+        // somehow unavailable. If NEITHER program exists the WebGL context is unusable
+        // (no core program means no prior frame could have rendered); we leave the
+        // existing destination content untouched and return false so the caller can
+        // re-route Pass-1 — we never clear to black.
+        _runGuidedPassthrough(inputTex, outputFBO, w, h) {
+            var gl = this._gl;
+            if (!gl) return false;
+            if (this._blitProgram && this._blitAttribs &&
+                this._blitAttribs.aPosition >= 0 && this._blitAttribs.aTexCoord >= 0) {
+                // Independently-available identity copy (uTile bound to unit 5).
+                // The full-screen quad overwrites every destination texel, so NO
+                // gl.clear is performed — F3 forbids a black clear here (it could
+                // become the terminal output if the draw ever failed).
+                gl.bindFramebuffer(gl.FRAMEBUFFER, outputFBO || null);
+                gl.viewport(0, 0, w, h);
+                gl.activeTexture(gl.TEXTURE5);
+                gl.bindTexture(gl.TEXTURE_2D, inputTex);
+                gl.useProgram(this._blitProgram);
+                gl.uniform1i(this._blitUniforms.uTile, 5);
+                this._guidedDrawQuad(this._blitAttribs);
+                return true;
+            } else if (this._guidedBoxProgram && this._guidedBoxAttribs &&
+                this._guidedBoxAttribs.aPosition >= 0 && this._guidedBoxAttribs.aTexCoord >= 0) {
+                // Fallback: guided box with step=0 → all taps read vTexCoord → identity.
+                // Same as the _blitProgram path: the quad overwrites every texel, so
+                // NO gl.clear (F3 forbids a black terminal output).
+                gl.bindFramebuffer(gl.FRAMEBUFFER, outputFBO || null);
+                gl.viewport(0, 0, w, h);
+                gl.activeTexture(gl.TEXTURE5);
+                gl.bindTexture(gl.TEXTURE_2D, inputTex);
+                gl.useProgram(this._guidedBoxProgram);
+                gl.uniform2f(this._guidedBoxUniforms.uTexel, 1 / w, 1 / h);
+                gl.uniform2f(this._guidedBoxUniforms.uBoxAxis, 0.0, 0.0);
+                this._guidedDrawQuad(this._guidedBoxAttribs);
+                return true;
+            }
+            // No identity-copy program available — the context is unusable. Do NOT
+            // clear to black (F3 forbids a black terminal output); leave the existing
+            // destination content untouched. Report failure so the caller can route
+            // Pass 1 straight to the destination if it wishes.
+            return false;
         }
 
         // ---- Internal: determine active layers ----
