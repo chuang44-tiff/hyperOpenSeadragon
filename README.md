@@ -18,6 +18,10 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
 
+## New in v3.2.1
+
+- **GPU guided-filter denoise** — Edge-preserving, display-only denoising applied as a post-processing pass between HyperBlend and Beer's law. Off by default; enable via the **Denoise (Guided)** toggle in Post-Processing and tune with the 0–100 **Strength** slider. Original tile data is never modified. The toggle is hidden automatically when the GPU does not support float framebuffers.
+
 ## New in v3.2
 
 - **PICASSO unmixing Matrix Generation** — Generate a PICASSO unmixing matrix using the web interface. The matrix is generated using the built-in optimizer.
@@ -124,6 +128,8 @@ Open the viewer HTML in Chrome, Firefox, or Edge. No server required — it runs
 | Reinhard checkbox | Switch to smooth tone mapping for figures |
 | Rotation slider | Rotate the image |
 | z level slider | Switch between focal planes |
+| Denoise (Guided) checkbox | Toggle edge-preserving GPU denoise (display-only; hidden if GPU lacks float-FBO support) |
+| Strength slider | Adjust denoise strength 0–100 (higher = more smoothing) |
 | Save Current View | Download a PNG snapshot (with optional scale bar) |
 
 ## Linear Spectral Unmixing
