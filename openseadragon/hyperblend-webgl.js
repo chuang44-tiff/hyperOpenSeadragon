@@ -687,7 +687,6 @@
             this._guidedProgramsLinked = false;
             this._guidedSupported = false;
             this._guidedSquareProgram = null;
-            this._guidedSquareUniforms = {};
             this._guidedSquareAttribs = {};
             this._guidedBoxProgram = null;
             this._guidedBoxUniforms = {};
@@ -696,7 +695,6 @@
             this._guidedCoeffUniforms = {};
             this._guidedCoeffAttribs = {};
             this._guidedRecombineProgram = null;
-            this._guidedRecombineUniforms = {};
             this._guidedRecombineAttribs = {};
             // Named float-FBO pairs (each pair = 1 texture + 1 framebuffer; do NOT
             // double-allocate). Ping1/Ping2 are separable-box scratch buffers.
@@ -787,10 +785,8 @@
             this._picassoCastProgram = null;
             this._picassoKernelCastProgram = null;  // fused kernel+cast (v5.2 2.2)
             this._picassoUniforms = {};
-            this._picassoCastUniforms = {};
             this._picassoKernelCastUniforms = {};
             this._picassoAttribs = {};
-            this._picassoCastAttribs = {};
             this._picassoKernelCastAttribs = {};
 
             try {
@@ -2080,21 +2076,6 @@
             return h;
         }
 
-        // ---- Internal: compute count + XOR checksum for a tileInfo array ----
-        _computeLayerTileStats(tileInfos) {
-            var count = tileInfos.length;
-            var checksum = 0;
-            var sumChecksum = 0;
-            for (var i = 0; i < tileInfos.length; i++) {
-                if (tileInfos[i] && tileInfos[i].tile) {
-                    var h = this._hashCacheKey(tileInfos[i].tile.cacheKey);
-                    checksum = (checksum ^ h) | 0;
-                    sumChecksum = (sumChecksum + h) | 0;
-                }
-            }
-            return { count: count, checksum: checksum, sumChecksum: sumChecksum };
-        }
-
         _precomputeChannelColors() {
             for (var i = 0; i < 16; i++) {
                 var cfg = this._channelConfig[i];
@@ -2231,7 +2212,6 @@
         //  PICASSO PUBLIC API
         //  updatePicassoConfig — enable/disable + upload K square N×N matrices.
         //  getPicassoConfig    — read current PICASSO state (test introspection).
-        //  readPicassoOutput   — single-pixel sample of one layer's output FBO.
         //  readPicassoLayerFull — full-FBO RGBA readback (used by headless test).
         //  runPicassoSelfChecks — eight runtime invariants from the spec.
         // =====================================================================
@@ -2424,38 +2404,6 @@
         }
 
         /**
-         * Read 1 pixel from a PICASSO output FBO (Spectrum Inspector / self-check 7).
-         *
-         * STALENESS (v5.2 1.6): in Mode-3 chained PICASSO the kernel skips layers
-         * 1..3, so _picassoFBO_Out[1..3] are NOT updated and hold stale content
-         * from the last Mode-2 frame (or are cleared). Only layerIdx 0 is valid
-         * under chained Mode 3. In Mode 2 (standalone PICASSO) all 4 outputs are
-         * current.
-         * @param {number} layerIdx 0..3 (only 0 is current in Mode-3 chained)
-         * @param {number} cssX
-         * @param {number} cssY
-         * @returns {Uint8Array(4)|null}
-         */
-        readPicassoOutput(layerIdx, cssX, cssY) {
-            var gl = this._gl;
-            if (!gl || this._contextLost) return null;
-            if (!this._picassoActive || !this._picassoFBOsAllocated) return null;
-            if (layerIdx < 0 || layerIdx >= this._picassoFBO_Out.length) return null;
-            if (!this._picassoFBO_Out[layerIdx]) return null;
-
-            var dpr = $.pixelDensityRatio;
-            var glX = Math.round(cssX * dpr);
-            var glY = this.canvas.height - Math.round(cssY * dpr) - 1;
-            if (glX < 0 || glX >= this.canvas.width || glY < 0 || glY >= this.canvas.height) return null;
-
-            var out = new Uint8Array(4);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, this._picassoFBO_Out[layerIdx]);
-            gl.readPixels(glX, glY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-            return out;
-        }
-
-        /**
          * Full-FBO readback for one PICASSO layer (headless test fast-path).
          * Per-pixel readPixels at 2048² would take >10 minutes — this path is the
          * only way the integration test can dump the recovered image at scale.
@@ -2480,7 +2428,7 @@
             gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw);
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
             // gl.readPixels returns bottom-up; flip to top-down so callers get
-            // a standard image orientation (matches readPicassoOutput's CSS-Y).
+            // a standard top-down image orientation.
             var out = new Uint8Array(w * h * 4);
             var rowBytes = w * 4;
             for (var y = 0; y < h; y++) {
@@ -3050,13 +2998,6 @@
                 gl.linkProgram(cprog);
                 if (gl.getProgramParameter(cprog, gl.LINK_STATUS)) {
                     this._picassoCastProgram = cprog;
-                    this._picassoCastUniforms = {
-                        uSrc: gl.getUniformLocation(cprog, 'uSrc')
-                    };
-                    this._picassoCastAttribs = {
-                        aPosition: gl.getAttribLocation(cprog, 'aPosition'),
-                        aTexCoord: gl.getAttribLocation(cprog, 'aTexCoord')
-                    };
                 } else {
                     $.console.error('[HyperBlendWebGLDrawer] PICASSO cast program link failed:', gl.getProgramInfoLog(cprog));
                     this._picassoSupported = false;
@@ -4412,7 +4353,6 @@
                 return false;
             }
             this._guidedSquareProgram = gSq.program;
-            this._guidedSquareUniforms = gSq.uniforms;
             this._guidedSquareAttribs = gSq.attribs;
             this._guidedBoxProgram = gBox.program;
             this._guidedBoxUniforms = gBox.uniforms;
@@ -4421,7 +4361,6 @@
             this._guidedCoeffUniforms = gCoeff.uniforms;
             this._guidedCoeffAttribs = gCoeff.attribs;
             this._guidedRecombineProgram = gRecomb.program;
-            this._guidedRecombineUniforms = gRecomb.uniforms;
             this._guidedRecombineAttribs = gRecomb.attribs;
             // Static sampler binds — units 5/6/7 ONLY (never >7).
             gl.useProgram(gSq.program);
