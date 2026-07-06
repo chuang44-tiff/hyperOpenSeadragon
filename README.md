@@ -18,6 +18,10 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
 
+## New in v3.3
+
+- **OSDAnnotator — multi-class paintbrush annotation** — Paint free-form pixel masks directly on the image. Supports up to 16 classes, each with its own color, stored as a single indexed mask. The brush is screen-space (its on-screen size stays constant as you zoom); **Shift + scroll wheel** resizes it without affecting the normal zoom-on-scroll behavior. Includes stroke-level **Undo/Redo** (Ctrl+Z / Ctrl+Y), one-click **Export Mask** (binary PNG of the active class), and **Save/Load Session** (indexed label PNG + a `.classes.json` sidecar, reloadable later). See [Annotation](#annotation) below.
+
 ## New in v3.2.1
 
 - **GPU guided-filter denoise** — Edge-preserving, display-only denoising applied as a post-processing pass between HyperBlend and Beer's law. Off by default; enable via the **Denoise (Guided)** toggle in Post-Processing and tune with the 0–100 **Strength** slider. Original tile data is never modified. The toggle is hidden automatically when the GPU does not support float framebuffers.
@@ -131,6 +135,7 @@ Open the viewer HTML in Chrome, Firefox, or Edge. No server required — it runs
 | Denoise (Guided) checkbox | Toggle edge-preserving GPU denoise (display-only; hidden if GPU lacks float-FBO support) |
 | Strength slider | Adjust denoise strength 0–100 (higher = more smoothing) |
 | Save Current View | Download a PNG snapshot (with optional scale bar) |
+| Annotation panel | Paint/erase multi-class pixel masks on the image (see [Annotation](#annotation)) |
 
 ## Linear Spectral Unmixing
 
@@ -178,6 +183,17 @@ To generate a PICASSO matrix from your data, you can generate it directly in the
 The iteration count is adjustable at runtime via the **K** spinner in the panel dim-bar (range 1–10; capped at the loaded file's K). The Apply button is an engagement toggle (same UX as Linear — label flips to **ENGAGED ✓**, a green **ENGAGED** badge appears in the panel header, click again to disengage). Reload is locked while engaged.
 
 **Chaining with Linear (Mode 3):** enable Linear first, set its output count `M` to match the PICASSO matrix's `N`, click Linear → Apply, then PICASSO → Apply. The Linear panel locks while PICASSO is engaged so the chain dimensions stay consistent.
+
+## Annotation
+
+OSDAnnotator lets you paint free-form, multi-class pixel masks on top of the image — useful for marking regions of interest, generating training labels, or flagging artifacts. It's a self-contained plugin (`openseadragon/osd-annotator.js`) built only on the public OpenSeadragon API, with no effect on the blending/PICASSO/denoise pipeline.
+
+1. Open the **Annotation** panel and check **Active (arm painting)** to arm the brush. While active, left-drag paints and right-drag pans the viewer (plain scroll still zooms).
+2. Pick **Brush** or **Eraser**, and set the brush size with the slider (1–100 px) or **Shift + scroll wheel**. The brush footprint is screen-space, so it stays the same size on screen regardless of zoom level.
+3. Use **+ Add class** to create up to 16 classes; each row lets you recolor, rename, or delete a class, and a radio button picks which class is active (new strokes paint with the active class's id).
+4. **Export Mask** downloads a binary PNG of the *active* class only (white = painted, black = everywhere else), named after the class. An optional **Downscale** setting (Full / 4096 / 2048) caps the shorter side of the exported image.
+5. **Save Session** downloads a timestamped bundle — one indexed label PNG (class id in the red channel, all classes) plus a `<name>.classes.json` sidecar with class names/colors. **Load Session** reopens that bundle (the PNG alone also loads, defaulting to auto-named classes).
+6. **Undo / Redo** (Ctrl+Z / Ctrl+Y) operate at stroke granularity, depth 20. **Clear Mask** wipes all classes' pixels (not undoable).
 
 ## Requirements
 
