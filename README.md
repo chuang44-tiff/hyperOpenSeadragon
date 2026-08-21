@@ -15,8 +15,13 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 - **Linear spectral unmixing** — Load a spectral unmixing matrix to decompose overlapping fluorescence spectra into pure component channels. The matrix editor is built into the viewer.
 - **Spectrum Inspector** — Inspect the spectrum of a pixel by right-clicking the image. Then click "Add to Matrix" to add the spectrum to the unmixing matrix.
 - **PICASSO unmixing** — Apply iterative non-negative unmixing [2].
+- **Multi-class annotation** — Draw pixel-accurate masks over the image with a polygon or brush tool, and export them as label images for training or downstream analysis.
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
+
+## New in v3.4
+
+- **Polygon annotation** — The annotator is now a two-tool package: **Polygon** for click-to-place or freehand regions, **Brush** for free-form painting. Closed polygons stay editable — click one to select it, drag its vertex handles to reshape it, press **Backspace** to delete it — and a reshape rewrites only the pixels that actually changed, so holes you erased inside a shape survive the edit. The separate Eraser radio is gone: **hold Alt** to erase while brushing. Bare keys **P**/**B** switch tool and **1**–**9** switch class, and a saved session now carries its polygons alongside the label mask, so a reloaded session is still editable. See [Annotation](#annotation) below.
 
 ## New in v3.3
 
@@ -135,7 +140,7 @@ Open the viewer HTML in Chrome, Firefox, or Edge. No server required — it runs
 | Denoise (Guided) checkbox | Toggle edge-preserving GPU denoise (display-only; hidden if GPU lacks float-FBO support) |
 | Strength slider | Adjust denoise strength 0–100 (higher = more smoothing) |
 | Save Current View | Download a PNG snapshot (with optional scale bar) |
-| Annotation panel | Paint/erase multi-class pixel masks on the image (see [Annotation](#annotation)) |
+| Annotation panel | Draw multi-class pixel masks with the polygon or brush tool (see [Annotation](#annotation)) |
 
 ## Linear Spectral Unmixing
 
@@ -186,14 +191,24 @@ The iteration count is adjustable at runtime via the **K** spinner in the panel 
 
 ## Annotation
 
-OSDAnnotator lets you paint free-form, multi-class pixel masks on top of the image — useful for marking regions of interest, generating training labels, or flagging artifacts. It's a self-contained plugin (`openseadragon/osd-annotator.js`) built only on the public OpenSeadragon API, with no effect on the blending/PICASSO/denoise pipeline.
+OSDAnnotator lets you draw multi-class pixel masks on top of the image — useful for marking regions of interest, generating training labels, or flagging artifacts. It's a self-contained plugin (`openseadragon/osd-annotator.js`) built only on the public OpenSeadragon API, with no effect on the blending/PICASSO/denoise pipeline. The deliverable is always the indexed label mask — one pixel, one class id; polygons are an editing affordance on top of that mask, not a second vector format.
 
-1. Open the **Annotation** panel and check **Active (arm painting)** to arm the brush. While active, left-drag paints and right-drag pans the viewer (plain scroll still zooms).
-2. Pick **Brush** or **Eraser**, and set the brush size with the slider (1–100 px) or **Shift + scroll wheel**. The brush footprint is screen-space, so it stays the same size on screen regardless of zoom level.
-3. Use **+ Add class** to create up to 16 classes; each row lets you recolor, rename, or delete a class, and a radio button picks which class is active (new strokes paint with the active class's id).
-4. **Export Mask** downloads a binary PNG of the *active* class only (white = painted, black = everywhere else), named after the class. An optional **Downscale** setting (Full / 4096 / 2048) caps the shorter side of the exported image.
-5. **Save Session** downloads a timestamped bundle — one indexed label PNG (class id in the red channel, all classes) plus a `<name>.classes.json` sidecar with class names/colors. **Load Session** reopens that bundle (the PNG alone also loads, defaulting to auto-named classes).
-6. **Undo / Redo** (Ctrl+Z / Ctrl+Y) operate at stroke granularity, depth 20. **Clear Mask** wipes all classes' pixels (not undoable).
+1. Open the **Annotation** panel and check **Active (arm painting)** to arm the tool. While active, left-drag draws and right-drag pans the viewer (plain scroll still zooms). While disarmed the controls dim and every click pans and zooms the slide as usual.
+2. Use **+ Add class** to create up to 16 classes; each row lets you recolor, rename, or delete a class, and a radio button picks which class is active (everything you draw takes the active class's id).
+3. Pick a tool — **Polygon (P)** or **Brush (B)**:
+   - **Polygon** — click to place vertices; **double-click** or **Enter** closes the ring and fills it with the active class; **Esc** cancels the draft. Click-drag instead draws freehand and closes on release.
+   - **Brush** — left-drag paints with the active class, and **hold Alt** to erase for as long as the key is down. Set the size with the slider (1–100 px) or **Shift + scroll wheel**; the footprint is screen-space, so it stays the same size on screen regardless of zoom level.
+4. Closed polygons stay editable. Click inside one of your polygons in the active class to select it — its outline and vertex handles appear — then drag a handle to reshape it. The mask is rewritten on release and only the pixels that actually changed are touched, so holes you erased inside the shape survive the edit. With a polygon selected, clicking inside it again starts a new polygon nested within it, **Esc** deselects, and **Backspace** or **Delete** removes it (erasing that class's pixels inside it — a single **Undo** restores both).
+5. Keyboard shortcuts are live while the annotator is armed, and never while you are typing in a text field:
+   - **P** / **B** — switch to the Polygon / Brush tool.
+   - **1**–**9** — select that class, by position in the class list.
+   - **Alt** (hold) — temporarily erase; Brush tool only.
+   - **Enter** / **Esc** — close the open polygon / cancel the draft or deselect.
+   - **Backspace** / **Delete** — delete the selected polygon.
+   - **Ctrl+Z** / **Ctrl+Y** — undo / redo (**Ctrl+Shift+Z** also redoes).
+6. **Export Mask** downloads a binary PNG of the *active* class only (white = painted, black = everywhere else), named after the class. A class with no pixels is reported in the status line instead of downloading a blank image. An optional **Downscale** setting (Full / 4096 / 2048) caps the shorter side of the exported image.
+7. **Save Session** downloads a timestamped bundle — one indexed label PNG (class id in the red channel, all classes) plus a `<name>.classes.json` sidecar with class names/colors **and the polygons**. **Load Session** reopens that bundle and restores the polygon handles, so you can carry on reshaping where you left off (the PNG alone also loads, defaulting to auto-named classes, and sidecars written by v3.3 still load).
+8. **Undo / Redo** (Ctrl+Z / Ctrl+Y) operate at stroke granularity, depth 20 — one polygon fill, one brush stroke, or one reshape per step. **Clear Mask** wipes all classes' pixels (not undoable).
 
 ## Requirements
 
