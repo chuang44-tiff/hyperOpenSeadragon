@@ -22,12 +22,25 @@
 (function (global) {
     'use strict';
 
-    var DEFAULTS = { maxMaskEdge: 4096, brushSize: 25, tool: 'brush', active: false, maxClasses: 16, undoDepth: 20 };
+    var DEFAULTS = { maxMaskEdge: 4096, brushSize: 25, tool: 'polygon', active: false, maxClasses: 16, undoDepth: 20 };
 
     // ---- Inc-A: multi-class registry constants ----
     var MAX_CLASSES = 16;
     var PALETTE = ['#4a7c8a', '#c0504d', '#9bbb59', '#8064a2', '#4bacc6', '#f79646',
                    '#2c4d75', '#a5a5a5', '#d99694', '#7f6084', '#4f81bd', '#c3d69b'];
+
+    // ---- Inc-7: polygon freehand travel threshold (CSS px) — HARD-CODED, not an option ----
+    var POLY_DRAG_PX = 6;
+
+    // ---- Inc-8: vertex handle square side AND grab radius (CSS px) — HARD-CODED, not an option ----
+    var POLY_HANDLE_PX = 8;
+    // ---- Inc-8: selection outline + active-handle colour (QuPath PathPrefs.colorSelectedObject) ----
+    var POLY_SEL_COLOR = '#ffff00';
+
+    // ---- Inc-9: typing-guard negative list (§4). <input> types that are NOT text entry, i.e. the
+    // ONLY ones whose focus must NOT swallow the annotator's keys. Polarity is deliberate: an
+    // unknown/future type resolves to 'text' behaviour in browsers, so it stays GUARDED by default.
+    var NON_TEXT_INPUT_TYPES = /^(button|checkbox|radio|range|color|file|submit|reset|image|hidden)$/;
 
     function attach(viewer, options) {
         var opts = {};
@@ -83,6 +96,35 @@
         var _undoPre   = null;         // single reusable full-mask <canvas> holding pre-stroke pixels
         var _upctx     = null;         // its 2d ctx (imageSmoothingEnabled=false)
         var _strokeBBox = null;        // {x0,y0,x1,y1} inclusive, accumulated during the current stroke
+
+        // ---- Inc-7: polygon draft state (IN-PROGRESS draft only — there is no committed-polygon list) ----
+        // The polygon is an INPUT METHOD for the indexed label mask: on close it rasterizes into
+        // _mask exactly as the brush does. ONE representation (pixels), no sidecar, no vectors.
+        var _polyDraft = null;         // null | {mode:'click'|'freehand', pts:[{x,y}]} — pts in MASK px, ring implicitly closed
+        var _polyDownCss = null;       // null | {x,y} CSS px rel _view — current press origin (travel threshold)
+        var _polyLastCss = null;       // null | {x,y} CSS px — last KEPT vertex (freehand spacing origin)
+        var _polyCurMask = null;       // null | {x,y} mask px — latest freehand sample (release-tail vertex)
+        var _polyLastClick = null;     // null | {t,x,y} previous click-mode press (double-click detection)
+        var _polyOpts = { dblClickMs: 300, dblClickPx: 6, stepPx: 8 };   // the three setPolygonOptions tunables
+        var _polyLastCommit = false;   // did the most recent _closeDraft() write pixels? (a flag, NOT a vertex record)
+        var _renderCount = 0;          // incremented once per _render() that passes the bail (test hook)
+
+        // ---- Inc-8: committed-polygon EDIT RECORDS + selection + in-progress vertex drag ----
+        // The mask stays AUTHORITATIVE: these records are an EDIT AFFORDANCE only. They are never
+        // rendered as fill, never re-asserted at export/save/fill time, and may legally diverge
+        // from the mask (brush over, eraser through, a later polygon on top, undo). Their ONLY
+        // power is the symmetric-difference repaint of their OWN class when a vertex is dragged.
+        var _polys = [];               // [{id,classId,pts:[{x,y}]}] — array order = z-order (last = topmost)
+        var _polySeq = 0;              // monotonic id source (++_polySeq per append); reset only by destroy
+        var _selPoly = null;           // null | record reference into _polys — the selected polygon
+        var _dragVert = null;          // null | {poly, idx, pts} — pts is a WORKING COPY (no mask write)
+        var _polyScratch = null, _psctx = null;   // reusable full-mask binary scratch (silhouette-clipped erase)
+        // ---- Inc-9 (R3): Alt-hold temporary-eraser latch. Non-null ⇔ an Alt hold is latched and the
+        // saved tool must be restored on keyup / window blur. Under the Inc-9 mode split the latch can
+        // only engage from Brush mode, so the ONLY value ever stored is 'brush'; it is kept as a
+        // SAVED-TOOL variable (not a boolean) so the restore reads setTool(_altSavedTool) and the
+        // mechanism survives any future mode being added.
+        var _altSavedTool = null;                 // null | 'brush'
 
         function _warnOnce(key, msg) {
             if (_firedWarnKeys.has(key)) { return; }
@@ -169,6 +211,7 @@
         // ---- B5: _render() + affine (FIX 2 + FIX 5) ----
         function _render() {
             if (_destroyed || _frozen || !_mask || !_refTI || !_ctx) { return; }  // FIX 1 bail
+            _renderCount++;                                                      // Inc-7 test hook
             var DPR = window.devicePixelRatio || 1;
             var w = _canvas.clientWidth, h = _canvas.clientHeight;
             // FIX 5: reset BOTH dimensions on width- OR height-only resize, BEFORE transform.
@@ -281,13 +324,126 @@
             _ctx.setTransform(1, 0, 0, 1, 0, 0);                 // reset to defaults before the ring
             _ctx.globalCompositeOperation = 'source-over';       // restore default
             _ctx.globalAlpha = 1;
+            // ---- Inc-7: polygon DRAFT preview (identity transform, device px) ----
+            // Vertices are stored in MASK px and pushed through the CURRENT A..F0 here, so the
+            // preview stays co-registered under pan/zoom/rotate/flip with zero extra plumbing
+            // (_onView re-renders on every viewport event). Line widths are screen-constant.
+            // Antialiasing is fine in this PREVIEW — the mask write is the integer scanline in
+            // _polyRuns/_polyCommit. No preview fill of the open draft.
+            if (_active && _polyDraft && _polyDraft.pts.length > 0) {
+                var DPRp = window.devicePixelRatio || 1;
+                var pcol = _activeColor();
+                var dpts = [];
+                for (var pi = 0; pi < _polyDraft.pts.length; pi++) {
+                    var pv = _polyDraft.pts[pi];
+                    dpts.push({ x: A * pv.x + C * pv.y + E0, y: B * pv.x + D * pv.y + F0 });
+                }
+                _ctx.setTransform(1, 0, 0, 1, 0, 0);
+                _ctx.globalCompositeOperation = 'source-over';
+                _ctx.globalAlpha = 1;
+                _ctx.setLineDash([]);
+                // (a) solid polyline through the placed vertices (halo under the class-color line)
+                if (dpts.length >= 2) {
+                    _ctx.beginPath();
+                    _ctx.moveTo(dpts[0].x, dpts[0].y);
+                    for (var li = 1; li < dpts.length; li++) { _ctx.lineTo(dpts[li].x, dpts[li].y); }
+                    _ctx.lineWidth = 4 * DPRp;
+                    _ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+                    _ctx.stroke();
+                    _ctx.lineWidth = 2 * DPRp;
+                    _ctx.strokeStyle = pcol;
+                    _ctx.stroke();
+                }
+                // (b) vertex markers
+                _ctx.fillStyle = pcol;
+                var vSide = 5 * DPRp;
+                for (var vi = 0; vi < dpts.length; vi++) {
+                    _ctx.fillRect(dpts[vi].x - vSide / 2, dpts[vi].y - vSide / 2, vSide, vSide);
+                }
+                // (c) rubber band: ONE dashed segment from the last vertex to the cursor
+                if (_hoverCss) {
+                    var lastD = dpts[dpts.length - 1];
+                    _ctx.setLineDash([6 * DPRp, 4 * DPRp]);
+                    _ctx.strokeStyle = pcol;
+                    _ctx.lineWidth = 2 * DPRp;
+                    _ctx.beginPath();
+                    _ctx.moveTo(lastD.x, lastD.y);
+                    _ctx.lineTo(_hoverCss.x * DPRp, _hoverCss.y * DPRp);
+                    _ctx.stroke();
+                }
+                // (c2) Inc-8: CLOSING EDGE preview — LAST placed vertex → FIRST vertex, dashed at
+                // half alpha. Drawn whether or not the pointer is over the canvas (independent of
+                // _hoverCss); it and the rubber band are two distinct segments and may both show.
+                // Still NO preview fill of the open draft.
+                if (dpts.length >= 2) {
+                    _ctx.setLineDash([6 * DPRp, 4 * DPRp]);
+                    _ctx.strokeStyle = pcol;
+                    _ctx.lineWidth = 2 * DPRp;
+                    _ctx.globalAlpha = 0.5;
+                    _ctx.beginPath();
+                    _ctx.moveTo(dpts[dpts.length - 1].x, dpts[dpts.length - 1].y);
+                    _ctx.lineTo(dpts[0].x, dpts[0].y);
+                    _ctx.stroke();
+                    _ctx.globalAlpha = 1;
+                }
+                // (d) restore defaults for whatever draws next
+                _ctx.setLineDash([]);
+                _ctx.globalCompositeOperation = 'source-over';
+                _ctx.globalAlpha = 1;
+            }
+            // ---- Inc-8: SELECTION outline + vertex HANDLES (identity transform, device px) ----
+            // Vertices are MASK px pushed through the CURRENT A..F0, so handles stay co-registered
+            // under pan/zoom/rotate/flip. NO vector fill — the fill on screen is the class
+            // silhouette's (i.e. the mask's). Line widths and the handle square are screen-constant.
+            // _selPoly is only ever non-null in the polygon tool, so no _tool test is needed.
+            if (_active && _selPoly) {
+                var DPRs = window.devicePixelRatio || 1;
+                var spts = _dragVert ? _dragVert.pts : _selPoly.pts;   // the working copy during a drag
+                var sdev = [];
+                for (var qi = 0; qi < spts.length; qi++) {
+                    var qv = spts[qi];
+                    sdev.push({ x: A * qv.x + C * qv.y + E0, y: B * qv.x + D * qv.y + F0 });
+                }
+                _ctx.setTransform(1, 0, 0, 1, 0, 0);
+                _ctx.globalCompositeOperation = 'source-over';
+                _ctx.globalAlpha = 1;
+                _ctx.setLineDash([]);
+                // (a) CLOSED outline (halo under the selection-color line)
+                if (sdev.length >= 2) {
+                    _ctx.beginPath();
+                    _ctx.moveTo(sdev[0].x, sdev[0].y);
+                    for (var qli = 1; qli < sdev.length; qli++) { _ctx.lineTo(sdev[qli].x, sdev[qli].y); }
+                    _ctx.closePath();
+                    _ctx.lineWidth = 4 * DPRs;
+                    _ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+                    _ctx.stroke();
+                    _ctx.lineWidth = 2 * DPRs;
+                    _ctx.strokeStyle = POLY_SEL_COLOR;
+                    _ctx.stroke();
+                }
+                // (b) handles: one filled square per vertex (the DRAGGED one in POLY_SEL_COLOR)
+                var hSide = POLY_HANDLE_PX * DPRs;
+                for (var qhi = 0; qhi < sdev.length; qhi++) {
+                    var hx0 = sdev[qhi].x - hSide / 2, hy0 = sdev[qhi].y - hSide / 2;
+                    _ctx.fillStyle = (_dragVert && qhi === _dragVert.idx) ? POLY_SEL_COLOR : '#fff';
+                    _ctx.fillRect(hx0, hy0, hSide, hSide);
+                    _ctx.lineWidth = 1 * DPRs;
+                    _ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+                    _ctx.strokeRect(hx0, hy0, hSide, hSide);
+                }
+                // (c) restore defaults for whatever draws next
+                _ctx.setLineDash([]);
+                _ctx.globalCompositeOperation = 'source-over';
+                _ctx.globalAlpha = 1;
+            }
             // ---- R3: brush ring cursor (identity transform, screen px) ----
             // SCREEN-SPACE brush: ring radius is CONSTANT on screen (independent of zoom).
             // _brushImg is a CSS-px diameter; the painted image footprint scales with zoom
             // inside _getRPx (screen px ÷ _lastSPerImg), NOT here. Rendered as a bold,
             // high-contrast cursor (dark halo under a bright ring) so it reads on any
             // background and makes brush-size changes obvious.
-            if (_active && _hoverCss && !_frozen) {
+            // Inc-7: the polygon tool shows NO brush ring (_hoverCss is still tracked, for the band).
+            if (_active && _hoverCss && !_frozen && _tool !== 'polygon') {
                 var DPRr = window.devicePixelRatio || 1;
                 var rDev = (_brushImg * DPRr) / 2;
                 if (isFinite(rDev) && rDev > 0) {
@@ -356,6 +512,15 @@
             _classes = []; _activeClassId = 0;
             // ---- Inc-B: free undo/redo state ----
             _undoStack = []; _redoStack = []; _undoPre = null; _upctx = null; _strokeBBox = null;
+            // ---- Inc-7: drop the polygon draft INLINE (not via _dropDraft — that would schedule
+            // an rAF this teardown has already cancelled) ----
+            _polyDraft = null; _polyDownCss = null; _polyLastCss = null;
+            _polyCurMask = null; _polyLastClick = null; _polyLastCommit = false;
+            // ---- Inc-8: drop the edit records, selection, drag and the reshape scratch INLINE
+            // (not via _dropDraft — same rAF reason as above) ----
+            _polys = []; _polySeq = 0; _selPoly = null; _dragVert = null;
+            _polyScratch = null; _psctx = null;
+            _altSavedTool = null;                            // ---- Inc-9: drop any latched Alt hold ----
             _viewer = null; _canvas = null; _view = null; _ctx = null;
             _mask = null; _mctx = null; _refTI = null;
             _destroyed = true;
@@ -464,6 +629,208 @@
             _stampDisc(to.x, to.y);                     // always stamp the endpoint
         }
 
+        // ---- Inc-7: nonzero-winding integer scanline rasterizer (pure — no ctx, no side effects) ----
+        // Mask pixel (i,j) covers [i,i+1) × [j,j+1); its centre is (i+0.5, j+0.5). Pixel (i,j) is
+        // filled IFF its centre lies inside the polygon under the NONZERO winding rule (matching
+        // QuPath's PolygonROI WIND_NON_ZERO) — no coverage, no AA, no vertex rounding.
+        // ctx.fill() on _mctx is FORBIDDEN: Canvas antialiases path fills regardless of
+        // imageSmoothingEnabled, and a fractional R in an indexed label mask is an invalid class id.
+        function _polyRuns(pts) {
+            var out = [];
+            if (!pts) { return out; }
+            var n = pts.length;
+            if (n < 3) { return out; }                       // < 3 vertices encloses nothing
+            var minY = Infinity, maxY = -Infinity;
+            var i, p;
+            for (i = 0; i < n; i++) {
+                p = pts[i];
+                if (!p || !isFinite(p.x) || !isFinite(p.y)) { return []; }   // any non-finite coord → nothing
+                if (p.y < minY) { minY = p.y; }
+                if (p.y > maxY) { maxY = p.y; }
+            }
+            var j0 = Math.max(0, Math.floor(minY));
+            var j1 = Math.min(_maskH - 1, Math.ceil(maxY));   // rows outside the mask are never visited
+            for (var j = j0; j <= j1; j++) {
+                var yc = j + 0.5;                            // scanline at the pixel CENTRE
+                var cr = [];
+                for (var k = 0; k < n; k++) {
+                    var a = pts[k], b = pts[(k + 1) % n];     // edges close the ring implicitly
+                    if (a.y === b.y) { continue; }            // horizontal (and zero-length) edges never cross
+                    var lo = (a.y < b.y) ? a.y : b.y;
+                    var hi = (a.y < b.y) ? b.y : a.y;
+                    if (yc < lo || yc >= hi) { continue; }    // HALF-OPEN: upper endpoint inclusive, lower exclusive
+                    cr.push({
+                        x: a.x + (yc - a.y) * (b.x - a.x) / (b.y - a.y),
+                        dir: (b.y > a.y) ? 1 : -1             // +1 = edge runs downward in traversal order
+                    });
+                }
+                if (cr.length < 2) { continue; }
+                cr.sort(function (u, v) { return u.x - v.x; });   // ties are empty intervals — order irrelevant
+                var wind = 0;
+                for (var c = 0; c < cr.length - 1; c++) {
+                    wind += cr[c].dir;
+                    if (wind === 0) { continue; }             // NONZERO rule (even-odd is NOT the rule)
+                    // columns whose centre lies in the half-open span [cr[c].x, cr[c+1].x)
+                    var i0 = Math.max(0, Math.ceil(cr[c].x - 0.5));
+                    var i1 = Math.min(_maskW - 1, Math.ceil(cr[c + 1].x - 0.5) - 1);
+                    if (i1 < i0) { continue; }
+                    out.push({ x: i0, y: j, w: (i1 - i0 + 1) });   // one integer run, clamped to the mask
+                }
+            }
+            return out;                                       // row-major
+        }
+
+        // ---- Inc-8: deep copy of a vertex list (records NEVER share point objects) ----
+        function _copyPts(pts) {
+            var out = [];
+            if (!pts) { return out; }
+            for (var i = 0; i < pts.length; i++) { out.push({ x: pts[i].x, y: pts[i].y }); }
+            return out;
+        }
+
+        // ---- Inc-10 (§5.9): pure vertex-list equality. Used ONLY by the _reshapeCommit zero-diff
+        // branch to tell a real (pixel-identical) vertex move from a no-move handle grab-release,
+        // which reaches that branch on every click and must NOT touch history.
+        function _ptsEqual(a, b) {
+            if (!a || !b || a.length !== b.length) { return false; }
+            for (var i = 0; i < a.length; i++) {
+                if (a[i].x !== b[i].x || a[i].y !== b[i].y) { return false; }
+            }
+            return true;
+        }
+
+        // ---- Inc-8: point-in-polygon (pure) — the SAME nonzero left-to-right crossing walk as
+        // _polyRuns, evaluated at ONE point. Normative equivalence (oracle O8-03):
+        //   _ptInPoly(pts, i + 0.5, j + 0.5) === (pixel (i,j) is covered by _polyRuns(pts))
+        function _ptInPoly(pts, x, y) {
+            if (!pts) { return false; }
+            var n = pts.length;
+            if (n < 3) { return false; }                         // < 3 vertices encloses nothing
+            if (!isFinite(x) || !isFinite(y)) { return false; }
+            var wind = 0;
+            for (var k = 0; k < n; k++) {
+                var a = pts[k], b = pts[(k + 1) % n];             // edges close the ring implicitly
+                if (!a || !b || !isFinite(a.x) || !isFinite(a.y) || !isFinite(b.x) || !isFinite(b.y)) { return false; }
+                if (a.y === b.y) { continue; }                    // horizontal (and zero-length) edges never cross
+                var lo = (a.y < b.y) ? a.y : b.y;
+                var hi = (a.y < b.y) ? b.y : a.y;
+                if (y < lo || y >= hi) { continue; }              // HALF-OPEN, exactly as _polyRuns
+                var xc = a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y);
+                if (xc <= x) { wind += (b.y > a.y) ? 1 : -1; }    // crossings at or left of the sample
+            }
+            return wind !== 0;                                    // NONZERO rule (even-odd is NOT the rule)
+        }
+
+        // ---- Inc-8: symmetric difference of two run lists, BY PIXEL SET (pure) ----
+        // fill = N \ O, erase = O \ N; O ∩ N appears in neither. Correct even when the input runs
+        // within a row overlap or are unordered — the semantics are pixel sets, not run shapes.
+        // Output runs are integer, inside the mask, row-major (ascending y, then ascending x).
+        function _runsDiff(oldRuns, newRuns) {
+            var fill = [], erase = [];
+            var W = _maskW;
+            if (!(W > 0)) { return { fill: fill, erase: erase }; }
+            var rowMap = {};                                      // y -> {o:[runs], n:[runs]}
+            var ys = [];
+            function _bucket(runs, which) {
+                if (!runs) { return; }
+                for (var q = 0; q < runs.length; q++) {
+                    var rr = runs[q];
+                    if (!rr || !(rr.w > 0)) { continue; }
+                    if (rr.y < 0 || rr.y >= _maskH) { continue; }  // outside the mask is not a pixel
+                    var bk = rowMap[rr.y];
+                    if (!bk) { bk = rowMap[rr.y] = { o: [], n: [] }; ys.push(rr.y); }
+                    bk[which].push(rr);
+                }
+            }
+            _bucket(oldRuns, 'o');
+            _bucket(newRuns, 'n');
+            ys.sort(function (u, v) { return u - v; });           // rows visited in ascending y
+            var scan = new Uint8Array(W);                         // ONE reusable row accumulator
+            for (var i = 0; i < ys.length; i++) {
+                var y = ys[i];
+                var b = rowMap[y];
+                var j, r, c0, c1, c;
+                scan.fill(0);
+                for (j = 0; j < b.o.length; j++) {                 // OLD pixels -> bit 1
+                    r = b.o[j];
+                    c0 = r.x < 0 ? 0 : r.x; c1 = r.x + r.w; if (c1 > W) { c1 = W; }
+                    for (c = c0; c < c1; c++) { scan[c] |= 1; }
+                }
+                for (j = 0; j < b.n.length; j++) {                 // NEW pixels -> bit 2
+                    r = b.n[j];
+                    c0 = r.x < 0 ? 0 : r.x; c1 = r.x + r.w; if (c1 > W) { c1 = W; }
+                    for (c = c0; c < c1; c++) { scan[c] |= 2; }
+                }
+                var cf = -1, ce = -1;                              // open fill / erase run starts
+                for (c = 0; c < W; c++) {
+                    var v = scan[c];
+                    if (v === 2) { if (cf < 0) { cf = c; } }
+                    else if (cf >= 0) { fill.push({ x: cf, y: y, w: c - cf }); cf = -1; }
+                    if (v === 1) { if (ce < 0) { ce = c; } }
+                    else if (ce >= 0) { erase.push({ x: ce, y: y, w: c - ce }); ce = -1; }
+                }
+                if (cf >= 0) { fill.push({ x: cf, y: y, w: W - cf }); }
+                if (ce >= 0) { erase.push({ x: ce, y: y, w: W - ce }); }
+            }
+            return { fill: fill, erase: erase };
+        }
+
+        // ---- Inc-8: inclusive bbox over a run list, or null for [] (same arithmetic as
+        // _polyCommit's, factored so it can be applied to the erase list too) ----
+        function _runsBBox(runs) {
+            if (!runs || runs.length === 0) { return null; }
+            var x0 = runs[0].x, x1 = runs[0].x + runs[0].w - 1;
+            var y0 = runs[0].y, y1 = runs[0].y;
+            for (var i = 1; i < runs.length; i++) {
+                var r = runs[i];
+                var rx1 = r.x + r.w - 1;
+                if (r.x < x0) { x0 = r.x; }
+                if (rx1 > x1) { x1 = rx1; }
+                if (r.y < y0) { y0 = r.y; }
+                if (r.y > y1) { y1 = r.y; }
+            }
+            return { x0: x0, y0: y0, x1: x1, y1: y1 };            // EXPLICIT keys
+        }
+
+        // ---- Inc-7: commit a closed polygon into the indexed mask (mirrors _stampDisc's three writes) ----
+        // _stampDisc stays byte-identical (frozen); this reuses the same non-frozen _fillRuns helper.
+        function _polyCommit(runs, cid) {
+            if (!runs || runs.length === 0) { return; }       // makes the _maskDirty gate explicit
+            // Inc-8: `cid` is OPTIONAL — every Inc-7 caller passes one argument and behaves as
+            // before (class taken at CLOSE time); _reshapeCommit passes the RECORD's classId so a
+            // reshape always writes the polygon's own class, never the active one.
+            var id = (typeof cid === 'number') ? cid : _activeClassId;
+            var k;
+            // (a) write the class id into the indexed mask (alpha 1 overwrites any prior class)
+            _fillRuns(_mctx, runs, 'source-over', 'rgba(' + id + ',0,0,1)');
+            // (b) add these pixels to the active class silhouette (null-guarded)
+            var se = _ensureSilh(id);
+            if (se) { _fillRuns(se.ctx, runs, 'source-over', '#fff'); }
+            // (c) remove these pixels from EVERY OTHER allocated silhouette (overwrite semantics)
+            for (k in _silh) {
+                if (_silh.hasOwnProperty(k) && _silh[k] && _silh[k].ctx && String(k) !== String(id)) {
+                    _fillRuns(_silh[k].ctx, runs, 'destination-out', '#fff');
+                }
+            }
+            // ---- Inc-B undo bbox, computed HERE over the CLAMPED runs ----
+            // The brush accumulates _strokeBBox inside _stampDisc (frozen), which a polygon fill
+            // never calls; raw vertices must not be used (an off-mask vertex would give an
+            // out-of-range getImageData rect in _histCommit).
+            var x0 = runs[0].x, x1 = runs[0].x + runs[0].w - 1;
+            var y0 = runs[0].y, y1 = runs[0].y;
+            for (var i = 1; i < runs.length; i++) {
+                var r = runs[i];
+                var rx1 = r.x + r.w - 1;
+                if (r.x < x0) { x0 = r.x; }
+                if (rx1 > x1) { x1 = rx1; }
+                if (r.y < y0) { y0 = r.y; }
+                if (r.y > y1) { y1 = r.y; }
+            }
+            _strokeBBox = { x0: x0, y0: y0, x1: x1, y1: y1 };   // EXPLICIT keys
+            _maskDirty = true;              // set DIRECTLY: _maskDirtyOnBrush is brush-gated AND frozen
+            _mctx.globalCompositeOperation = 'source-over';     // belt-and-braces (_fillRuns already restores)
+        }
+
         // ---- E3: pointer FSM helpers ----
         function _ptFromEvent(e) {
             var r = _view.getBoundingClientRect();   // LIVE per event
@@ -471,6 +838,27 @@
         }
 
         function _endStroke() {
+            // ---- Inc-8: a vertex RESHAPE drag commits on ANY press end (the four frozen handlers
+            // all funnel here argument-less), exactly as a brush stroke and Inc-7 freehand do. This
+            // is the ONLY place the reshape write happens; nulling _dragVert FIRST makes the call
+            // re-entrancy-safe and makes "null _dragVert before _endStroke runs" the abort
+            // primitive every teardown path already gets for free through _dropDraft.
+            if (_dragVert) {
+                var dv = _dragVert; _dragVert = null;
+                if (_polys.indexOf(dv.poly) >= 0) { _reshapeCommit(dv.poly, dv.pts); }   // skipped if the record vanished
+                _scheduleRender();
+            }
+            // ---- Inc-7: a FREEHAND polygon press commits on ANY press end (up/cancel/lostcapture/
+            // leave all funnel here argument-less), exactly as a brush stroke does. A CLICK-mode
+            // draft survives untouched — that is what makes click-to-place work.
+            if (_polyDraft && _polyDraft.mode === 'freehand') {
+                var lp = _polyDraft.pts[_polyDraft.pts.length - 1];
+                if (_polyCurMask && (!lp || _polyCurMask.x !== lp.x || _polyCurMask.y !== lp.y)) {
+                    _polyDraft.pts.push(_polyCurMask);       // release-tail vertex is always kept
+                }
+                _closeDraft();
+            }
+            _polyDownCss = null; _polyLastCss = null; _polyCurMask = null;
             _histCommit();   // Inc-B: commit the stroke's undo entry (no-op when _strokeBBox null)
             if (_activePointerId !== null && _view && _view.hasPointerCapture && _view.hasPointerCapture(_activePointerId)) {
                 _view.releasePointerCapture(_activePointerId);
@@ -487,6 +875,136 @@
 
         function _maskDirtyOnBrush() {
             if (_tool === 'brush') { _maskDirty = true; }
+        }
+
+        // ---- Inc-7: polygon draft lifecycle (non-frozen) ----
+        // Drops the open draft WITHOUT writing the mask. Does NOT touch _painting/_activePointerId/
+        // pointer capture — a held press still ends through _endStroke as usual.
+        function _dropDraft() {
+            if (_polyDraft !== null) { _polyDraft = null; _scheduleRender(); }
+            // ---- Inc-8: this is the LOAD-BEARING abort for a hijacked vertex drag. Every teardown
+            // path (setTool on change, setActive(false), clear, cancelPolygon/Esc) already calls
+            // _dropDraft BEFORE _endStroke, so nulling _dragVert here means the _endStroke prologue
+            // sees nothing to commit — no mask write, no history entry. _polys is NOT touched here:
+            // Esc must deselect, never delete committed polygons.
+            if (_selPoly !== null || _dragVert !== null) { _selPoly = null; _dragVert = null; _scheduleRender(); }
+            _polyLastClick = null; _polyDownCss = null; _polyLastCss = null; _polyCurMask = null;
+        }
+
+        // Closes the open draft: rasterize + commit as ONE undo entry. Returns true iff pixels
+        // were written. Degeneracy is simply "zero runs" — there is no min-area epsilon.
+        function _closeDraft() {
+            var d = _polyDraft;
+            _dropDraft();                                    // draft nulled FIRST (re-entrancy safety)
+            if (!d || d.pts.length < 3) { _polyLastCommit = false; return false; }
+            var runs = _polyRuns(d.pts);
+            if (runs.length === 0) { _polyLastCommit = false; return false; }   // collinear/degenerate/off-mask
+            _histBegin();                                    // one _histBegin per POLYGON, not per click
+            _polyCommit(runs);
+            // ---- Inc-8: append the EDIT RECORD. A shallow copy of the point objects is enough —
+            // _polyDraft.pts has just been dropped and is never mutated again. The record does NOT
+            // become selected (_dropDraft above already deselected); closing never auto-selects.
+            var rec = { id: ++_polySeq, classId: _activeClassId, pts: d.pts.slice() };
+            _polys.push(rec);
+            _histCommit({ polyId: rec.id, classId: rec.classId, ptsBefore: null, ptsAfter: _copyPts(rec.pts) });
+            _polyLastCommit = true;
+            _scheduleRender();
+            return true;
+        }
+
+        // ---- Inc-8: THE reshape write — the ONLY mask write of this increment. Runs ONLY from the
+        // _endStroke prologue, with _dragVert already nulled, inside ONE synchronous
+        // _histBegin -> writes -> _histCommit triple. Symmetric difference only: O ∩ N (including
+        // holes the eraser carved) is left untouched — reshaping never restores erased pixels.
+        function _reshapeCommit(rec, newPts) {
+            if (!rec || !_mask || !_mctx) { return; }
+            // ---- Inc-9 (R4): newPts === null means DELETE. The delete lane reuses this reviewed erase
+            // machinery literally — N = ∅, so _runsDiff yields fill = [] and erase = O's pixel set — and
+            // then REMOVES the record. It is never emptied: a pts:[] record would poison the NEXT
+            // loadPolygons, whose ≥3-vertex validation is atomic.
+            var deleting = (newPts === null);
+            var O = _polyRuns(rec.pts);
+            var N = deleting ? [] : _polyRuns(newPts);        // may be [] if the drag made the ring degenerate
+            var d = _runsDiff(O, N);
+            // (2) O △ N empty at the RUNS level → vertices follow the drop point, NO history entry,
+            // _maskDirty untouched (a history entry is impossible with a null bbox anyway).
+            // Inc-9: a ZERO-FOOTPRINT delete lands here — the record is removed with NO undo entry
+            // (an entry is impossible with a null bbox, and the action wrote nothing).
+            if (d.fill.length === 0 && d.erase.length === 0) {
+                if (deleting) { _removePolyRec(rec); return; }
+                // Inc-10 (§5.9): the vertices moved but no pixel did. This still MUTATES the record,
+                // and any record mutation invalidates redo — otherwise a stale redo entry (e.g. a
+                // deletion the user just undid) stays live and Ctrl+Shift+Z resurrects it.
+                // The _ptsEqual guard is load-bearing: a zero-movement handle grab-release reaches
+                // this branch on EVERY click, and must leave the redo chain untouched.
+                if (!_ptsEqual(rec.pts, newPts)) {
+                    rec.pts = _copyPts(newPts);
+                    _redoStack.length = 0;
+                    _fireHistory();                            // host redo button greys immediately
+                }
+                return;
+            }
+            _histBegin();
+            // (4) erase O \ N, CLIPPED to pixels this class still owns (readback-free, via the
+            // silhouette). Other classes' silhouettes need no touch: a pixel owned by another class
+            // never enters the scratch, and a pixel owned by this one is already absent from theirs.
+            var se = _silh[rec.classId];
+            if (d.erase.length > 0 && se && se.ctx) {
+                if (!_polyScratch || _polyScratch.width !== _maskW || _polyScratch.height !== _maskH) {
+                    _polyScratch = document.createElement('canvas');
+                    _polyScratch.width = _maskW; _polyScratch.height = _maskH;
+                    _psctx = _polyScratch.getContext('2d');
+                    if (_psctx) { _psctx.imageSmoothingEnabled = false; }
+                }
+                if (_psctx) {
+                    _psctx.globalCompositeOperation = 'source-over';
+                    _psctx.clearRect(0, 0, _maskW, _maskH);
+                    _fillRuns(_psctx, d.erase, 'source-over', '#fff');
+                    _psctx.globalCompositeOperation = 'destination-in';
+                    _psctx.drawImage(se.canvas, 0, 0);        // scratch = erase ∩ {mask == classId}
+                    _psctx.globalCompositeOperation = 'source-over';
+                    // identity drawImage of an integer-sized BINARY canvas → no AA, no fractional ids
+                    _mctx.globalCompositeOperation = 'destination-out';
+                    _mctx.drawImage(_polyScratch, 0, 0);
+                    _mctx.globalCompositeOperation = 'source-over';
+                    se.ctx.globalCompositeOperation = 'destination-out';
+                    se.ctx.drawImage(_polyScratch, 0, 0);
+                    se.ctx.globalCompositeOperation = 'source-over';
+                }
+            }
+            // (5) fill N \ O in the RECORD's class (no-op when empty; sets _strokeBBox + _maskDirty)
+            _polyCommit(d.fill, rec.classId);
+            // (6) _strokeBBox = bbox(O △ N) — NEVER bbox(O ∪ N)
+            var eb = _runsBBox(d.erase);
+            if (eb) {
+                if (!_strokeBBox) {
+                    _strokeBBox = { x0: eb.x0, y0: eb.y0, x1: eb.x1, y1: eb.y1 };   // EXPLICIT keys
+                } else {
+                    if (eb.x0 < _strokeBBox.x0) { _strokeBBox.x0 = eb.x0; }
+                    if (eb.y0 < _strokeBBox.y0) { _strokeBBox.y0 = eb.y0; }
+                    if (eb.x1 > _strokeBBox.x1) { _strokeBBox.x1 = eb.x1; }
+                    if (eb.y1 > _strokeBBox.y1) { _strokeBBox.y1 = eb.y1; }
+                }
+            }
+            _maskDirty = true;                                // covers the erase-only case
+            // (7) ONE undo entry, carrying the absolute before/after vertex lists. Inc-9: for a DELETE
+            // ptsAfter is null — the exact MIRROR of a creation entry, so _applyPolyFixup's existing
+            // null branch drops the record on redo and its not-found branch re-adds it on undo, with
+            // ZERO changes to undo/redo/_applyPolyFixup.
+            _histCommit({ polyId: rec.id, classId: rec.classId, ptsBefore: _copyPts(rec.pts), ptsAfter: deleting ? null : _copyPts(newPts) });
+            if (deleting) { _removePolyRec(rec); } else { rec.pts = _copyPts(newPts); }
+            _mctx.globalCompositeOperation = 'source-over';   // belt-and-braces
+        }
+
+        // ---- Inc-9 (R4): drop an edit record from _polys by IDENTITY. Never writes the mask, never
+        // touches history — the caller (_reshapeCommit's delete lane) owns both. Clears the selection
+        // and any drag that pointed at the record so no handle survives it.
+        function _removePolyRec(rec) {
+            for (var i = 0; i < _polys.length; i++) {
+                if (_polys[i] === rec) { _polys.splice(i, 1); break; }
+            }
+            if (_selPoly === rec) { _selPoly = null; _dragVert = null; }
+            _scheduleRender();
         }
 
         // ---- Inc-B: stroke-level undo/redo helpers (non-frozen) ----
@@ -506,7 +1024,11 @@
             _strokeBBox = null;
         }
 
-        function _histCommit() {
+        // Inc-8: `tag` is OPTIONAL — {polyId, classId, ptsBefore, ptsAfter}. Entries WITHOUT it are
+        // byte-for-byte the Inc-B shape and behave exactly as before. There is no `kind`
+        // discriminator and no second restore path: every entry still carries a raster bbox pair;
+        // the vertex fields are a FIXUP applied after the raster restore (see _applyPolyFixup).
+        function _histCommit(tag) {
             if (!_strokeBBox || !_upctx || !_mctx) { return; }   // no paint this stroke (pan/no-op)
             var x = _strokeBBox.x0, y = _strokeBBox.y0;
             var w = _strokeBBox.x1 - _strokeBBox.x0 + 1;
@@ -515,7 +1037,9 @@
             if (w <= 0 || h <= 0) { return; }
             var before = _upctx.getImageData(x, y, w, h);        // pre-stroke (blit shadow)
             var after  = _mctx.getImageData(x, y, w, h);         // post-stroke
-            _undoStack.push({ x: x, y: y, w: w, h: h, before: before, after: after });
+            var ent = { x: x, y: y, w: w, h: h, before: before, after: after };
+            _undoStack.push(ent);
+            if (tag) { ent.polyId = tag.polyId; ent.classId = tag.classId; ent.ptsBefore = tag.ptsBefore; ent.ptsAfter = tag.ptsAfter; }
             while (_undoStack.length > (opts.undoDepth || DEFAULTS.undoDepth)) { _undoStack.shift(); }
             _redoStack.length = 0;
             _fireHistory();
@@ -547,13 +1071,37 @@
             }
         }
 
+        // ---- Inc-8: vertex FIXUP applied after a raster restore. Never writes the mask, never
+        // schedules its own render (undo/redo call _render() themselves). ----
+        function _applyPolyFixup(polyId, classId, pts) {
+            var rec = null, at = -1, i;
+            for (i = 0; i < _polys.length; i++) {
+                if (_polys[i].id === polyId) { rec = _polys[i]; at = i; break; }
+            }
+            if (pts === null || pts === undefined) {              // undo of a CREATION → drop the record
+                if (rec) {
+                    _polys.splice(at, 1);
+                    if (_selPoly === rec) { _selPoly = null; _dragVert = null; }
+                }
+                return;
+            }
+            if (rec) { rec.pts = _copyPts(pts); return; }
+            // not found + pts present: redo of a creation (or a record dropped by loadPolygons).
+            // Re-added at the TOP of the z-order; skipped silently if its class no longer exists
+            // (the pixels are still restored — only the edit affordance is missing).
+            if (polyId > _polySeq) { _polySeq = polyId; }
+            if (_classById(classId)) { _polys.push({ id: polyId, classId: classId, pts: _copyPts(pts) }); }
+        }
+
         function undo() {
             if (_destroyed || !_mask) { if (!_mask && !_destroyed) { _warnOnce('no-image', 'OSDAnnotator: no image loaded yet'); } return; }
             if (_painting) { return; }                            // never undo mid-stroke
+            if (_polyDraft || _dragVert) { return; }              // Inc-7/8: no-op mid-draft or mid-reshape-drag
             if (!_undoStack.length) { return; }
             var e = _undoStack.pop();
             _mctx.putImageData(e.before, e.x, e.y);
             _rebuildSilh(e.x, e.y, e.w, e.h);
+            if (e.polyId !== undefined) { _applyPolyFixup(e.polyId, e.classId, e.ptsBefore); }
             _redoStack.push(e);
             _maskDirty = true;                                    // isEmpty stays coarse-true latch [AUDIT 10]
             _fireHistory();
@@ -563,10 +1111,12 @@
         function redo() {
             if (_destroyed || !_mask) { if (!_mask && !_destroyed) { _warnOnce('no-image', 'OSDAnnotator: no image loaded yet'); } return; }
             if (_painting) { return; }
+            if (_polyDraft || _dragVert) { return; }              // Inc-7/8: no-op mid-draft or mid-reshape-drag
             if (!_redoStack.length) { return; }
             var e = _redoStack.pop();
             _mctx.putImageData(e.after, e.x, e.y);
             _rebuildSilh(e.x, e.y, e.w, e.h);
+            if (e.polyId !== undefined) { _applyPolyFixup(e.polyId, e.classId, e.ptsAfter); }
             _undoStack.push(e);
             _maskDirty = true;
             _fireHistory();
@@ -577,6 +1127,17 @@
         function canRedo() { return _redoStack.length > 0; }
         function _fireHistory() {
             if (typeof opts.onHistory === 'function') { opts.onHistory(canUndo(), canRedo()); }
+        }
+
+        // ---- Inc-9: host-sync callbacks. Fired ONLY from the bare-key branches of _onKeyDown — never
+        // from setTool/setActiveClass (those are host-initiated writes that would echo back at the
+        // panel) and never from the Alt path (an Alt hold does not change the MODE, §6.0). onTool
+        // therefore only ever receives 'polygon' or 'brush'.
+        function _fireTool(t) {
+            if (typeof opts.onTool === 'function') { opts.onTool(t); }
+        }
+        function _fireClass(id) {
+            if (typeof opts.onClass === 'function') { opts.onClass(id); }
         }
 
         // ---- Inc-A: class registry helpers ----
@@ -644,6 +1205,78 @@
             }
             if (_painting || _panning || !_mask) { return; }  // never paint while panning
             if (e.button !== 0 || !e.isPrimary) { return; }   // PRIMARY mouse button only
+            // ---- Inc-7: POLYGON tool — place a vertex / close on double-click. NO _histBegin
+            // (that happens once, at close) and NO _stampDisc (clicks paint nothing).
+            if (_tool === 'polygon') {
+                var rcd = _view.getBoundingClientRect();
+                var pcss = { x: e.clientX - rcd.left, y: e.clientY - rcd.top };
+                var pnow = e.timeStamp || performance.now();
+                // (i) double-click test FIRST, and only against a click-mode draft.
+                // 300 ms matches OSD's dblClickTimeThreshold; 6 CSS px NOT OSD's 20 — a deliberate
+                // second vertex 15 px from the first would otherwise falsely close the ring.
+                if (_polyDraft && _polyDraft.mode === 'click' && _polyLastClick
+                    && (pnow - _polyLastClick.t) <= _polyOpts.dblClickMs
+                    && Math.hypot(pcss.x - _polyLastClick.x, pcss.y - _polyLastClick.y) <= _polyOpts.dblClickPx) {
+                    _closeDraft();                            // the 2nd click of the pair places NO vertex
+                    return;
+                }
+                // (ii) off-mask click → no vertex, no press
+                var pmd = _ptFromEvent(e);
+                if (!pmd) { return; }
+                // ---- Inc-8: SELECTION / RESHAPE predicate (M-2). Evaluated top to bottom; EXACTLY
+                // ONE branch fires per click; side-effect-free until it commits to a branch. The
+                // grab tolerance is expressed in MASK px via the same screen->mask shape as
+                // _getRPx, so it is a screen-constant POLY_HANDLE_PX CSS px at every zoom.
+                var tolm = (POLY_HANDLE_PX * _maskScale) / ((_lastSPerImg > 0) ? _lastSPerImg : 1);
+                // (1) selected polygon + press within tol of one of ITS vertices -> begin a vertex
+                //     drag on the NEAREST such vertex (ties -> lowest index). No _histBegin here:
+                //     the whole history triple runs on release, inside _reshapeCommit.
+                if (_selPoly) {
+                    var bestK = -1, bestD = Infinity;
+                    for (var svi = 0; svi < _selPoly.pts.length; svi++) {
+                        var svp = _selPoly.pts[svi];
+                        var svd = Math.hypot(pmd.x - svp.x, pmd.y - svp.y);
+                        if (svd <= tolm && svd < bestD) { bestD = svd; bestK = svi; }
+                    }
+                    if (bestK >= 0) {
+                        _view.setPointerCapture(e.pointerId);     // the EXISTING latch lines, reused
+                        _activePointerId = e.pointerId;
+                        _painting = true;
+                        _dragVert = { poly: _selPoly, idx: bestK, pts: _copyPts(_selPoly.pts) };
+                        _scheduleRender();
+                        return;                                   // no vertex placed, no draft
+                    }
+                }
+                // (2) a DRAFT always wins -> fall through to (iii)(iv) below unchanged.
+                if (!_polyDraft) {
+                    // (3) click inside a SAME-CLASS, not-currently-selected polygon -> select the
+                    //     TOPMOST such record (last index first). The click is consumed: no latch,
+                    //     no press, no vertex. A click inside a DIFFERENT-class polygon fails here
+                    //     and places a vertex immediately.
+                    var hitp = null;
+                    for (var hpi = _polys.length - 1; hpi >= 0; hpi--) {
+                        var cand = _polys[hpi];
+                        if (cand.classId !== _activeClassId || cand === _selPoly) { continue; }
+                        if (_ptInPoly(cand.pts, pmd.x, pmd.y)) { hitp = cand; break; }
+                    }
+                    if (hitp) { _selPoly = hitp; _scheduleRender(); return; }
+                    // (4) otherwise -> opening a draft DESELECTS (invariant I1), then (iii)(iv).
+                    _selPoly = null;
+                }
+                // (iii) latch the press by REUSING the brush latch (_painting + capture), so
+                // right-drag pan, undo/redo and setActive(false) all behave mid-press as they do
+                // mid-stroke. Between clicks _painting is false, so right-drag pan still works.
+                _view.setPointerCapture(e.pointerId);
+                _activePointerId = e.pointerId;
+                _painting = true;
+                // (iv) place the vertex
+                if (!_polyDraft) { _polyDraft = { mode: 'click', pts: [pmd] }; }
+                else { _polyDraft.pts.push(pmd); }
+                _polyDownCss = pcss; _polyLastCss = pcss; _polyCurMask = null;
+                _polyLastClick = { t: pnow, x: pcss.x, y: pcss.y };
+                _scheduleRender();
+                return;
+            }
             _view.setPointerCapture(e.pointerId);
             _activePointerId = e.pointerId;
             _painting = true;
@@ -674,6 +1307,43 @@
                     vpm.panBy(vpm.deltaPointsFromPixels(new OpenSeadragon.Point(-dx, -dy)));
                     vpm.applyConstraints();
                 }
+                return;
+            }
+            // ---- Inc-7: POLYGON tool — freehand mode selection + spaced sampling.
+            // The rubber band needs no code here: _onHoverMove already tracks _hoverCss and
+            // schedules a render on every pointermove (press or no press).
+            if (_tool === 'polygon') {
+                // ---- Inc-8: vertex RESHAPE drag — the preview is VECTOR-ONLY. The mask is written
+                // exactly once, on release (_endStroke -> _reshapeCommit); nothing is rasterized
+                // per pointermove. _ptFromEvent is recomputed per event from a live bounding rect +
+                // the current viewport, so the vertex tracks the cursor correctly through a zoom.
+                if (_dragVert) {
+                    if (!_painting || e.pointerId !== _activePointerId) { return; }
+                    var pdm = _ptFromEvent(e);
+                    if (!pdm) { return; }                         // off-mask sample skipped; the vertex stays put
+                    _dragVert.pts[_dragVert.idx] = pdm;           // WORKING COPY only
+                    _scheduleRender();
+                    return;
+                }
+                if (!_painting || e.pointerId !== _activePointerId || !_polyDraft) { return; }
+                var rcm = _view.getBoundingClientRect();
+                var mcss = { x: e.clientX - rcm.left, y: e.clientY - rcm.top };
+                if (_polyDraft.mode === 'click') {
+                    // ONLY the draft-creating press may become freehand; the mode is then sticky
+                    // for the rest of the draft (one mode decision per draft — a later drag must
+                    // never silently close a shape the user is still clicking out).
+                    if (_polyDraft.pts.length !== 1 || !_polyDownCss
+                        || Math.hypot(mcss.x - _polyDownCss.x, mcss.y - _polyDownCss.y) <= POLY_DRAG_PX) { return; }
+                    _polyDraft.mode = 'freehand';
+                }
+                var pmm = _ptFromEvent(e);
+                if (!pmm) { return; }                         // off-mask sample skipped; the press continues
+                _polyCurMask = pmm;                           // remembered as the release-tail vertex
+                if (!_polyLastCss
+                    || Math.hypot(mcss.x - _polyLastCss.x, mcss.y - _polyLastCss.y) >= _polyOpts.stepPx) {
+                    _polyDraft.pts.push(pmm); _polyLastCss = mcss;
+                }
+                _scheduleRender();
                 return;
             }
             if (!_painting || e.pointerId !== _activePointerId) { return; }
@@ -756,15 +1426,118 @@
             if (typeof opts.onBrushSize === 'function') { opts.onBrushSize(next); }  // optional host sync (req 4)
         }
 
+        // ---- Inc-9: typing-guard predicate. TRUE only for genuine text-entry targets. The old
+        // guard bailed on ANY <input>, so a focused radio/checkbox/range (i.e. after EVERY panel
+        // click) silently killed Ctrl+Z (ticket §3.1 road 2). Polarity is a NEGATIVE list of
+        // input types: an unknown/future type resolves to 'text' behaviour in browsers, so it
+        // must fall on the GUARDED side by default. Backspace is the sharpest case: inside a
+        // text field it must delete a character, never a polygon (R4).
+        function _isTypingTarget(t) {
+            if (!t) { return false; }
+            if (t.isContentEditable) { return true; }
+            var tag = t.tagName;
+            if (tag === 'TEXTAREA' || tag === 'SELECT') { return true; }
+            if (tag === 'INPUT') { return !NON_TEXT_INPUT_TYPES.test(t.type); }
+            return false;
+        }
+
         // ---- Inc-B: keyboard undo/redo (annotator-scoped = _active-gated) ----
+        // ---- Inc-9: + the bare-key map — R1 (P/B mode), R2 (1-9 class), R3 (Alt-hold eraser),
+        // R4 (Backspace/Delete deletes the selected polygon). preventDefault ONLY, never
+        // stopPropagation: OSD's canvas handler has already run and its key set is disjoint, so
+        // every key this handler does not consume reaches OSD/the browser untouched.
         function _onKeyDown(e) {
             if (_destroyed || !_active) { return; }               // [AUDIT 7] a disarmed annotator never hijacks host Ctrl+Z
-            var t = e.target;                                      // typing guard: let native text-undo win in inputs
-            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) { return; }
-            if (!(e.ctrlKey || e.metaKey)) { return; }
-            var k = (e.key || '').toLowerCase();
-            if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
-            else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo(); }
+            var t = e.target;                                      // typing guard: let native text editing win
+            if (_isTypingTarget(t)) { return; }                    // Inc-9 §4
+            // ---- Inc-7: Esc cancels / Enter finishes an open polygon draft. preventDefault ONLY
+            // when a draft was actually consumed, so an idle annotator never hijacks Esc/Enter.
+            var key = e.key || '';
+            // Inc-8: Esc ALSO deselects (and aborts a held reshape drag, via _dropDraft).
+            if (key === 'Escape') { if (_polyDraft || _selPoly) { e.preventDefault(); cancelPolygon(); } return; }
+            if (key === 'Enter') { if (_polyDraft) { e.preventDefault(); finishPolygon(); } return; }
+            if (e.ctrlKey || e.metaKey) {
+                var k = key.toLowerCase();
+                if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+                else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo(); }
+                return;                                            // Ctrl/Meta+anything-else: untouched
+            }
+            // ---- Inc-9: bare keys. Reached only when armed, not typing, no Ctrl/Meta. ----
+            if (!_mask) { return; }                                // pre-init: consume nothing, desync nothing
+            if (key === 'Alt') {                                   // R3 engage (§6.1)
+                if (e.shiftKey) { return; }                        // Shift+Alt combos: not ours
+                if (e.repeat) {                                    // OS auto-repeat of a held Alt:
+                    if (_altSavedTool !== null) { e.preventDefault(); }   // keep suppressing the menu heuristic
+                    return;                                        // captured ONCE, on the first keydown
+                }
+                if (_altSavedTool !== null) { e.preventDefault(); return; }   // second physical Alt key: no re-latch
+                if (_tool !== 'brush') { return; }                 // R6: Alt erases ONLY in Brush mode. In Polygon
+                                                                   // mode (or internal 'eraser') Alt does NOTHING —
+                                                                   // no latch, not consumed, browser default intact
+                if (_painting || _polyDraft) { return; }           // press in flight / draft open: NO-OP (§6.6)
+                _altSavedTool = _tool;                             // always 'brush' here (I2)
+                setTool('eraser');                                 // frozen setTool, CALLED not edited
+                e.preventDefault();                                // menu-bar suppression, half 1 (§6.4)
+                return;
+            }
+            if (e.altKey || e.shiftKey) { return; }                // Alt combos are the browser's (Alt+Backspace =
+                                                                   // history-back on some platforms); Shift is OSD zoom's
+            if (key === 'Backspace' || key === 'Delete') {         // R4 (§7)
+                if (_selPoly && !_painting) {
+                    _reshapeCommit(_selPoly, null);                // erase footprint + remove record + one undo entry
+                    e.preventDefault();
+                }
+                return;                                            // nothing selected / mid-press: NOT consumed
+            }
+            var lk = key.toLowerCase();
+            if (lk === 'b' || lk === 'p') {                        // R1 — 'e' is deliberately ABSENT (R6)
+                var tn = (lk === 'b') ? 'brush' : 'polygon';
+                _altSavedTool = null;                              // an explicit mode choice dissolves any stale Alt latch (§6.5)
+                setTool(tn);
+                _fireTool(tn);
+                e.preventDefault();
+                return;
+            }
+            if (key.length === 1 && key >= '1' && key <= '9') {    // R2
+                var ci = key.charCodeAt(0) - 49;                   // '1' -> 0 … '9' -> 8
+                if (ci < _classes.length) {
+                    setActiveClass(_classes[ci].id);
+                    _fireClass(_classes[ci].id);
+                    e.preventDefault();
+                }
+                return;                                            // out-of-range digit: NOT consumed
+            }
+        }
+
+        // ---- Inc-9 (R3): Alt-hold release. Deliberately NOT _active-gated and NOT typing-guarded:
+        // a latch can only exist if the matching keydown was consumed while armed (§3 I1), and
+        // it MUST resolve even if the user disarmed, refocused an input, or clicked a radio
+        // mid-hold — otherwise the tool is stranded on the eraser. The annotator still never
+        // consumes a keyup whose keydown it did not consume (I5).
+        function _onKeyUp(e) {
+            if (_destroyed) { return; }
+            if ((e.key || '') !== 'Alt') { return; }
+            if (_altSavedTool === null) { return; }                // no hold latched: fall through untouched
+            var saved = _altSavedTool;
+            _altSavedTool = null;                                  // resolve the latch FIRST (re-entrancy)
+            if (_tool === 'eraser') {                              // §6.5: restore ONLY if still on the temp eraser
+                setTool(saved);                                    // back to 'brush'; no _fireTool (§6.0)
+            }
+            e.preventDefault();                                    // menu-bar suppression, half 2 (§6.4)
+        }
+
+        // ---- Inc-9 (R3): Alt+Tab / any focus loss mid-hold. The keyup will never arrive; restore
+        // NOW. Same restore rule as _onKeyUp; blur is not cancelable so there is no
+        // preventDefault. Alt+Tab, tab switch, devtools focus and native dialogs all fire
+        // window blur before any further annotator pointer input is possible.
+        function _onWindowBlur() {
+            if (_destroyed) { return; }
+            if (_altSavedTool === null) { return; }
+            var saved = _altSavedTool;
+            _altSavedTool = null;
+            if (_tool === 'eraser') {
+                setTool(saved);
+            }
         }
 
         // ---- E8: rAF coalescer ----
@@ -789,7 +1562,22 @@
                 if (!_mask && !_destroyed) { _warnOnce('no-image', 'OSDAnnotator: no image loaded yet'); }
                 return undefined;
             }
-            if (t === 'brush' || t === 'eraser') { _tool = t; }
+            if (t === 'brush' || t === 'eraser' || t === 'polygon') {
+                if (t !== _tool) {
+                    _dropDraft();                             // Inc-7: a tool change drops any open draft
+                    // ...and a LATCHED PRESS must not survive the change either. The polygon branch
+                    // of _onPointerDown latches _painting/_activePointerId WITHOUT _histBegin (per
+                    // spec §17 clicks are free — no per-click mask blit). A press left latched here
+                    // would be adopted by the brush/eraser branch of _onPointerMove, which paints
+                    // against a STALE _undoPre (→ a corrupt undo entry that destroys pixels the
+                    // stroke never touched) and never sets _maskDirty (→ isEmpty() true, exportPNG()
+                    // null, the annotation unsavable). Ordered _dropDraft-then-_endStroke exactly as
+                    // setActive(false) is, so a freehand press is DROPPED, not committed; for a real
+                    // brush press _endStroke still commits its partial stroke correctly.
+                    if (_painting) { _endStroke(); }
+                }
+                _tool = t;
+            }
             return undefined;
         }
 
@@ -799,6 +1587,37 @@
                 return undefined;
             }
             if (typeof px === 'number' && isFinite(px) && px > 0) { _brushImg = px; }
+            return undefined;
+        }
+
+        // ---- Inc-7: polygon public API ----
+        // Close the open draft. No _tool gate: a draft implies the polygon tool, and a
+        // harness-injected draft must also be closeable. Returns true iff pixels were written.
+        function finishPolygon() {
+            if (_destroyed || !_mask || !_polyDraft) { return false; }
+            if (_painting) { _endStroke(); }      // a held FREEHAND press closes inside _endStroke
+            return _polyDraft ? _closeDraft() : _polyLastCommit;
+        }
+
+        // Discard the open draft AND/OR the selection. Never writes the mask; a held press
+        // continues to its normal end and commits nothing (_onPointerMove/_endStroke both guard on
+        // _polyDraft, and _dropDraft has already nulled _dragVert). Committed polygons survive:
+        // _dropDraft never touches _polys. Returns true iff a draft was dropped or a selection
+        // (and any drag) was cleared.
+        function cancelPolygon() {
+            if (_destroyed || (!_polyDraft && !_selPoly)) { return false; }
+            _dropDraft();
+            return true;
+        }
+
+        // The three M2 tunables only. No _mask guard (pure options, safe pre-open); post-destroy no-op.
+        function setPolygonOptions(o) {
+            if (_destroyed || !o) { return undefined; }
+            var pk = ['dblClickMs', 'dblClickPx', 'stepPx'];
+            for (var i = 0; i < pk.length; i++) {
+                var v = o[pk[i]];
+                if (typeof v === 'number' && isFinite(v) && v >= 0) { _polyOpts[pk[i]] = v; }
+            }
             return undefined;
         }
 
@@ -839,6 +1658,12 @@
                 _mctx.globalCompositeOperation = 'source-over';
             }
             if (_silh[id]) { delete _silh[id]; }         // free the silhouette cache
+            // ---- Inc-8: this class's edit records go with its pixels. Nothing holds the _polys
+            // ARRAY object (only records, and the getter reads the variable), so a filter is safe.
+            // The unconditional nulling costs nothing — a drag cannot be live during a host click
+            // (the pointer is captured on _view) — and needs no reasoning about which record went.
+            _polys = _polys.filter(function (p) { return p.classId !== id; });
+            _selPoly = null; _dragVert = null;
             for (var i = 0; i < _classes.length; i++) {
                 if (_classes[i].id === id) { _classes.splice(i, 1); break; }
             }
@@ -975,6 +1800,11 @@
             // (8) rebuild silhouettes from scratch over the whole mask
             _silh = {};
             _rebuildSilh(0, 0, _maskW, _maskH);
+            // (8b) Inc-8: the loaded pixels have NO vertices — drop every edit record and any
+            // selection/drag. This also aborts a drag hijacked by the host's async img.onload
+            // (loadLabel is _frozen-guarded, not _painting-guarded). The host re-populates the
+            // records afterwards via loadPolygons().
+            _polys.length = 0; _selPoly = null; _dragVert = null;
             // (9) mark dirty + FLUSH history
             _maskDirty = true;
             _undoStack.length = 0; _redoStack.length = 0; _fireHistory();
@@ -991,6 +1821,71 @@
         function getActiveClass() {
             var cls = _classById(_activeClassId);
             return cls ? { id: cls.id, name: cls.name, color: cls.color } : null;
+        }
+
+        // ---- Inc-8: polygon EDIT-RECORD persistence. The mask stays the deliverable — these two
+        // are an additive affordance carried in the EXISTING <label>.classes.json envelope
+        // (host-side: {version:2, classes, polygons}). Neither ever writes the mask. ----
+
+        // GETTER (no guard/warn; pre-init / post-destroy -> []). FILE form: ids are per-attach and
+        // are NOT exported; array order (= z-order) is preserved.
+        function getPolygons() {
+            var out = [];
+            if (_destroyed) { return out; }
+            for (var i = 0; i < _polys.length; i++) {
+                var p = _polys[i];
+                var pts = [];
+                for (var k = 0; k < p.pts.length; k++) { pts.push([p.pts[k].x, p.pts[k].y]); }
+                out.push({ classId: p.classId, pts: pts });
+            }
+            return out;
+        }
+
+        // Replace ALL edit records. Structural validation is ATOMIC (any violation -> _polys stays
+        // empty, return false); records naming a class that does not exist are SKIPPED silently
+        // (stale vectors, not malformed input). Coordinates are MASK px, floats.
+        function loadPolygons(arr) {
+            if (_destroyed || !_mask || _frozen) {
+                if (!_mask && !_destroyed) { _warnOnce('no-image', 'OSDAnnotator: no image loaded yet'); }
+                return false;
+            }
+            _polys.length = 0; _selPoly = null; _dragVert = null;   // ALWAYS first
+            if (!Array.isArray(arr)) { _scheduleRender(); return false; }
+            var i, k, r, ent;
+            for (i = 0; i < arr.length; i++) {                      // pass 1: validate EVERYTHING
+                r = arr[i];
+                if (!r || typeof r !== 'object') { _scheduleRender(); return false; }
+                if (typeof r.classId !== 'number' || !isFinite(r.classId)
+                    || Math.floor(r.classId) !== r.classId
+                    || r.classId < 1 || r.classId > 255) { _scheduleRender(); return false; }
+                if (!Array.isArray(r.pts) || r.pts.length < 3) { _scheduleRender(); return false; }
+                for (k = 0; k < r.pts.length; k++) {
+                    ent = r.pts[k];
+                    if (!Array.isArray(ent) || ent.length !== 2
+                        || typeof ent[0] !== 'number' || !isFinite(ent[0])
+                        || typeof ent[1] !== 'number' || !isFinite(ent[1])) { _scheduleRender(); return false; }
+                }
+            }
+            for (i = 0; i < arr.length; i++) {                      // pass 2: adopt
+                r = arr[i];
+                if (!_classById(r.classId)) { continue; }           // unreachable vectors — skipped silently
+                var pts = [];
+                for (k = 0; k < r.pts.length; k++) { pts.push({ x: r.pts[k][0], y: r.pts[k][1] }); }
+                _polys.push({ id: ++_polySeq, classId: r.classId, pts: pts });
+            }
+            _scheduleRender();
+            return true;
+        }
+
+        // GETTER (no guard/warn). ONE full-mask getImageData per call — Export-click only; never
+        // called from a render or status path.
+        function getClassPixelCount(id) {
+            if (_destroyed || !_mask || !_mctx) { return 0; }
+            if (typeof id !== 'number' || !isFinite(id) || Math.floor(id) !== id) { return 0; }
+            var d = _mctx.getImageData(0, 0, _maskW, _maskH).data;
+            var n = 0;
+            for (var i = 0; i < d.length; i += 4) { if (d[i] === id && d[i + 3] > 0) { n++; } }
+            return n;
         }
 
         // setColor (re-based, NON-frozen) → delegate to the ACTIVE class.
@@ -1014,6 +1909,10 @@
         function setActive(b) {
             if (_destroyed) { return undefined; }
             var next = !!b;
+            // Inc-7: drop the draft BEFORE _endStroke, so a freehand press in progress is DROPPED,
+            // not committed, on disarm. Esc is _active-gated, so a draft surviving disarm would be
+            // unreachable and would resurrect on re-arm. Also covers the z-eviction path (_onRemove).
+            if (!next) { _dropDraft(); }
             if (!next && _painting) { _endStroke(); }   // true->false mid-stroke must end the stroke
             if (!next && _panning) { _endPan(); }        // ...and mid-pan must end the pan
             _active = next;
@@ -1038,6 +1937,8 @@
             }
             _maskDirty = false;
             _undoStack.length = 0; _redoStack.length = 0; _fireHistory();   // Inc-B: clear FLUSHES history (not undoable)
+            _dropDraft();   // Inc-7: the rubber band must not dangle after Clear
+            _polys.length = 0;   // Inc-8: the pixels are gone, so the edit records must go too
             _render();
         }
 
@@ -1100,6 +2001,8 @@
         _addDomHandler(_view, 'pointerleave', _onHoverLeave);
         _addDomHandler(_view, 'wheel', _onWheel, { passive: false });   // Shift+wheel brush resize; {passive:false} so preventDefault works
         _addDomHandler(document, 'keydown', _onKeyDown);   // Inc-B: Ctrl+Z/Ctrl+Shift+Z/Ctrl+Y (active-gated), OUTSIDE the frozen _addDomHandler_calls span
+        _addDomHandler(document, 'keyup',  _onKeyUp);      // Inc-9: Alt-hold release — OUTSIDE the frozen _addDomHandler_calls span
+        _addDomHandler(window,   'blur',   _onWindowBlur); // Inc-9: Alt+Tab / focus-loss mid-hold — restore path (§6.3)
 
         var instance = {
             destroy: destroy,
@@ -1126,6 +2029,14 @@
             redo: redo,
             canUndo: canUndo,
             canRedo: canRedo,
+            // ---- Inc-7: polygon INPUT tool API ----
+            finishPolygon: finishPolygon,
+            cancelPolygon: cancelPolygon,
+            setPolygonOptions: setPolygonOptions,
+            // ---- Inc-8: polygon RESHAPE persistence + the empty-class Export guard ----
+            getPolygons: getPolygons,
+            loadPolygons: loadPolygons,
+            getClassPixelCount: getClassPixelCount,
             // private — exposed for Inc1 tests/harness (instance._render(), __seedMask, __readView)
             _render: _render
         };
@@ -1170,7 +2081,26 @@
             // ---- Inc-B: undo/redo state (read-only, for tests/harness) ----
             _undoStack:      { get: function () { return _undoStack; } },
             _redoStack:      { get: function () { return _redoStack; } },
-            _undoDepth:      { get: function () { return opts.undoDepth || DEFAULTS.undoDepth; } }
+            _undoDepth:      { get: function () { return opts.undoDepth || DEFAULTS.undoDepth; } },
+            // ---- Inc-7: polygon draft state (read-only except the harness-only _polyDraft setter,
+            // precedent: _refTI / _maskDirty) ----
+            _polyDraft:      { get: function () { return _polyDraft; }, set: function (v) { _polyDraft = v; } },
+            _polyDrawing:    { get: function () { return _polyDraft !== null; } },
+            _polyLastCommit: { get: function () { return _polyLastCommit; } },
+            _panning:        { get: function () { return _panning; } },
+            _panPointerId:   { get: function () { return _panPointerId; } },
+            _renderCount:    { get: function () { return _renderCount; } },
+            __polyRuns:      { get: function () { return _polyRuns; } },
+            // ---- Inc-8: edit records / selection / drag (READ-ONLY — every selection in tests is
+            // made by a real click, so there is deliberately NO _selPoly setter) ----
+            _polys:          { get: function () { return _polys; } },
+            _selPoly:        { get: function () { return _selPoly; } },
+            _dragVert:       { get: function () { return _dragVert; } },
+            __runsDiff:      { get: function () { return _runsDiff; } },
+            __ptInPoly:      { get: function () { return _ptInPoly; } },
+            // ---- Inc-9: Alt-hold latch (GETTER ONLY — every latch in tests is made by a dispatched
+            // Alt keydown; there is deliberately no setter) ----
+            _altSavedTool:   { get: function () { return _altSavedTool; } }
         });
 
         return instance;

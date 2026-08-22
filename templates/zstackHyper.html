@@ -290,8 +290,8 @@
 					<div id="osdAnnClassList" class="ann-class-list"></div>
 					<button id="osdAnnAddClass" class="pp-btn">+ Add class</button>
 					<div class="pp-row">
-						<label><input type="radio" name="osdAnnTool" id="osdAnnToolBrush" value="brush" checked> Brush</label>
-						<label><input type="radio" name="osdAnnTool" id="osdAnnToolEraser" value="eraser"> Eraser</label>
+						<label><input type="radio" name="osdAnnTool" id="osdAnnToolPolygon" value="polygon" checked title="Click to place vertices; double-click or Enter closes; click-drag draws freehand and closes on release; Esc cancels. Click inside one of your polygons to select it and drag its handles to reshape; click again to start a new polygon inside it; Esc deselects. Reshaping does not restore pixels you erased inside it — the hole stays. Backspace/Delete removes the selected polygon (erases that class's pixels inside it — Undo restores both)."> Polygon (P)</label>
+						<label><input type="radio" name="osdAnnTool" id="osdAnnToolBrush" value="brush" title="Paint with the active class. Hold Alt to erase (Brush mode only). Shift+wheel resizes the brush."> Brush (B)</label>
 					</div>
 					<div class="pp-row">
 						<span>Brush</span>
@@ -334,6 +334,7 @@
 							#osdAnnSection .pp-btn:not(.pp-btn-clear) { background: #e8e6e0; color: #3a4a50; border: 1px solid #b8b4aa; }
 							#osdAnnSection .pp-btn:not(.pp-btn-clear):hover:not(:disabled) { background: #4a7c8a; color: #fff; border-color: #4a7c8a; }
 							#osdAnnSection .pp-btn:disabled { opacity: 0.45; cursor: default; }
+							#osdAnnSection.ann-disarmed .pp-row { opacity: 0.45; }
 							#osdAnnSection #osdAnnExportBtn { background: #4a7c8a; color: #fff; border-color: #3a6270; }
 							#osdAnnSection #osdAnnExportBtn:hover:not(:disabled) { background: #3a6270; border-color: #2d4d58; }
 						#osdAnnClassPopup { margin-top: 6px; padding: 6px; border: 1px solid #888; background: #f2f1ee; }
@@ -4201,7 +4202,7 @@
 		window.annotator = OSDAnnotator.attach(viewer, { active: false, onBrushSize: function (px) {
 			$('#osdAnnBrushSize').val(px);
 			$('#osdAnnBrushSizeVal').text(px);
-		}, onHistory: function (cu, cr) { $('#osdAnnUndoBtn').prop('disabled', !cu); $('#osdAnnRedoBtn').prop('disabled', !cr); } });
+		}, onHistory: function (cu, cr) { $('#osdAnnUndoBtn').prop('disabled', !cu); $('#osdAnnRedoBtn').prop('disabled', !cr); _annUpdateStatus(); }, onTool: function (t) { $('#osdAnnTool' + t.charAt(0).toUpperCase() + t.slice(1)).prop('checked', true); }, onClass: function (id) { $('#osdAnnClassList .ann-crow[data-id="' + id + '"] input[type="radio"]').prop('checked', true); } });
 
 		var annSaveMode = false;
 
@@ -4218,7 +4219,9 @@
 		function _annUpdateStatus() {
 			var a = window.annotator;
 			if (!a) { return; }
-			$('#osdAnnStatus').text((a.isActive() ? 'active' : 'inactive') + ' | ' + (a.isEmpty() ? 'empty' : 'unsaved pixels'));
+			var on = a.isActive();
+			$('#osdAnnSection').toggleClass('ann-disarmed', !on);
+			$('#osdAnnStatus').text(on ? ('active | ' + (a.isEmpty() ? 'empty — P/B mode · 1-9 class · Alt erases (brush) · Ctrl+Z undo' : 'unsaved pixels')) : 'inactive — clicks pan & zoom the slide');
 		}
 
 		function _annRenderClassList() {
@@ -4280,6 +4283,7 @@
 			}
 			// Export = one-click binary mask of the ACTIVE class; filename = class name.
 			var _acx = window.annotator.getActiveClass();
+			if (!_acx || window.annotator.getClassPixelCount(_acx.id) === 0) { $('#osdAnnStatus').text(((_acx && _acx.name) ? _acx.name : 'Class') + ' has no pixels'); return; }
 			var label = sanitizeLabel((_acx && _acx.name) ? _acx.name : 'class');
 			var dsVal = $('input[name="osdAnnDownscale"]:checked').val();
 			var downscaleShorterSide = (dsVal === 'none') ? null : parseInt(dsVal, 10);
@@ -4316,7 +4320,7 @@
 				a.click();
 				document.body.removeChild(a);
 				URL.revokeObjectURL(url);
-				var cj = new Blob([JSON.stringify(window.annotator.getClasses(), null, 2)], { type: 'application/json' });
+				var cj = new Blob([JSON.stringify({ version: 2, classes: window.annotator.getClasses(), polygons: window.annotator.getPolygons() }, null, 2)], { type: 'application/json' });
 				var cu = URL.createObjectURL(cj);
 				var ca = document.createElement('a'); ca.href = cu; ca.download = slabel + '.classes.json';
 				document.body.appendChild(ca); ca.click(); document.body.removeChild(ca); URL.revokeObjectURL(cu);
@@ -4374,20 +4378,24 @@
 		$('#osdAnnLoadBtn').on('click', function () { $('#osdAnnLoadFile').val('').trigger('click'); });
 		$('#osdAnnLoadFile').on('change', function (ev) {
 			var files = ev.target.files || [];
-			var pngFile = null, jsonFile = null;
+			var pngFile = null, classesFile = null, bareJson = null;
 			for (var i = 0; i < files.length; i++) {
 				var n = (files[i].name || '').toLowerCase();
 				if (n.slice(-4) === '.png') { pngFile = files[i]; }
-				else if (n.slice(-5) === '.json') { jsonFile = files[i]; }
+				else if (n.slice(-13) === '.classes.json') { classesFile = files[i]; }
+				else if (n.slice(-5) === '.json') { bareJson = files[i]; }
 			}
+			var jsonFile = classesFile || bareJson;
 			if (!pngFile) { $('#osdAnnStatus').text('Load: no .png selected.'); return; }
 			var jsonP = jsonFile ? jsonFile.text().then(function (t) { try { return JSON.parse(t); } catch (e) { return null; } }) : Promise.resolve(null);
-			jsonP.then(function (classes) {
+			jsonP.then(function (j) {
 				var url = URL.createObjectURL(pngFile);
 				var img = new Image();
 				img.onload = function () {
 					if (!window.annotator || window.annotator._destroyed) { URL.revokeObjectURL(url); return; }
-					var ok = window.annotator.loadLabel(img, classes);
+					var cls = Array.isArray(j) ? j : (j && Array.isArray(j.classes) ? j.classes : null);
+					var ok = window.annotator.loadLabel(img, cls);
+					if (ok) { window.annotator.loadPolygons(j && !Array.isArray(j) ? j.polygons : null); }
 					URL.revokeObjectURL(url);
 					_annRenderClassList(); _annUpdateStatus();
 					$('#osdAnnStatus').text(ok ? 'Loaded: ' + pngFile.name : 'Load failed.');
