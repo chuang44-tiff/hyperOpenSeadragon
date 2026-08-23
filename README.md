@@ -19,9 +19,14 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
 
+## New in v3.4.1
+
+- **Eraser-proof polygons and edge handles** — the eraser now only removes brush paint *outside* your closed polygons, so a finished region cannot be nibbled away by a stray stroke; the protection spans every class, and an unclosed draft protects nothing. Reshaping gained an edge grab: **drag anywhere on a polygon's edge** to insert a new handle at that point, instead of having to place every vertex when you first draw the shape. Deleting a polygon still erases its pixels, and a single **Ctrl+Z** still restores both. See [Annotation](#annotation) below.
+- **Hardening and a long-session fix** — the tile-generation web app now refuses to read or write outside the dataset folder, including through symlinks, and escapes dataset-supplied text before it reaches the generated viewer. Stepping through z-levels quickly no longer leaks tile layers, which previously accumulated for the life of the page.
+
 ## New in v3.4
 
-- **Polygon annotation** — The annotator is now a two-tool package: **Polygon** for click-to-place or freehand regions, **Brush** for free-form painting. Closed polygons stay editable — click one to select it, drag its vertex handles to reshape it, press **Backspace** to delete it — and a reshape rewrites only the pixels that actually changed, so holes you erased inside a shape survive the edit. The separate Eraser radio is gone: **hold Alt** to erase while brushing. Bare keys **P**/**B** switch tool and **1**–**9** switch class, and a saved session now carries its polygons alongside the label mask, so a reloaded session is still editable. See [Annotation](#annotation) below.
+- **Polygon annotation** — The annotator is now a two-tool package: **Polygon** for click-to-place or freehand regions, **Brush** for free-form painting. Closed polygons stay editable — click one to select it, drag its vertex handles to reshape it, press **Backspace** to delete it — and a reshape rewrites only the pixels that actually changed. The separate Eraser radio is gone: **hold Alt** to erase while brushing. Bare keys **P**/**B** switch tool and **1**–**9** switch class, and a saved session now carries its polygons alongside the label mask, so a reloaded session is still editable. See [Annotation](#annotation) below.
 
 ## New in v3.3
 
@@ -197,8 +202,8 @@ OSDAnnotator lets you draw multi-class pixel masks on top of the image — usefu
 2. Use **+ Add class** to create up to 16 classes; each row lets you recolor, rename, or delete a class, and a radio button picks which class is active (everything you draw takes the active class's id).
 3. Pick a tool — **Polygon (P)** or **Brush (B)**:
    - **Polygon** — click to place vertices; **double-click** or **Enter** closes the ring and fills it with the active class; **Esc** cancels the draft. Click-drag instead draws freehand and closes on release.
-   - **Brush** — left-drag paints with the active class, and **hold Alt** to erase for as long as the key is down. Set the size with the slider (1–100 px) or **Shift + scroll wheel**; the footprint is screen-space, so it stays the same size on screen regardless of zoom level.
-4. Closed polygons stay editable. Click inside one of your polygons in the active class to select it — its outline and vertex handles appear — then drag a handle to reshape it. The mask is rewritten on release and only the pixels that actually changed are touched, so holes you erased inside the shape survive the edit. With a polygon selected, clicking inside it again starts a new polygon nested within it, **Esc** deselects, and **Backspace** or **Delete** removes it (erasing that class's pixels inside it — a single **Undo** restores both).
+   - **Brush** — left-drag paints with the active class, and **hold Alt** to erase for as long as the key is down. The eraser cannot remove pixels inside a closed polygon of any class — it only erases brush paint outside them, so a finished region cannot be nibbled away by a stray stroke. An unclosed draft protects nothing. Set the size with the slider (1–100 px) or **Shift + scroll wheel**; the footprint is screen-space, so it stays the same size on screen regardless of zoom level.
+4. Closed polygons stay editable. Click inside one of your polygons in the active class to select it — its outline and vertex handles appear — then drag a handle to reshape it, or **drag on an edge** to insert a new handle at the point you grabbed. The mask is rewritten on release and only the pixels that actually changed are touched. With a polygon selected, clicking inside it again starts a new polygon nested within it, **Esc** deselects, and **Backspace** or **Delete** removes it (erasing that class's pixels inside it — a single **Undo** restores both).
 5. Keyboard shortcuts are live while the annotator is armed, and never while you are typing in a text field:
    - **P** / **B** — switch to the Polygon / Brush tool.
    - **1**–**9** — select that class, by position in the class list.
