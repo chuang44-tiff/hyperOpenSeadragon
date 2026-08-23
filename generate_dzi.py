@@ -34,10 +34,33 @@ import textwrap
 try:
     import pyvips
 except ImportError:
+    # Do NOT exit at import time: dzi_app.py imports this module, and so does the
+    # test suite. Importing must stay side-effect free; the CLI entry point below
+    # is what reports the missing dependency and exits.
+    pyvips = None
+
+
+def _print_pyvips_missing():
+    """Emit the standard 'pyvips is not installed' message on stderr."""
     print("Error: pyvips is not installed.", file=sys.stderr)
     print("Install it with:  pip install 'pyvips[binary]'", file=sys.stderr)
     print("            or:   conda install -c conda-forge pyvips", file=sys.stderr)
-    sys.exit(1)
+
+
+def _require_pyvips():
+    """Raise a clear RuntimeError if pyvips is unavailable.
+
+    Library functions call this before dereferencing ``pyvips`` so callers get an
+    actionable error instead of ``AttributeError: 'NoneType' object has no
+    attribute 'Image'``.
+    """
+    if pyvips is None:
+        raise RuntimeError(
+            "pyvips is not installed. Install it with: "
+            "pip install 'pyvips[binary]'  or:  conda install -c conda-forge pyvips"
+        )
+    return pyvips
+
 
 # ---------------------------------------------------------------------------
 # Constants matching hyperOSD expectations
@@ -58,6 +81,7 @@ PACK_MODES = {
 
 def load_channel(path, force_8bit=True):
     """Load a single-channel image, converting to 8-bit if needed."""
+    _require_pyvips()
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Channel image not found: {path}")
 
@@ -89,6 +113,7 @@ def pack_channels(channels, pack_mode):
     Missing channels are zero-filled. Result has exactly 3 or 4 bands
     depending on pack_mode.
     """
+    _require_pyvips()
     mode = PACK_MODES[pack_mode]
     n_bands = mode["channels_per_tile"]
 
@@ -122,6 +147,7 @@ def load_rgb_tile_source(path, pack_mode, force_8bit=True):
 
     Adjusts band count to match pack_mode (3 for rgb, 4 for rgba).
     """
+    _require_pyvips()
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Image not found: {path}")
 
@@ -338,6 +364,10 @@ def load_yaml_config(config_path):
 
 
 def main():
+    if pyvips is None:
+        _print_pyvips_missing()
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(
         description="Convert fluorescence microscopy images to DZI pyramids "
                     "for hyperOSD visualization.",

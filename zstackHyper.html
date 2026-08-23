@@ -296,7 +296,7 @@
 					<div id="osdAnnClassList" class="ann-class-list"></div>
 					<button id="osdAnnAddClass" class="pp-btn">+ Add class</button>
 					<div class="pp-row">
-						<label><input type="radio" name="osdAnnTool" id="osdAnnToolPolygon" value="polygon" checked title="Click to place vertices; double-click or Enter closes; click-drag draws freehand and closes on release; Esc cancels. Click inside one of your polygons to select it and drag its handles to reshape; click again to start a new polygon inside it; Esc deselects. Reshaping does not restore pixels you erased inside it — the hole stays. Backspace/Delete removes the selected polygon (erases that class's pixels inside it — Undo restores both)."> Polygon (P)</label>
+						<label><input type="radio" name="osdAnnTool" id="osdAnnToolPolygon" value="polygon" checked title="Click to place vertices; double-click or Enter closes; click-drag draws freehand and closes on release; Esc cancels. Click inside one of your polygons to select it and drag its handles to reshape, or drag on an edge to add a handle; click again to start a new polygon inside it; Esc deselects. The eraser cannot remove pixels inside a committed polygon — it only erases brush paint outside them. Backspace/Delete removes the selected polygon (erases that class's pixels inside it — Undo restores both)."> Polygon (P)</label>
 						<label><input type="radio" name="osdAnnTool" id="osdAnnToolBrush" value="brush" title="Paint with the active class. Hold Alt to erase (Brush mode only). Shift+wheel resizes the brush."> Brush (B)</label>
 					</div>
 					<div class="pp-row">
@@ -839,6 +839,23 @@
 		var _stepZPending = null;    // accumulated step target while debounce is pending
 		var _prefetchTimer = null;   // deferred z±1 prefetch timer (eviction stays synchronous)
 
+		// Every write to allLayers[z][l] goes through here. That slot is the ONLY handle by
+		// which a TiledImage can ever reach removeItem, so overwriting it orphans the previous
+		// occupant in viewer.world for the page lifetime — still preload:true, still fetching
+		// tiles, never destroy()-ed. Remove it first.
+		// Not guarded against removing a VISIBLE item because that case is unreachable:
+		// currentZIndex is always fully loaded after commit (_evictZLevel early-returns for it,
+		// _evictFarZLevels only touches |z - activeZ| > 1), so switchZLevel takes the commit
+		// branch and never calls _loadZLevel(currentZIndex); _prefetchAdjacent skips fully
+		// loaded z; and z=0's initial batch runs before the z-controls exist.
+		function _setLayerSlot(zIdx, layerIdx, item) {
+			var row = allLayers[zIdx];
+			if (!row) { return; }
+			var prev = row[layerIdx];
+			if (prev && prev !== item) { viewer.world.removeItem(prev); }
+			row[layerIdx] = item;
+		}
+
 		// DOM cache for NIST channel spinners (populated once in initBlendingLogic)
 		var _nistEn = new Array(16);  // checkbox elements
 		var _nistH  = new Array(16);  // hue input elements
@@ -877,7 +894,7 @@
 					opacity: (layerIdx === 0) ? 1 : 0,
 					preload: true,
 					success: function (event) {
-						allLayers[0][layerIdx] = event.item;
+						_setLayerSlot(0, layerIdx, event.item);
 						totalLoaded++;
 						console.log("[hyperOSD] z=0 image " + layerIdx + " loaded: " + src);
 						if (totalLoaded === totalToLoad) {
@@ -896,7 +913,7 @@
 					},
 					error: function (event) {
 						console.error("[hyperOSD] FAILED to load z=0 layer " + layerIdx + ": " + src);
-						allLayers[0][layerIdx] = null;
+						_setLayerSlot(0, layerIdx, null);
 						totalLoaded++;
 						if (totalLoaded === totalToLoad) {
 							_imagesLoaded = true;
@@ -1072,7 +1089,7 @@
 						opacity: 0,
 						preload: true,
 						success: function (event) {
-							allLayers[zIdx][layerIdx] = event.item;
+							_setLayerSlot(zIdx, layerIdx, event.item);
 							loaded++;
 							if (loaded === imagesPerZ && gen === _zSwitchGen) {
 								if (allLayers[zIdx].filter(Boolean).length === imagesPerZ) {
@@ -1085,7 +1102,7 @@
 						},
 						error: function () {
 							console.error("[hyperOSD] Failed to load z=" + zIdx + " layer " + layerIdx);
-							allLayers[zIdx][layerIdx] = null;
+							_setLayerSlot(zIdx, layerIdx, null);
 							loaded++;
 							if (loaded === imagesPerZ && gen === _zSwitchGen) {
 								console.warn("[hyperOSD] z=" + zIdx + " load failed — staying on z=" + currentZIndex);
@@ -1135,7 +1152,7 @@
 							opacity: 0,
 							preload: true,
 							success: function (event) {
-								allLayers[adjZ][layerIdx] = event.item;
+								_setLayerSlot(adjZ, layerIdx, event.item);
 								prefetchLoaded++;
 								if (prefetchLoaded === imagesPerZ) {
 									if (allLayers[adjZ].filter(Boolean).length === imagesPerZ) {
@@ -1153,7 +1170,7 @@
 							},
 							error: function () {
 								console.error('[hyperOSD] Prefetch failed z=' + adjZ + ' layer ' + layerIdx);
-								allLayers[adjZ][layerIdx] = null;
+								_setLayerSlot(adjZ, layerIdx, null);
 								prefetchLoaded++;
 								if (prefetchLoaded === imagesPerZ) {
 									if (allLayers[adjZ].filter(Boolean).length === imagesPerZ) {

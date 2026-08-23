@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import webbrowser
+from html import escape as html_escape
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
@@ -26,6 +27,25 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate_dzi
 
 app = Flask(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Path containment
+# ---------------------------------------------------------------------------
+
+def _is_contained(candidate, root):
+    """True when *candidate* resolves to *root* itself or to a path inside it.
+
+    Both sides are passed through ``os.path.realpath`` so symlinks, ``..``
+    segments and absolute paths are all resolved before comparison.
+
+    The ``+ os.sep`` is load-bearing: without it ``/data/rootEVIL`` would count
+    as being inside ``/data/root``.
+    """
+    resolved = os.path.realpath(candidate)
+    real_root = os.path.realpath(root)
+    return resolved == real_root or resolved.startswith(real_root + os.sep)
+
 
 # ---------------------------------------------------------------------------
 # Progress tracking (single-user local app)
@@ -168,13 +188,15 @@ def load():
 @app.route("/scan", methods=["POST"])
 def scan():
     """Scan a folder for image subfolders (z-levels)."""
-    import pyvips
-
     data = request.get_json(force=True)
     scan_path = data.get("path", "").strip()
 
     if not scan_path or not os.path.isdir(scan_path):
         return jsonify({"error": f"Not a valid directory: {scan_path}"}), 400
+
+    # Imported after input validation so a bad-path request still answers 400
+    # rather than dying on a missing optional dependency.
+    import pyvips
 
     scan_path = os.path.abspath(scan_path)
     dataset_name = os.path.basename(scan_path)
@@ -401,6 +423,24 @@ def generate():
     if not z_levels:
         return jsonify({"error": "No z-levels provided"}), 400
 
+    # Write-side containment. `image_root` was previously never validated, and an
+    # absolute value silently discards the join base. `z_name` flows verbatim
+    # from a free-text UI field into os.path.join(output_dir, z_name).
+    if not _is_contained(image_root, root_path):
+        return jsonify({"error": "Access denied: image_root is outside the dataset root"}), 403
+
+    output_dir = os.path.join(root_path, "deepzoom_RGBA")
+    for z in z_levels:
+        if not isinstance(z, dict) or "folder" not in z:
+            return jsonify({"error": "Invalid z-level entry"}), 400
+        z_name = z.get("name", z["folder"])
+        if not isinstance(z_name, str):
+            return jsonify({"error": "Invalid z-level name"}), 400
+        if not _is_contained(os.path.join(output_dir, z_name), output_dir):
+            return jsonify(
+                {"error": f"Access denied: z-level name escapes the output directory: {z_name}"}
+            ), 403
+
     _reset_progress()
 
     thread = threading.Thread(
@@ -448,13 +488,12 @@ def view(filename=None):
         viewer_path = os.path.join(root, viewer_filename)
 
     # Path traversal protection: ensure resolved path is inside dataset root
-    resolved = os.path.realpath(viewer_path)
-    real_root = os.path.realpath(root)
-    if not (resolved == real_root or resolved.startswith(real_root + os.sep)):
+    if not _is_contained(viewer_path, root):
         return "Access denied", 403
 
     if not os.path.isfile(viewer_path):
-        return f"Viewer not found: {os.path.basename(viewer_path)}", 404
+        # Escaped: `filename` is attacker-controllable and this body is HTML.
+        return f"Viewer not found: {html_escape(os.path.basename(viewer_path))}", 404
 
     with open(viewer_path, "r") as f:
         html = f.read()
@@ -483,7 +522,16 @@ def serve_dataset(filepath):
         osd_rel = filepath[len("openseadragon/"):]
         candidate = os.path.join(root, filepath)
         if not os.path.isfile(candidate):
+            if not _is_contained(os.path.join(osd_dir, osd_rel), osd_dir):
+                return "Access denied", 403
             return send_from_directory(osd_dir, osd_rel)
+
+    # safe_join() (inside send_from_directory) blocks ".." and absolute paths but
+    # NOT symlinks, and the os.path.isfile fallback above follows them too. A
+    # shared dataset containing e.g. `shadow -> /etc/shadow` would otherwise be
+    # served on a normal "open dataset" action.
+    if not _is_contained(os.path.join(root, filepath), root):
+        return "Access denied", 403
 
     return send_from_directory(root, filepath)
 
@@ -549,9 +597,14 @@ def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
     image_root: where z-level subfolders live (root_path or root_path/raw_data)
     um_per_pixel: optional pixel size in micrometers (controls scale bar)
     """
-    import pyvips
-
     try:
+        # INSIDE the try: with pyvips optional (B1a), an ImportError here would
+        # otherwise kill this thread BEFORE _set_progress(error=...) ever runs,
+        # leaving the /progress SSE stream looping on done=False/error=None — an
+        # indefinite spinner instead of an actionable message.
+        generate_dzi._require_pyvips()
+        import pyvips  # noqa: F401  (re-exported for the module-level references below)
+
         dataset_name = os.path.basename(root_path)
         output_dir = os.path.join(root_path, "deepzoom_RGBA")
         os.makedirs(output_dir, exist_ok=True)
@@ -673,6 +726,12 @@ def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
                 image_paths = image_paths[:max_tile_sources]
 
             z_output_dir = os.path.join(output_dir, z_name)
+            # Defence in depth — /generate already rejects escaping z_names.
+            if not _is_contained(z_output_dir, output_dir):
+                _set_progress(
+                    error=f"Refusing to write outside the output directory: {z_name}"
+                )
+                return
             os.makedirs(z_output_dir, exist_ok=True)
 
             if is_tiff_stack:
@@ -839,7 +898,13 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
     default_channels = list(range(1, total_channels + 1))
 
     # Format image sources as JS array entries
-    sources_js = ",\n\t\t\t".join(f'"{s}"' for s in image_sources)
+    # json.dumps() gives correct JS string escaping for quotes/backslashes.
+    # The \u003c substitution additionally stops a "</script>" inside a z-level
+    # name from terminating the enclosing <script> element (json.dumps does not
+    # escape "<" or "/"). No legitimate tile-source path contains "<".
+    sources_js = ",\n\t\t\t".join(
+        json.dumps(s).replace("<", "\\u003c") for s in image_sources
+    )
 
     # Build um_per_pixel line for config block
     if um_per_pixel:
@@ -877,12 +942,14 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
 
     # Replace configuration block
     pattern = r"// ===== DATASET CONFIGURATION =====.*?// ===== END DATASET CONFIGURATION ====="
-    html = re.sub(pattern, config_block, html, flags=re.DOTALL)
+    # lambda replacement: backslashes and \g<...> in config_block must NOT be
+    # interpreted as replacement-template syntax.
+    html = re.sub(pattern, lambda _: config_block, html, flags=re.DOTALL)
 
     # Set browser tab title to dataset name
     html = html.replace(
         "<title>hyperOSD Multi-Channel Blending</title>",
-        f"<title>{dataset_name} — hyperOSD</title>"
+        f"<title>{html_escape(dataset_name)} — hyperOSD</title>"
     )
 
     # Set Reinhard toggle to checked (only if not already checked)

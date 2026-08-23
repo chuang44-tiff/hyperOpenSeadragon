@@ -126,6 +126,20 @@
         // mechanism survives any future mode being added.
         var _altSavedTool = null;                 // null | 'brush'
 
+        // ---- Inc-11 (A2/A3/M1/M2): eraser-protection cache + null-op suppression flag ----
+        // _protectRows: row y -> flat MERGED half-open [x0,x1) interval pairs covering the
+        // pixels of ANY committed polygon on that row, EVERY class (A3). Rebuilt LAZILY in
+        // _protectFilter whenever the derived signature (M1) differs — no mutation site is
+        // ever asked to remember to invalidate it, including in-place rec.pts writes and a
+        // mask resize. An open draft contributes nothing (it has written no pixels).
+        var _protectRows = null;                  // null | Object.create(null) of y -> pairs
+        var _protectSig1 = 0, _protectSig2 = 0;   // M1 two-lane 32-bit signature
+        // M2: true iff some _protectFilter call this stroke EMITTED a non-empty run list
+        // (zero-polygon pass-through INCLUDED). Cleared by _histBegin; read by _histCommit.
+        var _eraserDidErase = false;
+        var _sigF64 = new Float64Array(1);        // exact float-bit folding for the signature
+        var _sigI32 = new Int32Array(_sigF64.buffer);
+
         function _warnOnce(key, msg) {
             if (_firedWarnKeys.has(key)) { return; }
             _firedWarnKeys.add(key);
@@ -521,6 +535,7 @@
             _polys = []; _polySeq = 0; _selPoly = null; _dragVert = null;
             _polyScratch = null; _psctx = null;
             _altSavedTool = null;                            // ---- Inc-9: drop any latched Alt hold ----
+            _protectRows = null; _protectSig1 = 0; _protectSig2 = 0; _eraserDidErase = false;   // ---- Inc-11: drop the protect cache ----
             _viewer = null; _canvas = null; _view = null; _ctx = null;
             _mask = null; _mctx = null; _refTI = null;
             _destroyed = true;
@@ -564,6 +579,120 @@
             ctx.globalCompositeOperation = 'source-over';       // restore per-target
         }
 
+        // ---- Inc-11 (A2, PURE): bucket a run list into per-row merged half-open interval
+        // pairs. No state reads; shared by _protectRebuild and the __runsSubtract oracle.
+        function _mergeRunsToRows(runs) {
+            var rows = Object.create(null);
+            var i, r;
+            for (i = 0; i < runs.length; i++) {
+                r = runs[i];
+                if (!r || !(r.w > 0)) { continue; }
+                (rows[r.y] || (rows[r.y] = [])).push(r.x, r.x + r.w);
+            }
+            for (var y in rows) {
+                var flat = rows[y];
+                if (flat.length <= 2) { continue; }               // single interval: already merged
+                var iv = [];
+                for (i = 0; i + 1 < flat.length; i += 2) { iv.push([flat[i], flat[i + 1]]); }
+                iv.sort(function (u, v) { return u[0] - v[0]; });
+                var merged = [iv[0][0], iv[0][1]];
+                for (i = 1; i < iv.length; i++) {
+                    if (iv[i][0] <= merged[merged.length - 1]) {  // overlap or abutment
+                        if (iv[i][1] > merged[merged.length - 1]) { merged[merged.length - 1] = iv[i][1]; }
+                    } else {
+                        merged.push(iv[i][0], iv[i][1]);
+                    }
+                }
+                rows[y] = merged;
+            }
+            return rows;
+        }
+
+        // ---- Inc-11 (A2, PURE): emit the sub-runs of `runs` NOT covered by `rows` (a
+        // _mergeRunsToRows result). Half-open arithmetic throughout; never mutates inputs;
+        // output preserves the input run order. This is THE complement walk A1 applies.
+        function _runsSubtract(runs, rows) {
+            var out = [];
+            for (var i = 0; i < runs.length; i++) {
+                var r = runs[i];
+                var row = rows[r.y];
+                if (!row || row.length === 0) { out.push({ x: r.x, y: r.y, w: r.w }); continue; }
+                var x = r.x, end = r.x + r.w;
+                for (var j = 0; j + 1 < row.length && x < end; j += 2) {
+                    var p0 = row[j], p1 = row[j + 1];
+                    if (p1 <= x) { continue; }
+                    if (p0 >= end) { break; }
+                    if (p0 > x) { out.push({ x: x, y: r.y, w: p0 - x }); }
+                    if (p1 > x) { x = p1; }
+                }
+                if (x < end) { out.push({ x: x, y: r.y, w: end - x }); }
+            }
+            return out;
+        }
+
+        // ---- Inc-11 (M1): derived geometry signature — it READS THE DATA ITSELF, so no
+        // mutation site can be missed: in-place rec.pts writes, loadPolygons repopulation
+        // landing on the same length, undo/redo fixups, removeClass's array reassignment,
+        // and a mask resize all change it. classId is NOT folded — protection is
+        // class-agnostic (A3). Two independent 32-bit lanes (multipliers 31/37), both must
+        // match: integer-only math, no strings, collision odds ~2^-64 per real change.
+        // Cost O(total vertices) per ERASER dab, only while a polygon exists — the price
+        // of invalidation that cannot be forgotten (per-dab, NEVER hoisted: loadLabel /
+        // loadPolygons / clear / removeClass are not _painting-guarded and can replace the
+        // geometry mid-stroke through the host's async img.onload).
+        function _protectSignature() {
+            var h1 = 0, h2 = 0;
+            function fold(v) {
+                _sigF64[0] = v;
+                var lo = _sigI32[0], hi = _sigI32[1];
+                h1 = (Math.imul(h1, 31) + lo) | 0; h1 = (Math.imul(h1, 31) + hi) | 0;
+                h2 = (Math.imul(h2, 37) + lo) | 0; h2 = (Math.imul(h2, 37) + hi) | 0;
+            }
+            fold(_polys.length); fold(_maskW); fold(_maskH);
+            for (var i = 0; i < _polys.length; i++) {
+                var pp = _polys[i].pts;
+                fold(pp.length);
+                for (var k = 0; k < pp.length; k++) { fold(pp[k].x); fold(pp[k].y); }
+            }
+            return { h1: h1, h2: h2 };
+        }
+
+        // ---- Inc-11 (A2/A3): rebuild the protect set from EVERY committed record, all
+        // classes. Cost O(total polygon runs) — perimeter-ish — once per invalidation.
+        // Degenerate records need no guarding: _polyRuns returns [] for n<3 / non-finite,
+        // clamps to the mask, and rasterizes self-intersections under NONZERO winding —
+        // the protected set is BY CONSTRUCTION the exact pixel set each record committed.
+        function _protectRebuild() {
+            var all = [];
+            for (var i = 0; i < _polys.length; i++) {
+                var runs = _polyRuns(_polys[i].pts);
+                for (var q = 0; q < runs.length; q++) { all.push(runs[q]); }
+            }
+            _protectRows = _mergeRunsToRows(all);
+        }
+
+        // ---- Inc-11 (A1/A2/M2): filter an eraser dab's runs down to the sub-runs OUTSIDE
+        // every committed polygon. Called UNCONDITIONALLY from the eraser branch of
+        // _stampDisc. The M2 suppression flag is decided HERE, on the EMITTED list,
+        // INCLUDING the zero-polygon pass-through — ResearchA's draft set it only past the
+        // early return, which would have discarded every eraser stroke of a brush-only
+        // user. Protection is GEOMETRIC (A3): any pixel inside a committed ring is
+        // unerasable, whoever painted it.
+        function _protectFilter(runs) {
+            if (_polys.length === 0) {
+                if (runs.length > 0) { _eraserDidErase = true; }
+                return runs;                       // brush-only users pay nothing (A2)
+            }
+            var sig = _protectSignature();         // M1: per dab, reads the data itself
+            if (_protectRows === null || sig.h1 !== _protectSig1 || sig.h2 !== _protectSig2) {
+                _protectRebuild();
+                _protectSig1 = sig.h1; _protectSig2 = sig.h2;
+            }
+            var out = _runsSubtract(runs, _protectRows);
+            if (out.length > 0) { _eraserDidErase = true; }
+            return out;
+        }
+
         // ---- E4: filled-disc raster (integer horizontal runs) — indexed multi-class ----
         function _stampDisc(mx, my) {
             var r = _getRPx();
@@ -592,6 +721,13 @@
             }
             var k;
             if (_tool === 'eraser') {
+                // ---- Inc-11 (A1): the eraser must never clear a pixel inside a committed
+                // polygon of ANY class (user decision 1, 2026-08-22). Filter the runs at
+                // the ONE place a dab becomes pixels; the mask write and the silhouette
+                // loop below share this `runs` local, so both are filtered by construction.
+                // _strokeBBox (accumulated in the loop above) stays UNFILTERED — a superset
+                // bbox restores identical pixels through putImageData, just larger buffers.
+                runs = _protectFilter(runs);
                 // erase the mask AND every allocated silhouette over the runs
                 _fillRuns(_mctx, runs, 'destination-out', '#fff');
                 for (k in _silh) {
@@ -719,6 +855,35 @@
                 if (xc <= x) { wind += (b.y > a.y) ? 1 : -1; }    // crossings at or left of the sample
             }
             return wind !== 0;                                    // NONZERO rule (even-odd is NOT the rule)
+        }
+
+        // ---- Inc-11 (A4, PURE): point-to-segment projection. t clamped to [0,1]; null for
+        // a degenerate (L2 <= 0) edge — its distance equals the distance to vertex a, which
+        // the grab branch owns. isFinite inputs are the caller's concern (record vertices
+        // are finite by loadPolygons/_ptFromEvent construction).
+        function _projectPointToSeg(p, a, b) {
+            var vx = b.x - a.x, vy = b.y - a.y;
+            var L2 = vx * vx + vy * vy;
+            if (L2 <= 0) { return null; }
+            var t = ((p.x - a.x) * vx + (p.y - a.y) * vy) / L2;
+            if (t < 0) { t = 0; } else if (t > 1) { t = 1; }
+            var qx = a.x + t * vx, qy = a.y + t * vy;
+            return { t: t, x: qx, y: qy, d: Math.hypot(p.x - qx, p.y - qy) };
+        }
+
+        // ---- Inc-11 (A4, PURE): nearest qualifying ring edge. Edge i runs pts[i] ->
+        // pts[(i+1) % n] (the closing segment is i === n-1). Strict `<` keeps the LOWEST
+        // edge index on a tie. Returns {idx, x, y, d} or null when no edge is within tol.
+        function _nearestEdge(pts, p, tol) {
+            var best = null;
+            for (var i = 0; i < pts.length; i++) {
+                var pr = _projectPointToSeg(p, pts[i], pts[(i + 1) % pts.length]);
+                if (!pr) { continue; }
+                if (pr.d <= tol && (!best || pr.d < best.d)) {
+                    best = { idx: i, x: pr.x, y: pr.y, d: pr.d };
+                }
+            }
+            return best;
         }
 
         // ---- Inc-8: symmetric difference of two run lists, BY PIXEL SET (pure) ----
@@ -881,7 +1046,7 @@
         // Drops the open draft WITHOUT writing the mask. Does NOT touch _painting/_activePointerId/
         // pointer capture — a held press still ends through _endStroke as usual.
         function _dropDraft() {
-            if (_polyDraft !== null) { _polyDraft = null; _scheduleRender(); }
+            if (_polyDraft !== null) { _polyDraft = null; _scheduleRender(); _fireHistory(); }   // Inc-11 (A6): un-grey — AFTER nulling
             // ---- Inc-8: this is the LOAD-BEARING abort for a hijacked vertex drag. Every teardown
             // path (setTool on change, setActive(false), clear, cancelPolygon/Esc) already calls
             // _dropDraft BEFORE _endStroke, so nulling _dragVert here means the _endStroke prologue
@@ -896,9 +1061,9 @@
         function _closeDraft() {
             var d = _polyDraft;
             _dropDraft();                                    // draft nulled FIRST (re-entrancy safety)
-            if (!d || d.pts.length < 3) { _polyLastCommit = false; return false; }
+            if (!d || d.pts.length < 3) { _polyLastCommit = false; _fireHistory(); return false; }   // Inc-11 (A6)
             var runs = _polyRuns(d.pts);
-            if (runs.length === 0) { _polyLastCommit = false; return false; }   // collinear/degenerate/off-mask
+            if (runs.length === 0) { _polyLastCommit = false; _fireHistory(); return false; }   // Inc-11 (A6): collinear/degenerate/off-mask
             _histBegin();                                    // one _histBegin per POLYGON, not per click
             _polyCommit(runs);
             // ---- Inc-8: append the EDIT RECORD. A shallow copy of the point objects is enough —
@@ -926,21 +1091,26 @@
             var O = _polyRuns(rec.pts);
             var N = deleting ? [] : _polyRuns(newPts);        // may be [] if the drag made the ring degenerate
             var d = _runsDiff(O, N);
-            // (2) O △ N empty at the RUNS level → vertices follow the drop point, NO history entry,
-            // _maskDirty untouched (a history entry is impossible with a null bbox anyway).
-            // Inc-9: a ZERO-FOOTPRINT delete lands here — the record is removed with NO undo entry
-            // (an entry is impossible with a null bbox, and the action wrote nothing).
+            // (2) O △ N empty at the RUNS level → no pixel changes hands. Inc-11 (M3): BOTH
+            // zero-footprint lanes now push a TAG-ONLY entry (null raster) — the record
+            // mutation is undoable and redo is invalidated through the same helper. The
+            // _ptsEqual guard stays load-bearing: a zero-movement handle grab-release
+            // reaches this branch on EVERY click and must not touch history at all.
             if (d.fill.length === 0 && d.erase.length === 0) {
-                if (deleting) { _removePolyRec(rec); return; }
-                // Inc-10 (§5.9): the vertices moved but no pixel did. This still MUTATES the record,
-                // and any record mutation invalidates redo — otherwise a stale redo entry (e.g. a
-                // deletion the user just undid) stays live and Ctrl+Shift+Z resurrects it.
-                // The _ptsEqual guard is load-bearing: a zero-movement handle grab-release reaches
-                // this branch on EVERY click, and must leave the redo chain untouched.
+                if (deleting) {
+                    // delete lane: tag BEFORE _removePolyRec so rec.pts is still live.
+                    // Undo re-adds the record via _applyPolyFixup's not-found branch (at
+                    // the TOP of the z-order, the documented pre-existing fixup rule);
+                    // redo removes it via the null branch.
+                    _histPushTag({ polyId: rec.id, classId: rec.classId, ptsBefore: _copyPts(rec.pts), ptsAfter: null });
+                    _removePolyRec(rec);
+                    return;
+                }
                 if (!_ptsEqual(rec.pts, newPts)) {
+                    // reshape lane (e.g. a zero-drag A4 edge insert): tag then mutate. The
+                    // helper subsumes the old `_redoStack.length = 0; _fireHistory();` pair.
+                    _histPushTag({ polyId: rec.id, classId: rec.classId, ptsBefore: _copyPts(rec.pts), ptsAfter: _copyPts(newPts) });
                     rec.pts = _copyPts(newPts);
-                    _redoStack.length = 0;
-                    _fireHistory();                            // host redo button greys immediately
                 }
                 return;
             }
@@ -1022,6 +1192,7 @@
                 _upctx.drawImage(_mask, 0, 0);   // GPU blit, no readback
             }
             _strokeBBox = null;
+            _eraserDidErase = false;   // Inc-11 (M2): reset the per-stroke suppression flag
         }
 
         // Inc-8: `tag` is OPTIONAL — {polyId, classId, ptsBefore, ptsAfter}. Entries WITHOUT it are
@@ -1030,6 +1201,15 @@
         // the vertex fields are a FIXUP applied after the raster restore (see _applyPolyFixup).
         function _histCommit(tag) {
             if (!_strokeBBox || !_upctx || !_mctx) { return; }   // no paint this stroke (pan/no-op)
+            // ---- Inc-11 (M2): a FULLY suppressed eraser stroke (every dab landed inside
+            // protected polygon interiors) pushes NO entry — it changed nothing, and
+            // pushing would clear the redo chain below. _strokeBBox accumulates BEFORE the
+            // eraser branch filters (frozen :584-591), so the bbox alone cannot tell; the
+            // flag can. _tool is still 'eraser' during a setTool-driven _endStroke
+            // (setTool assigns _tool AFTER _endStroke returns, :1577-1579). The
+            // PRE-EXISTING blank-canvas null-op entry (dab emitted runs over empty pixels)
+            // is deliberately NOT fixed here — ticket §8.1.
+            if (_tool === 'eraser' && !_eraserDidErase) { _strokeBBox = null; return; }
             var x = _strokeBBox.x0, y = _strokeBBox.y0;
             var w = _strokeBBox.x1 - _strokeBBox.x0 + 1;
             var h = _strokeBBox.y1 - _strokeBBox.y0 + 1;
@@ -1040,6 +1220,21 @@
             var ent = { x: x, y: y, w: w, h: h, before: before, after: after };
             _undoStack.push(ent);
             if (tag) { ent.polyId = tag.polyId; ent.classId = tag.classId; ent.ptsBefore = tag.ptsBefore; ent.ptsAfter = tag.ptsAfter; }
+            while (_undoStack.length > (opts.undoDepth || DEFAULTS.undoDepth)) { _undoStack.shift(); }
+            _redoStack.length = 0;
+            _fireHistory();
+        }
+
+        // ---- Inc-11 (M3): push a TAG-ONLY entry (null raster) for the two zero-footprint
+        // _reshapeCommit lanes — no pixel changed but the record did, and a record
+        // mutation must invalidate redo AND be undoable. Same trim / redo-clear / fire
+        // discipline as _histCommit; undo()/redo() skip the raster restore on null
+        // before/after (invariant I4). These entries DO count against opts.undoDepth.
+        function _histPushTag(tag) {
+            var ent = { x: 0, y: 0, w: 0, h: 0, before: null, after: null };
+            ent.polyId = tag.polyId; ent.classId = tag.classId;
+            ent.ptsBefore = tag.ptsBefore; ent.ptsAfter = tag.ptsAfter;
+            _undoStack.push(ent);
             while (_undoStack.length > (opts.undoDepth || DEFAULTS.undoDepth)) { _undoStack.shift(); }
             _redoStack.length = 0;
             _fireHistory();
@@ -1099,11 +1294,16 @@
             if (_polyDraft || _dragVert) { return; }              // Inc-7/8: no-op mid-draft or mid-reshape-drag
             if (!_undoStack.length) { return; }
             var e = _undoStack.pop();
-            _mctx.putImageData(e.before, e.x, e.y);
-            _rebuildSilh(e.x, e.y, e.w, e.h);
+            // Inc-11 (M3): tag-only entries (before === after === null) have no raster to
+            // restore — skip putImageData/_rebuildSilh/_maskDirty; the vertex fixup below
+            // is the whole restore (invariant I4).
+            if (e.before) {
+                _mctx.putImageData(e.before, e.x, e.y);
+                _rebuildSilh(e.x, e.y, e.w, e.h);
+                _maskDirty = true;                                // isEmpty stays coarse-true latch [AUDIT 10]
+            }
             if (e.polyId !== undefined) { _applyPolyFixup(e.polyId, e.classId, e.ptsBefore); }
             _redoStack.push(e);
-            _maskDirty = true;                                    // isEmpty stays coarse-true latch [AUDIT 10]
             _fireHistory();
             _render();
         }
@@ -1114,17 +1314,27 @@
             if (_polyDraft || _dragVert) { return; }              // Inc-7/8: no-op mid-draft or mid-reshape-drag
             if (!_redoStack.length) { return; }
             var e = _redoStack.pop();
-            _mctx.putImageData(e.after, e.x, e.y);
-            _rebuildSilh(e.x, e.y, e.w, e.h);
+            // Inc-11 (M3): tag-only entries (before === after === null) have no raster to
+            // restore — skip putImageData/_rebuildSilh/_maskDirty; the vertex fixup below
+            // is the whole restore (invariant I4).
+            if (e.after) {
+                _mctx.putImageData(e.after, e.x, e.y);
+                _rebuildSilh(e.x, e.y, e.w, e.h);
+                _maskDirty = true;
+            }
             if (e.polyId !== undefined) { _applyPolyFixup(e.polyId, e.classId, e.ptsAfter); }
             _undoStack.push(e);
-            _maskDirty = true;
             _fireHistory();
             _render();
         }
 
-        function canUndo() { return _undoStack.length > 0; }
-        function canRedo() { return _redoStack.length > 0; }
+        // Inc-11 (A6): while a draft is open, undo()/redo() early-return (:1099, :1114) —
+        // reporting stack length here made the host Undo button render enabled and do
+        // nothing (§5.1). Gate on _polyDraft ONLY: a reshape drag holds pointer capture so
+        // the button is unreachable mid-drag, and frozen _endStroke cannot guarantee an
+        // un-grey on every exit.
+        function canUndo() { return !_polyDraft && _undoStack.length > 0; }
+        function canRedo() { return !_polyDraft && _redoStack.length > 0; }
         function _fireHistory() {
             if (typeof opts.onHistory === 'function') { opts.onHistory(canUndo(), canRedo()); }
         }
@@ -1246,6 +1456,26 @@
                         _scheduleRender();
                         return;                                   // no vertex placed, no draft
                     }
+                    // ---- Inc-11 (A4): EDGE INSERT (user decision 2 — "we click the edge
+                    // to add anchor point"). Reached ONLY when the vertex grab above did
+                    // not fire; SAME tolm — grab outranks insert by ORDER, not tuning
+                    // (every point within tolm of a vertex is within tolm of its adjacent
+                    // segments). splice at idx+1 makes the closing segment a plain push;
+                    // the drag then runs on the EXISTING _dragVert lanes: _onPointerMove
+                    // writes the working copy, _endStroke -> _reshapeCommit commits — a
+                    // zero-drag release lands in the zero-diff branch and pushes an M3
+                    // tag-only entry. q is a convex combination of two on-mask vertices.
+                    var eBest = _nearestEdge(_selPoly.pts, pmd, tolm);
+                    if (eBest) {
+                        var ipts = _copyPts(_selPoly.pts);
+                        ipts.splice(eBest.idx + 1, 0, { x: eBest.x, y: eBest.y });
+                        _view.setPointerCapture(e.pointerId);
+                        _activePointerId = e.pointerId;
+                        _painting = true;
+                        _dragVert = { poly: _selPoly, idx: eBest.idx + 1, pts: ipts };
+                        _scheduleRender();
+                        return;                                   // no vertex placed, no draft
+                    }
                 }
                 // (2) a DRAFT always wins -> fall through to (iii)(iv) below unchanged.
                 if (!_polyDraft) {
@@ -1274,6 +1504,8 @@
                 else { _polyDraft.pts.push(pmd); }
                 _polyDownCss = pcss; _polyLastCss = pcss; _polyCurMask = null;
                 _polyLastClick = { t: pnow, x: pcss.x, y: pcss.y };
+                _fireHistory();   // Inc-11 (A6): a draft is open -> canUndo/canRedo are now
+                                  // false; grey the host buttons THIS click (§5.1 fix)
                 _scheduleRender();
                 return;
             }
@@ -2100,7 +2332,12 @@
             __ptInPoly:      { get: function () { return _ptInPoly; } },
             // ---- Inc-9: Alt-hold latch (GETTER ONLY — every latch in tests is made by a dispatched
             // Alt keydown; there is deliberately no setter) ----
-            _altSavedTool:   { get: function () { return _altSavedTool; } }
+            _altSavedTool:   { get: function () { return _altSavedTool; } },
+            // ---- Inc-11: pure-geometry oracles (GETTERS ONLY; state-free, callable
+            // pre-init — nothing here reads the mask or the records) ----
+            __runsSubtract:     { get: function () { return function (dab, prot) { return _runsSubtract(dab, _mergeRunsToRows(prot)); }; } },
+            __projectPointToSeg:{ get: function () { return _projectPointToSeg; } },
+            __nearestEdge:      { get: function () { return _nearestEdge; } }
         });
 
         return instance;
