@@ -19,6 +19,13 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
 
+## New in v3.4.2
+
+- **Annotation classes may overlap** — two classes can now cover the same pixels. Where they overlap the colours add (red over green reads as yellow) at the *same* opacity as everywhere else, so an overlap no longer shows up as a darker, muddier band. Each class keeps its own mask, so erasing, undo and Save all act on one class at a time. See [Annotation](#annotation) below.
+- **Save Session now writes one PNG per class** — a session is now **one mask PNG for each class that has pixels, plus a `classes.json`**, instead of a single combined label PNG. **To reload a session, select all of those files together in the Load dialog** — the `classes.json` is what maps each PNG back to its class, so it must be part of the selection. Sessions saved by earlier versions still load exactly as before: pick the single PNG on its own.
+- **The eraser now clears only the active class** — previously one eraser stroke removed every class's pixels under the brush. To clear several classes, switch class and erase again.
+- **Editing polygons got easier** — click a vertex to select it (it highlights) and press **Backspace** to remove it, or **double-click** a vertex to delete it outright. A small dead zone means clicking a handle no longer nudges the shape by a pixel. Clicking inside a shape behaves predictably whether you work in one class or nest several: the boundary edits the selected shape, the interior draws in the active class.
+
 ## New in v3.4.1
 
 - **Eraser-proof polygons and edge handles** — the eraser now only removes brush paint *outside* your closed polygons, so a finished region cannot be nibbled away by a stray stroke; the protection spans every class, and an unclosed draft protects nothing. Reshaping gained an edge grab: **drag anywhere on a polygon's edge** to insert a new handle at that point, instead of having to place every vertex when you first draw the shape. Deleting a polygon still erases its pixels, and a single **Ctrl+Z** still restores both. See [Annotation](#annotation) below.
