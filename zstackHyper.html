@@ -296,7 +296,7 @@
 					<div id="osdAnnClassList" class="ann-class-list"></div>
 					<button id="osdAnnAddClass" class="pp-btn">+ Add class</button>
 					<div class="pp-row">
-						<label><input type="radio" name="osdAnnTool" id="osdAnnToolPolygon" value="polygon" checked title="Click to place vertices; double-click or Enter closes; click-drag draws freehand and closes on release; Esc cancels. Click inside one of your polygons to select it and drag its handles to reshape, or drag on an edge to add a handle; click a handle to select it (it turns yellow), then Backspace/Delete removes it (a triangle keeps its three); Esc deselects. The eraser cannot remove pixels inside a committed polygon — it only erases brush paint outside them. Backspace/Delete removes the selected polygon (erases that class's pixels inside it — Undo restores both)."> Polygon (P)</label>
+						<label><input type="radio" name="osdAnnTool" id="osdAnnToolPolygon" value="polygon" checked title="Click to place vertices; double-click or Enter closes; click-drag draws freehand and closes on release; Esc cancels. Click inside one of your polygons to select it and drag its handles to reshape, or drag on an edge to add a handle; click a handle to select it (it turns yellow), then Backspace/Delete removes it (a triangle keeps its three); Esc deselects. The eraser cannot remove pixels inside a hand-drawn polygon — it only erases brush paint outside them (traced polygons are editable with the brush and eraser). Backspace/Delete removes the selected polygon (erases that class's pixels inside it — Undo restores both)."> Polygon (P)</label>
 						<label><input type="radio" name="osdAnnTool" id="osdAnnToolBrush" value="brush" title="Paint with the active class. Hold Alt to erase (Brush mode only). Shift+wheel resizes the brush."> Brush (B)</label>
 					</div>
 					<div class="pp-row">
@@ -310,12 +310,16 @@
 						<label><input type="radio" name="osdAnnDownscale" value="4096" checked> 4096</label>
 						<label><input type="radio" name="osdAnnDownscale" value="2048"> 2048</label>
 					</div>
-					<button id="osdAnnClearBtn" class="pp-btn pp-btn-clear">Clear Mask</button>
-					<button id="osdAnnSaveBtn" class="pp-btn" title="Downloads one binary PNG per class with pixels (white = that class, black = everything else) at the Downscale resolution, PLUS a classes.json — several files at once. To reopen here, Load Mask them ALL together.">Save Mask</button>
-					<button id="osdAnnLoadBtn" class="pp-btn" title="Reopen a save — select EVERY mask PNG from that save AND its classes.json together in one pick (multi-select). A single PNG on its own loads as a legacy label mask.">Load Mask</button>
-					<input type="file" id="osdAnnLoadFile" accept=".png,.json,image/png,application/json" multiple style="display:none">
-					<button id="osdAnnUndoBtn" class="pp-btn" disabled>Undo</button>
-					<button id="osdAnnRedoBtn" class="pp-btn" disabled>Redo</button>
+					<div class="pp-row pp-btnrow">
+						<button id="osdAnnSaveBtn" class="pp-btn" title="Downloads one binary PNG per class with pixels (white = that class, black = everything else) at the Downscale resolution, PLUS a classes.json — several files at once. To reopen here, Load Mask them ALL together.">Save Mask</button>
+						<button id="osdAnnLoadBtn" class="pp-btn" title="Reopen a save — select EVERY mask PNG from that save AND its classes.json together in one pick (multi-select). A single PNG on its own loads as a legacy label mask and its pixels are traced into editable polygons.">Load Mask</button>
+						<input type="file" id="osdAnnLoadFile" accept=".png,.json,image/png,application/json" multiple style="display:none">
+						<button id="osdAnnClearBtn" class="pp-btn pp-btn-clear">Clear Mask</button>
+					</div>
+					<div class="pp-row pp-btnrow">
+						<button id="osdAnnUndoBtn" class="pp-btn" disabled>Undo</button>
+						<button id="osdAnnRedoBtn" class="pp-btn" disabled>Redo</button>
+					</div>
 					<style>
 						#osdAnnSection { padding: 6px 8px; }
 						#osdAnnSection .osd-ann-dot { background: #4a7c8a; }
@@ -323,6 +327,8 @@
 						#osdAnnSection #osdAnnBrushSize { flex: 1; }
 						#osdAnnSection #osdAnnStatus { margin-left: auto; font-size: 11px; opacity: 0.8; }
 						#osdAnnSection button { margin: 4px 4px 0 0; }
+						#osdAnnSection .pp-btnrow { flex-wrap: wrap; }
+						#osdAnnSection .pp-btnrow button { margin: 0; }
 							#osdAnnSection .pp-btn:not(.pp-btn-clear) { background: #e8e6e0; color: #3a4a50; border: 1px solid #b8b4aa; }
 							#osdAnnSection .pp-btn:not(.pp-btn-clear):hover:not(:disabled) { background: #4a7c8a; color: #fff; border-color: #4a7c8a; }
 							#osdAnnSection .pp-btn:disabled { opacity: 0.45; cursor: default; }
@@ -4419,11 +4425,18 @@
 				img.onload = function () {
 					if (!window.annotator || window.annotator._destroyed) { URL.revokeObjectURL(url); return; }
 					var cls = Array.isArray(j) ? j : (j && Array.isArray(j.classes) ? j.classes : null);
+					// Inc-17 (D1/D2): no v3 classes.json ⇒ every loaded class is traced into editable polygons
+					// (pixels REPLACED, holes kept); a non-v3 json's `polygons` array is NOT honoured. The module
+					// flushes history itself; its onHistory status write lands BEFORE the Loaded write below.
 					var ok = window.annotator.loadLabel(img, cls);
-					if (ok) { window.annotator.loadPolygons(j && !Array.isArray(j) ? j.polygons : null); }
+					var sfx = '';
+					if (ok) {
+						var tr = window.annotator.traceLoadedClasses();
+						if (tr && tr.regions > 0) { sfx = ' — traced ' + tr.classes + ' class' + (tr.classes === 1 ? '' : 'es') + ', ' + tr.regions + ' region' + (tr.regions === 1 ? '' : 's') + ', ' + tr.holes + ' hole' + (tr.holes === 1 ? '' : 's') + ' kept' + (tr.capped ? ', ' + tr.capped + ' ring' + (tr.capped === 1 ? '' : 's') + ' capped' : '') + ' — pixels replaced'; }
+					}
 					URL.revokeObjectURL(url);
 					_annRenderClassList(); _annUpdateStatus();
-					$('#osdAnnStatus').text(ok ? 'Loaded: ' + pngFile.name : 'Load failed.');
+					$('#osdAnnStatus').text(ok ? 'Loaded: ' + pngFile.name + sfx : 'Load failed.');
 				};
 				img.onerror = function () { URL.revokeObjectURL(url); $('#osdAnnStatus').text('Load: invalid PNG.'); };
 				img.src = url;
