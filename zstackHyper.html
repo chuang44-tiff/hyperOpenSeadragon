@@ -296,7 +296,7 @@
 					<div id="osdAnnClassList" class="ann-class-list"></div>
 					<button id="osdAnnAddClass" class="pp-btn">+ Add class</button>
 					<div class="pp-row">
-						<label><input type="radio" name="osdAnnTool" id="osdAnnToolPolygon" value="polygon" checked title="Click to place vertices; double-click or Enter closes; click-drag draws freehand and closes on release; Esc cancels. Click inside one of your polygons to select it and drag its handles to reshape, or drag on an edge to add a handle; click again to start a new polygon inside it; Esc deselects. The eraser cannot remove pixels inside a committed polygon — it only erases brush paint outside them. Backspace/Delete removes the selected polygon (erases that class's pixels inside it — Undo restores both)."> Polygon (P)</label>
+						<label><input type="radio" name="osdAnnTool" id="osdAnnToolPolygon" value="polygon" checked title="Click to place vertices; double-click or Enter closes; click-drag draws freehand and closes on release; Esc cancels. Click inside one of your polygons to select it and drag its handles to reshape, or drag on an edge to add a handle; click a handle to select it (it turns yellow), then Backspace/Delete removes it (a triangle keeps its three); Esc deselects. The eraser cannot remove pixels inside a committed polygon — it only erases brush paint outside them. Backspace/Delete removes the selected polygon (erases that class's pixels inside it — Undo restores both)."> Polygon (P)</label>
 						<label><input type="radio" name="osdAnnTool" id="osdAnnToolBrush" value="brush" title="Paint with the active class. Hold Alt to erase (Brush mode only). Shift+wheel resizes the brush."> Brush (B)</label>
 					</div>
 					<div class="pp-row">
@@ -312,7 +312,7 @@
 					</div>
 					<button id="osdAnnExportBtn" class="pp-btn" title="Export a binary PNG mask of the ACTIVE class — white = that class, black = everything else. Named after the class.">Export Mask</button>
 					<button id="osdAnnClearBtn" class="pp-btn pp-btn-clear">Clear Mask</button>
-					<button id="osdAnnSaveBtn" class="pp-btn" title="Save the whole annotation to reload later (label PNG + classes.json). The PNG is a data file for re-loading, not a viewable image.">Save Session</button>
+					<button id="osdAnnSaveBtn" class="pp-btn" title="Save the whole annotation to reload later (one mask PNG per class + classes.json). The PNGs are data files for re-loading, not viewable images.">Save Session</button>
 					<button id="osdAnnLoadBtn" class="pp-btn" title="Reload a saved session — pick its label PNG (and optionally its classes.json).">Load Session</button>
 					<input type="file" id="osdAnnLoadFile" accept=".png,.json,image/png,application/json" multiple style="display:none">
 					<button id="osdAnnUndoBtn" class="pp-btn" disabled>Undo</button>
@@ -4247,11 +4247,26 @@
 		function sanitizeLabel(s) {
 			s = (s == null ? '' : String(s));
 			s = s.trim();
-			s = s.replace(/[\/\\\x00-\x1f\x7f]/g, '');
+			s = s.replace(/[\/\\:*?"<>|\x00-\x1f\x7f]/g, '');   // + Windows-reserved chars (Inc-14)
 			s = s.replace(/\s+/g, '_');
+			s = s.replace(/^\.+/, '');                          // no leading dot (Inc-14)
 			s = s.trim();
 			if (s === '') { s = 'mask'; }
 			return s;
+		}
+
+		// Inc-14: the annotator blob-download helper — the object-URL anchor pattern hoisted out of
+		// the old inline Save so the per-class PNG loop and the manifest share one writer. PARALLEL
+		// to the unmix `_downloadFallback` (which wraps text/plain and cannot carry a PNG).
+		function _annDownloadBlob(blob, filename) {
+			var url = URL.createObjectURL(blob);
+			var a = document.createElement('a');
+			a.href = url;
+			a.download = filename;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
 		}
 
 		function _annUpdateStatus() {
@@ -4344,24 +4359,39 @@
 				$('#osdAnnStatus').text('Nothing painted yet.');
 				return;
 			}
-			// Save = one-click timestamped bundle: label PNG (all classes, full-res) + classes.json.
+			// Save (Inc-14) = one-click timestamped bundle: ONE binary mask PNG per non-empty class
+			// (full-res) + a version 3 classes.json manifest listing EVERY class — an empty class is
+			// listed with NO "mask" key and produces NO PNG. Files download SEQUENTIALLY, manifest LAST.
 			var ts = new Date().toISOString().slice(0, 23).replace(/[:.]/g, '').replace('T', '-');
 			var slabel = 'annotation-' + ts;
 			$('#osdAnnStatus').text('Saving…');
-			window.annotator.exportPNG({ downscaleShorterSide: 0, activeOnly: false }).then(function (blob) {
-				if (!blob) { $('#osdAnnStatus').text('Save failed.'); return; }
-				var url = URL.createObjectURL(blob);
-				var a = document.createElement('a');
-				a.href = url;
-				a.download = slabel + '.png';
-				document.body.appendChild(a);
-				a.click();
-				document.body.removeChild(a);
-				URL.revokeObjectURL(url);
-				var cj = new Blob([JSON.stringify({ version: 2, classes: window.annotator.getClasses(), polygons: window.annotator.getPolygons() }, null, 2)], { type: 'application/json' });
-				var cu = URL.createObjectURL(cj);
-				var ca = document.createElement('a'); ca.href = cu; ca.download = slabel + '.classes.json';
-				document.body.appendChild(ca); ca.click(); document.body.removeChild(ca); URL.revokeObjectURL(cu);
+			var annClasses = window.annotator.getClasses();
+			var annManifest = [];
+			var annPending = [];
+			for (var ci = 0; ci < annClasses.length; ci++) {
+				var acl = annClasses[ci];
+				var ment = { id: acl.id, name: acl.name, color: acl.color };
+				if (window.annotator.getClassPixelCount(acl.id) > 0) {
+					ment.mask = slabel + '-' + acl.id + '-' + sanitizeLabel(acl.name) + '.png';
+					annPending.push({ id: acl.id, filename: ment.mask });
+				}
+				annManifest.push(ment);
+			}
+			var annChain = Promise.resolve(true);
+			annPending.forEach(function (p) {
+				annChain = annChain.then(function (ok) {
+					if (!ok) { return false; }
+					return window.annotator.exportPNG({ classId: p.id, downscaleShorterSide: 0 }).then(function (blob) {
+						if (!blob) { return false; }
+						_annDownloadBlob(blob, p.filename);
+						return true;
+					});
+				});
+			});
+			annChain.then(function (ok) {
+				if (!ok) { $('#osdAnnStatus').text('Save failed.'); return; }
+				var cj = new Blob([JSON.stringify({ version: 3, classes: annManifest, polygons: window.annotator.getPolygons() }, null, 2)], { type: 'application/json' });
+				_annDownloadBlob(cj, slabel + '.classes.json');
 				$('#osdAnnStatus').text('Saved: ' + slabel);
 			});
 		});
@@ -4414,12 +4444,47 @@
 		});
 
 		$('#osdAnnLoadBtn').on('click', function () { $('#osdAnnLoadFile').val('').trigger('click'); });
+		// Inc-14 (A20): the v3 manifest lane. A mask File is mapped to its class by the manifest's
+		// `mask` field ONLY — never by parsing the filename. A listed mask that is absent from the
+		// selection is an ATOMIC refusal: nothing is loaded and no state changes.
+		function _annLoadV3(j, pngFiles, jsonName) {
+			var byName = {};
+			for (var i = 0; i < pngFiles.length; i++) { byName[pngFiles[i].name] = pngFiles[i]; }
+			var wanted = [];
+			for (var c = 0; c < j.classes.length; c++) {
+				var cl = j.classes[c];
+				if (!cl || !cl.mask) { continue; }
+				if (!byName[cl.mask]) { $('#osdAnnStatus').text('Load failed: classes.json lists a mask file not in the selection.'); return; }
+				wanted.push({ classId: cl.id, file: byName[cl.mask] });
+			}
+			var urls = [];
+			Promise.all(wanted.map(function (w) {
+				return new Promise(function (resolve, reject) {
+					var url = URL.createObjectURL(w.file);
+					urls.push(url);
+					var img = new Image();
+					img.onload = function () { resolve({ classId: w.classId, image: img }); };
+					img.onerror = function () { reject(new Error('invalid PNG')); };
+					img.src = url;
+				});
+			})).then(function (entries) {
+				for (var u = 0; u < urls.length; u++) { URL.revokeObjectURL(urls[u]); }
+				if (!window.annotator || window.annotator._destroyed) { return; }
+				var ok = window.annotator.loadMasks(entries, j.classes);
+				if (ok) { window.annotator.loadPolygons(j.polygons || []); }
+				_annRenderClassList(); _annUpdateStatus();
+				$('#osdAnnStatus').text(ok ? 'Loaded: ' + jsonName : 'Load failed.');
+			}, function () {
+				for (var u = 0; u < urls.length; u++) { URL.revokeObjectURL(urls[u]); }
+				$('#osdAnnStatus').text('Load: invalid PNG.');
+			});
+		}
 		$('#osdAnnLoadFile').on('change', function (ev) {
 			var files = ev.target.files || [];
-			var pngFile = null, classesFile = null, bareJson = null;
+			var pngFile = null, classesFile = null, bareJson = null, pngFiles = [];
 			for (var i = 0; i < files.length; i++) {
 				var n = (files[i].name || '').toLowerCase();
-				if (n.slice(-4) === '.png') { pngFile = files[i]; }
+				if (n.slice(-4) === '.png') { pngFile = files[i]; pngFiles.push(files[i]); }
 				else if (n.slice(-13) === '.classes.json') { classesFile = files[i]; }
 				else if (n.slice(-5) === '.json') { bareJson = files[i]; }
 			}
@@ -4427,6 +4492,11 @@
 			if (!pngFile) { $('#osdAnnStatus').text('Load: no .png selected.'); return; }
 			var jsonP = jsonFile ? jsonFile.text().then(function (t) { try { return JSON.parse(t); } catch (e) { return null; } }) : Promise.resolve(null);
 			jsonP.then(function (j) {
+				if (j && !Array.isArray(j) && j.version === 3 && Array.isArray(j.classes)) {
+					_annLoadV3(j, pngFiles, jsonFile.name);
+					return;
+				}
+				if (pngFiles.length > 1) { $('#osdAnnStatus').text('Load failed: multiple mask PNGs need a version 3 classes.json.'); return; }
 				var url = URL.createObjectURL(pngFile);
 				var img = new Image();
 				img.onload = function () {

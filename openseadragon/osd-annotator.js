@@ -87,15 +87,24 @@
         // ---- Inc-A: multi-class registry state ----
         var _classes = [];             // [{id,name,color}]
         var _activeClassId = 0;        // 1 after init
-        var _silh = {};                // id -> {canvas, ctx}  LAZY render cache; _silh[id] ≡ {_mask px == id}
+        var _silh = {};                // id -> {canvas, ctx}  GROUND TRUTH (Inc-14): one binary
+                                       // plane per class; classes may overlap. _mask below it is a
+                                       // demoted staging/sentinel canvas — pixels not maintained.
         var _scratch = null, _sctx = null;   // ONE reusable _view-sized per-class composite scratch
 
         // ---- Inc-B: stroke-level undo/redo state (non-frozen) ----
         var _undoStack = [];           // [{x,y,w,h, before:ImageData, after:ImageData}]  bbox in MASK px
         var _redoStack = [];
-        var _undoPre   = null;         // single reusable full-mask <canvas> holding pre-stroke pixels
+        var _undoPre   = null;         // Inc-14: the ONE RETAINED SPARE shadow <canvas> (§7.2)
         var _upctx     = null;         // its 2d ctx (imageSmoothingEnabled=false)
         var _strokeBBox = null;        // {x0,y0,x1,y1} inclusive, accumulated during the current stroke
+        // ---- Inc-14 (M1/§7): COPY-ON-WRITE per-plane undo state (non-frozen) ----
+        // _histBegin is called argument-less from the FROZEN _onPointerDown and cannot know which
+        // plane a stroke will touch, so the pre-image is taken lazily, per plane, at that plane's
+        // FIRST write (_shadow). At _histCommit all but ONE canvas is released back to _undoPre —
+        // steady-state memory equals today's single pre-stroke canvas.
+        var _shadowPool = {};          // String(sid) -> {canvas, ctx}  pre-image of _silh[sid] this stroke
+        var _strokeSilhIds = [];       // plane ids shadowed during the current stroke, in first-touch order
 
         // ---- Inc-7: polygon draft state (IN-PROGRESS draft only — there is no committed-polygon list) ----
         // The polygon is an INPUT METHOD for the indexed label mask: on close it rasterizes into
@@ -117,7 +126,11 @@
         var _polys = [];               // [{id,classId,pts:[{x,y}]}] — array order = z-order (last = topmost)
         var _polySeq = 0;              // monotonic id source (++_polySeq per append); reset only by destroy
         var _selPoly = null;           // null | record reference into _polys — the selected polygon
-        var _dragVert = null;          // null | {poly, idx, pts} — pts is a WORKING COPY (no mask write)
+        var _dragVert = null;          // null | {poly, idx, pts, downCss, moved} — pts is a WORKING COPY (no mask
+                                       // write); downCss/moved: Inc-12 deadzone (CSS press origin + sticky crossed flag)
+        var _selVert = null;           // Inc-13: null | {polyId, idx} — the SELECTED anchor (yellow highlight +
+                                       // Backspace target). polyId makes stale values inert: an id mismatch means
+                                       // nothing highlights and nothing removes — never the wrong anchor destroyed.
         var _polyScratch = null, _psctx = null;   // reusable full-mask binary scratch (silhouette-clipped erase)
         // ---- Inc-9 (R3): Alt-hold temporary-eraser latch. Non-null ⇔ an Alt hold is latched and the
         // saved tool must be restored on keyup / window blur. Under the Inc-9 mode split the latch can
@@ -292,9 +305,55 @@
             }
             if (_sctx) {
                 for (var ci = 0; ci < _classes.length; ci++) {
+                    // LAW C (Inc-14): PASS 1 accumulates each class's tint at alpha 1 with 'lighter'
+                    // (colour-additive, order-independent — classes may overlap), then ONE
+                    // 'destination-in' fillRect at _fillAlpha sets a CONSTANT overlay alpha wherever
+                    // any class is present. PASS 2 draws the rims opaque on top. The passes are split
+                    // because the alpha normalise must apply to the fill layer ALONE.
                     var cls = _classes[ci];
                     var se = _silh[cls.id];
                     if (!se || !se.ctx) { continue; }            // no pixels / no ctx → skip
+                    _sctx.setTransform(1, 0, 0, 1, 0, 0);
+                    _sctx.clearRect(0, 0, _scratch.width, _scratch.height);
+                    _sctx.imageSmoothingEnabled = false;
+                    _sctx.globalAlpha = 1;
+                    _sctx.globalCompositeOperation = 'source-over';
+                    // (1) the silhouette shape at FULL alpha (base transform) — NO globalAlpha here:
+                    // the single normalise below owns the overlay alpha
+                    _sctx.setTransform(A, B, C, D, E0, F0);      // base (un-offset) transform
+                    _sctx.drawImage(se.canvas, 0, 0);
+                    // (2) tint fill → cls.color
+                    _sctx.setTransform(1, 0, 0, 1, 0, 0);        // identity: tint whole canvas
+                    _sctx.globalCompositeOperation = 'source-atop';
+                    _sctx.fillStyle = cls.color;
+                    _sctx.fillRect(0, 0, _scratch.width, _scratch.height);
+                    // (3) restore scratch defaults
+                    _sctx.globalCompositeOperation = 'source-over';
+                    _sctx.globalAlpha = 1;
+                    // (4) ACCUMULATE this class's tint onto _view — 'lighter' is commutative and
+                    // associative under clamping, so the fill blend is order-independent
+                    _ctx.setTransform(1, 0, 0, 1, 0, 0);
+                    _ctx.globalCompositeOperation = 'lighter';
+                    _ctx.globalAlpha = 1;
+                    _ctx.drawImage(_scratch, 0, 0);
+                }
+                // ---- THE CONSTANT-ALPHA STEP: ONE uniform normalise over the whole fill layer ----
+                // Every pass-1 contribution landed at alpha 1, so accumulated alpha is 255 wherever
+                // ANY class covers and 0 elsewhere. 'destination-in' against a uniform alpha source
+                // is a per-pixel premultiplied scalar multiply: the result is exactly
+                // round(255 * _fillAlpha) wherever a class is present — never 306-clamped — and the
+                // colour ratios survive. fillStyle is opaque because destination-in ignores source RGB.
+                _ctx.setTransform(1, 0, 0, 1, 0, 0);
+                _ctx.globalCompositeOperation = 'destination-in';
+                _ctx.globalAlpha = _fillAlpha;
+                _ctx.fillStyle = '#fff';
+                _ctx.fillRect(0, 0, _view.width, _view.height);
+                _ctx.globalAlpha = 1;
+                // ---- PASS 2 — rims: opaque, ON TOP of every fill, registry order ----
+                for (var ri = 0; ri < _classes.length; ri++) {
+                    var rcls = _classes[ri];
+                    var rse = _silh[rcls.id];
+                    if (!rse || !rse.ctx) { continue; }          // no pixels / no ctx → skip
                     _sctx.setTransform(1, 0, 0, 1, 0, 0);
                     _sctx.clearRect(0, 0, _scratch.width, _scratch.height);
                     _sctx.imageSmoothingEnabled = false;
@@ -304,31 +363,21 @@
                     for (var di = 0; di < NDIR; di++) {
                         var ang = (Math.PI * 2 * di) / NDIR;
                         _sctx.setTransform(A, B, C, D, E0 + Math.cos(ang) * rimDev, F0 + Math.sin(ang) * rimDev);
-                        _sctx.drawImage(se.canvas, 0, 0);        // dilate silhouette in DEVICE space
+                        _sctx.drawImage(rse.canvas, 0, 0);       // dilate silhouette in DEVICE space
                     }
-                    // (2) recolor dilated silhouette → cls.color
+                    // (2) recolor dilated silhouette → rcls.color
                     _sctx.setTransform(1, 0, 0, 1, 0, 0);        // identity: tint whole canvas
                     _sctx.globalCompositeOperation = 'source-atop';
-                    _sctx.fillStyle = cls.color;
+                    _sctx.fillStyle = rcls.color;
                     _sctx.fillRect(0, 0, _scratch.width, _scratch.height);
                     // (3) punch out interior → outward rim only
                     _sctx.setTransform(A, B, C, D, E0, F0);      // base (un-offset) transform
                     _sctx.globalCompositeOperation = 'destination-out';
-                    _sctx.drawImage(se.canvas, 0, 0);
-                    // (4) translucent fill BEHIND the rim via destination-over
-                    _sctx.globalCompositeOperation = 'destination-over';
-                    _sctx.globalAlpha = _fillAlpha;
-                    _sctx.drawImage(se.canvas, 0, 0);            // shape @ _fillAlpha, behind rim (base transform)
-                    _sctx.globalAlpha = 1;
-                    // (5) tint fill → cls.color
-                    _sctx.setTransform(1, 0, 0, 1, 0, 0);        // identity: tint whole canvas
-                    _sctx.globalCompositeOperation = 'source-atop';
-                    _sctx.fillStyle = cls.color;
-                    _sctx.fillRect(0, 0, _scratch.width, _scratch.height);
-                    // (6) restore scratch defaults
+                    _sctx.drawImage(rse.canvas, 0, 0);
+                    // (4) restore scratch defaults
                     _sctx.globalCompositeOperation = 'source-over';
                     _sctx.globalAlpha = 1;
-                    // blit this class onto _view (classes are disjoint in mask space → disjoint here)
+                    // blit this class's rim onto _view, opaque, above every fill
                     _ctx.setTransform(1, 0, 0, 1, 0, 0);
                     _ctx.globalCompositeOperation = 'source-over';
                     _ctx.globalAlpha = 1;
@@ -435,11 +484,11 @@
                     _ctx.strokeStyle = POLY_SEL_COLOR;
                     _ctx.stroke();
                 }
-                // (b) handles: one filled square per vertex (the DRAGGED one in POLY_SEL_COLOR)
+                // (b) handles: one filled square per vertex (the SELECTED one in POLY_SEL_COLOR)
                 var hSide = POLY_HANDLE_PX * DPRs;
                 for (var qhi = 0; qhi < sdev.length; qhi++) {
                     var hx0 = sdev[qhi].x - hSide / 2, hy0 = sdev[qhi].y - hSide / 2;
-                    _ctx.fillStyle = (_dragVert && qhi === _dragVert.idx) ? POLY_SEL_COLOR : '#fff';
+                    _ctx.fillStyle = (_selVert && qhi === _selVert.idx) ? POLY_SEL_COLOR : '#fff';
                     _ctx.fillRect(hx0, hy0, hSide, hSide);
                     _ctx.lineWidth = 1 * DPRs;
                     _ctx.strokeStyle = 'rgba(0,0,0,0.8)';
@@ -526,13 +575,14 @@
             _classes = []; _activeClassId = 0;
             // ---- Inc-B: free undo/redo state ----
             _undoStack = []; _redoStack = []; _undoPre = null; _upctx = null; _strokeBBox = null;
+            _shadowPool = {}; _strokeSilhIds = [];   // Inc-14: drop the COW shadow pool with them
             // ---- Inc-7: drop the polygon draft INLINE (not via _dropDraft — that would schedule
             // an rAF this teardown has already cancelled) ----
             _polyDraft = null; _polyDownCss = null; _polyLastCss = null;
             _polyCurMask = null; _polyLastClick = null; _polyLastCommit = false;
             // ---- Inc-8: drop the edit records, selection, drag and the reshape scratch INLINE
             // (not via _dropDraft — same rAF reason as above) ----
-            _polys = []; _polySeq = 0; _selPoly = null; _dragVert = null;
+            _polys = []; _polySeq = 0; _selPoly = null; _dragVert = null; _selVert = null;
             _polyScratch = null; _psctx = null;
             _altSavedTool = null;                            // ---- Inc-9: drop any latched Alt hold ----
             _protectRows = null; _protectSig1 = 0; _protectSig2 = 0; _eraserDidErase = false;   // ---- Inc-11: drop the protect cache ----
@@ -633,8 +683,9 @@
         // ---- Inc-11 (M1): derived geometry signature — it READS THE DATA ITSELF, so no
         // mutation site can be missed: in-place rec.pts writes, loadPolygons repopulation
         // landing on the same length, undo/redo fixups, removeClass's array reassignment,
-        // and a mask resize all change it. classId is NOT folded — protection is
-        // class-agnostic (A3). Two independent 32-bit lanes (multipliers 31/37), both must
+        // and a mask resize all change it. Inc-14 (§6/A12): the ACTIVE classId IS folded —
+        // protection is scoped to the erase target, so the lazy cache re-keys on a class
+        // switch. Two independent 32-bit lanes (multipliers 31/37), both must
         // match: integer-only math, no strings, collision odds ~2^-64 per real change.
         // Cost O(total vertices) per ERASER dab, only while a polygon exists — the price
         // of invalidation that cannot be forgotten (per-dab, NEVER hoisted: loadLabel /
@@ -648,7 +699,7 @@
                 h1 = (Math.imul(h1, 31) + lo) | 0; h1 = (Math.imul(h1, 31) + hi) | 0;
                 h2 = (Math.imul(h2, 37) + lo) | 0; h2 = (Math.imul(h2, 37) + hi) | 0;
             }
-            fold(_polys.length); fold(_maskW); fold(_maskH);
+            fold(_polys.length); fold(_maskW); fold(_maskH); fold(_activeClassId);   // Inc-14: re-key on class switch
             for (var i = 0; i < _polys.length; i++) {
                 var pp = _polys[i].pts;
                 fold(pp.length);
@@ -657,14 +708,19 @@
             return { h1: h1, h2: h2 };
         }
 
-        // ---- Inc-11 (A2/A3): rebuild the protect set from EVERY committed record, all
-        // classes. Cost O(total polygon runs) — perimeter-ish — once per invalidation.
+        // ---- Inc-11 (A2/A3), Inc-14 (§6/A12): rebuild the protect set from every committed
+        // record OF THE ACTIVE CLASS. The eraser is active-class-only (user decision 2), so the
+        // only records a dab can desynchronise are the active class's; guarding the others is
+        // over-broad by construction and unrecoverable (class-2 brush paint inside class 1's
+        // committed polygon could never be erased by anyone).
+        // Cost O(active-class polygon runs) — perimeter-ish — once per invalidation.
         // Degenerate records need no guarding: _polyRuns returns [] for n<3 / non-finite,
         // clamps to the mask, and rasterizes self-intersections under NONZERO winding —
         // the protected set is BY CONSTRUCTION the exact pixel set each record committed.
         function _protectRebuild() {
             var all = [];
             for (var i = 0; i < _polys.length; i++) {
+                if (_polys[i].classId !== _activeClassId) { continue; }   // Inc-14: active class only
                 var runs = _polyRuns(_polys[i].pts);
                 for (var q = 0; q < runs.length; q++) { all.push(runs[q]); }
             }
@@ -676,8 +732,8 @@
         // _stampDisc. The M2 suppression flag is decided HERE, on the EMITTED list,
         // INCLUDING the zero-polygon pass-through — ResearchA's draft set it only past the
         // early return, which would have discarded every eraser stroke of a brush-only
-        // user. Protection is GEOMETRIC (A3): any pixel inside a committed ring is
-        // unerasable, whoever painted it.
+        // user. Protection is GEOMETRIC, and Inc-14 (§6/A12) SCOPES it to the ACTIVE class:
+        // any pixel inside a committed ring OF THE ERASE TARGET is unerasable, whoever painted it.
         function _protectFilter(runs) {
             if (_polys.length === 0) {
                 if (runs.length > 0) { _eraserDidErase = true; }
@@ -719,34 +775,27 @@
                     _strokeBBox = { x0: x0, y0: yy, x1: x1, y1: yy };   // [AUDIT 1] EXPLICIT keys — x0/x1 are locals, NOT shorthand
                 }
             }
-            var k;
             if (_tool === 'eraser') {
-                // ---- Inc-11 (A1): the eraser must never clear a pixel inside a committed
-                // polygon of ANY class (user decision 1, 2026-08-22). Filter the runs at
+                // ---- Inc-11 (A1), SCOPED BY Inc-14 (§6/A12, user decision 2): the eraser must
+                // never clear a pixel inside a committed polygon OF THE ERASE TARGET — i.e. of
+                // the ACTIVE class. Protection is no longer class-agnostic. Filter the runs at
                 // the ONE place a dab becomes pixels; the mask write and the silhouette
                 // loop below share this `runs` local, so both are filtered by construction.
                 // _strokeBBox (accumulated in the loop above) stays UNFILTERED — a superset
                 // bbox restores identical pixels through putImageData, just larger buffers.
                 runs = _protectFilter(runs);
-                // erase the mask AND every allocated silhouette over the runs
-                _fillRuns(_mctx, runs, 'destination-out', '#fff');
-                for (k in _silh) {
-                    if (_silh.hasOwnProperty(k) && _silh[k] && _silh[k].ctx) {
-                        _fillRuns(_silh[k].ctx, runs, 'destination-out', '#fff');
-                    }
+                // Inc-14: erase the ACTIVE class only (user decision 2) — other classes' planes
+                // are independent ground truth and an eraser dab must not touch them.
+                if (_silh[_activeClassId] && _silh[_activeClassId].ctx) {
+                    _shadow(_activeClassId);
+                    _fillRuns(_silh[_activeClassId].ctx, runs, 'destination-out', '#fff');
                 }
             } else {
-                // (a) write the class id into the indexed mask (alpha 1 overwrites any prior class)
-                _fillRuns(_mctx, runs, 'source-over', 'rgba(' + id + ',0,0,1)');
-                // (b) add these pixels to the active class silhouette (null-guarded)
+                // (b) add these pixels to the active class silhouette (null-guarded). Inc-14: no
+                // indexed _mask write and no exclusivity punch — classes may overlap freely.
+                _shadow(id);                                    // COW pre-image before this plane's first write
                 var se = _ensureSilh(id);
                 if (se) { _fillRuns(se.ctx, runs, 'source-over', '#fff'); }
-                // (c) remove these pixels from EVERY OTHER allocated silhouette (overwrite semantics)
-                for (k in _silh) {
-                    if (_silh.hasOwnProperty(k) && _silh[k] && _silh[k].ctx && String(k) !== String(id)) {
-                        _fillRuns(_silh[k].ctx, runs, 'destination-out', '#fff');
-                    }
-                }
             }
             _mctx.globalCompositeOperation = 'source-over';     // restore
         }
@@ -957,7 +1006,7 @@
             return { x0: x0, y0: y0, x1: x1, y1: y1 };            // EXPLICIT keys
         }
 
-        // ---- Inc-7: commit a closed polygon into the indexed mask (mirrors _stampDisc's three writes) ----
+        // ---- Inc-7: commit a closed polygon into its class plane (mirrors _stampDisc's write) ----
         // _stampDisc stays byte-identical (frozen); this reuses the same non-frozen _fillRuns helper.
         function _polyCommit(runs, cid) {
             if (!runs || runs.length === 0) { return; }       // makes the _maskDirty gate explicit
@@ -965,18 +1014,11 @@
             // before (class taken at CLOSE time); _reshapeCommit passes the RECORD's classId so a
             // reshape always writes the polygon's own class, never the active one.
             var id = (typeof cid === 'number') ? cid : _activeClassId;
-            var k;
-            // (a) write the class id into the indexed mask (alpha 1 overwrites any prior class)
-            _fillRuns(_mctx, runs, 'source-over', 'rgba(' + id + ',0,0,1)');
-            // (b) add these pixels to the active class silhouette (null-guarded)
+            // (b) add these pixels to the class silhouette (null-guarded). Inc-14: no indexed
+            // _mask write and no exclusivity punch — classes may overlap freely.
+            _shadow(id);                                     // COW pre-image before this plane's first write
             var se = _ensureSilh(id);
             if (se) { _fillRuns(se.ctx, runs, 'source-over', '#fff'); }
-            // (c) remove these pixels from EVERY OTHER allocated silhouette (overwrite semantics)
-            for (k in _silh) {
-                if (_silh.hasOwnProperty(k) && _silh[k] && _silh[k].ctx && String(k) !== String(id)) {
-                    _fillRuns(_silh[k].ctx, runs, 'destination-out', '#fff');
-                }
-            }
             // ---- Inc-B undo bbox, computed HERE over the CLAMPED runs ----
             // The brush accumulates _strokeBBox inside _stampDisc (frozen), which a polygon fill
             // never calls; raw vertices must not be used (an off-mask vertex would give an
@@ -1052,7 +1094,7 @@
             // _dropDraft BEFORE _endStroke, so nulling _dragVert here means the _endStroke prologue
             // sees nothing to commit — no mask write, no history entry. _polys is NOT touched here:
             // Esc must deselect, never delete committed polygons.
-            if (_selPoly !== null || _dragVert !== null) { _selPoly = null; _dragVert = null; _scheduleRender(); }
+            if (_selPoly !== null || _dragVert !== null) { _selPoly = null; _dragVert = null; _selVert = null; _scheduleRender(); }
             _polyLastClick = null; _polyDownCss = null; _polyLastCss = null; _polyCurMask = null;
         }
 
@@ -1115,9 +1157,10 @@
                 return;
             }
             _histBegin();
+            _shadow(rec.classId);   // Inc-14: COW pre-image — ONE plane covers both halves (I-21)
             // (4) erase O \ N, CLIPPED to pixels this class still owns (readback-free, via the
-            // silhouette). Other classes' silhouettes need no touch: a pixel owned by another class
-            // never enters the scratch, and a pixel owned by this one is already absent from theirs.
+            // silhouette). Other classes' silhouettes need no touch: Inc-14 makes the planes
+            // independent, so a reshape of THIS record can only ever move THIS class's pixels.
             var se = _silh[rec.classId];
             if (d.erase.length > 0 && se && se.ctx) {
                 if (!_polyScratch || _polyScratch.width !== _maskW || _polyScratch.height !== _maskH) {
@@ -1134,9 +1177,6 @@
                     _psctx.drawImage(se.canvas, 0, 0);        // scratch = erase ∩ {mask == classId}
                     _psctx.globalCompositeOperation = 'source-over';
                     // identity drawImage of an integer-sized BINARY canvas → no AA, no fractional ids
-                    _mctx.globalCompositeOperation = 'destination-out';
-                    _mctx.drawImage(_polyScratch, 0, 0);
-                    _mctx.globalCompositeOperation = 'source-over';
                     se.ctx.globalCompositeOperation = 'destination-out';
                     se.ctx.drawImage(_polyScratch, 0, 0);
                     se.ctx.globalCompositeOperation = 'source-over';
@@ -1173,34 +1213,70 @@
             for (var i = 0; i < _polys.length; i++) {
                 if (_polys[i] === rec) { _polys.splice(i, 1); break; }
             }
-            if (_selPoly === rec) { _selPoly = null; _dragVert = null; }
+            if (_selPoly === rec) { _selPoly = null; _dragVert = null; _selVert = null; }
             _scheduleRender();
         }
 
         // ---- Inc-B: stroke-level undo/redo helpers (non-frozen) ----
         // Class-op undo (add/remove/rename/recolor) is OUT OF SCOPE for Inc-B; undo scope is strokes only.
+        // ---- Inc-14 (M1/§7.2): COPY-ON-WRITE plane shadow. Called from every write path BEFORE
+        // that path's first write to plane `sid`, so _histCommit can read a true pre-image even
+        // though _histBegin (argument-less, called from the FROZEN _onPointerDown) cannot know
+        // which plane the stroke will touch. Idempotent per stroke. Cost = ONE GPU blit per
+        // shadowed plane, no readback — exactly today's _undoPre cost. An UNALLOCATED plane
+        // shadows as EMPTY, which is its correct pre-image.
+        function _shadow(sid) {
+            if (!_mask) { return; }
+            var key = String(sid);
+            if (_shadowPool.hasOwnProperty(key)) { return; }   // already shadowed this stroke
+            var cv = _undoPre, cx = _upctx;                    // take the ONE retained spare
+            _undoPre = null; _upctx = null;
+            if (!cv || !cx || cv.width !== _maskW || cv.height !== _maskH) {   // [AUDIT 5] re-alloc if mask size changed
+                cv = document.createElement('canvas');
+                cv.width = _maskW; cv.height = _maskH;
+                cx = cv.getContext('2d');
+                if (!cx) { return; }
+                cx.imageSmoothingEnabled = false;
+            }
+            cx.setTransform(1, 0, 0, 1, 0, 0);
+            cx.globalCompositeOperation = 'source-over';
+            cx.clearRect(0, 0, _maskW, _maskH);
+            var se = _silh[sid];
+            if (se && se.canvas) { cx.drawImage(se.canvas, 0, 0); }   // GPU blit, no readback
+            _shadowPool[key] = { canvas: cv, ctx: cx };
+            _strokeSilhIds.push(sid);
+        }
+
+        // Drop the per-stroke shadow pool, keeping exactly ONE canvas in the spare slot — steady
+        // state memory is today's single pre-stroke canvas, not a per-class pool (M1).
+        function _releaseShadows() {
+            var k;
+            for (k in _shadowPool) {
+                if (_shadowPool.hasOwnProperty(k) && _shadowPool[k] && !_undoPre) {
+                    _undoPre = _shadowPool[k].canvas; _upctx = _shadowPool[k].ctx;
+                }
+            }
+            _shadowPool = {};
+            _strokeSilhIds.length = 0;
+        }
+
         function _histBegin() {
             if (!_mask) { return; }
-            if (!_undoPre || _undoPre.width !== _maskW || _undoPre.height !== _maskH) {   // [AUDIT 5] re-alloc if mask size changed
-                _undoPre = document.createElement('canvas');
-                _undoPre.width = _maskW; _undoPre.height = _maskH;
-                _upctx = _undoPre.getContext('2d');
-                if (_upctx) { _upctx.imageSmoothingEnabled = false; }
-            }
-            if (_upctx) {
-                _upctx.clearRect(0, 0, _maskW, _maskH);
-                _upctx.drawImage(_mask, 0, 0);   // GPU blit, no readback
-            }
+            // Inc-14 (§7.3): NO _mask blit here — the pre-image is taken per PLANE, lazily, by
+            // _shadow() at that plane's first write. Returns last stroke's canvases to the spare.
+            _releaseShadows();
             _strokeBBox = null;
             _eraserDidErase = false;   // Inc-11 (M2): reset the per-stroke suppression flag
         }
 
-        // Inc-8: `tag` is OPTIONAL — {polyId, classId, ptsBefore, ptsAfter}. Entries WITHOUT it are
-        // byte-for-byte the Inc-B shape and behave exactly as before. There is no `kind`
-        // discriminator and no second restore path: every entry still carries a raster bbox pair;
+        // Inc-8: `tag` is OPTIONAL — {polyId, classId, ptsBefore, ptsAfter}. There is no `kind`
+        // discriminator and no second restore path: every entry still carries a raster bbox;
         // the vertex fields are a FIXUP applied after the raster restore (see _applyPolyFixup).
+        // Inc-14 (§7.1): the raster payload is `planes: [{sid, before, after}]` — ONE entry
+        // restores every plane the stroke touched and no plane it did not. The plane key is
+        // `sid`, NEVER `classId`: ent.classId is the Inc-8 POLYGON tag, merged below.
         function _histCommit(tag) {
-            if (!_strokeBBox || !_upctx || !_mctx) { return; }   // no paint this stroke (pan/no-op)
+            if (!_strokeBBox || !_mctx) { return; }   // no paint this stroke (pan/no-op)
             // ---- Inc-11 (M2): a FULLY suppressed eraser stroke (every dab landed inside
             // protected polygon interiors) pushes NO entry — it changed nothing, and
             // pushing would clear the redo chain below. _strokeBBox accumulates BEFORE the
@@ -1215,9 +1291,18 @@
             var h = _strokeBBox.y1 - _strokeBBox.y0 + 1;
             _strokeBBox = null;                                  // [AUDIT 13] null FIRST — makes re-entry a no-op
             if (w <= 0 || h <= 0) { return; }
-            var before = _upctx.getImageData(x, y, w, h);        // pre-stroke (blit shadow)
-            var after  = _mctx.getImageData(x, y, w, h);         // post-stroke
-            var ent = { x: x, y: y, w: w, h: h, before: before, after: after };
+            // Inc-14: one {sid, before, after} triple per plane this stroke shadowed. `before` comes
+            // from the COW shadow, `after` from the live plane — both over the SAME bbox.
+            var planes = [];
+            for (var pi = 0; pi < _strokeSilhIds.length; pi++) {
+                var sid = _strokeSilhIds[pi];
+                var sh = _shadowPool[String(sid)];
+                var tse = _ensureSilh(sid);
+                if (!sh || !tse) { continue; }
+                planes.push({ sid: sid, before: sh.ctx.getImageData(x, y, w, h), after: tse.ctx.getImageData(x, y, w, h) });
+            }
+            _releaseShadows();                                   // back to ONE retained canvas (M1)
+            var ent = { x: x, y: y, w: w, h: h, planes: planes };
             _undoStack.push(ent);
             if (tag) { ent.polyId = tag.polyId; ent.classId = tag.classId; ent.ptsBefore = tag.ptsBefore; ent.ptsAfter = tag.ptsAfter; }
             while (_undoStack.length > (opts.undoDepth || DEFAULTS.undoDepth)) { _undoStack.shift(); }
@@ -1228,10 +1313,10 @@
         // ---- Inc-11 (M3): push a TAG-ONLY entry (null raster) for the two zero-footprint
         // _reshapeCommit lanes — no pixel changed but the record did, and a record
         // mutation must invalidate redo AND be undoable. Same trim / redo-clear / fire
-        // discipline as _histCommit; undo()/redo() skip the raster restore on null
-        // before/after (invariant I4). These entries DO count against opts.undoDepth.
+        // discipline as _histCommit; undo()/redo() skip the raster restore on an EMPTY
+        // planes list (invariant I4). These entries DO count against opts.undoDepth.
         function _histPushTag(tag) {
-            var ent = { x: 0, y: 0, w: 0, h: 0, before: null, after: null };
+            var ent = { x: 0, y: 0, w: 0, h: 0, planes: [] };   // Inc-14: tag-only ⇒ no raster planes
             ent.polyId = tag.polyId; ent.classId = tag.classId;
             ent.ptsBefore = tag.ptsBefore; ent.ptsAfter = tag.ptsAfter;
             _undoStack.push(ent);
@@ -1276,11 +1361,19 @@
             if (pts === null || pts === undefined) {              // undo of a CREATION → drop the record
                 if (rec) {
                     _polys.splice(at, 1);
-                    if (_selPoly === rec) { _selPoly = null; _dragVert = null; }
+                    if (_selPoly === rec) { _selPoly = null; _dragVert = null; _selVert = null; }
                 }
                 return;
             }
-            if (rec) { rec.pts = _copyPts(pts); return; }
+            if (rec) {
+                // Inc-13 (OQ-4): the restored pts may have a DIFFERENT length — a surviving idx
+                // would name a shifted anchor. Conditional BY ID, not by identity (the not-found
+                // branch below re-creates records, so identity can dangle while the id holds) and
+                // not unconditional (an undo on a DIFFERENT polygon must not drop the highlight).
+                if (_selVert && _selVert.polyId === rec.id) { _selVert = null; }
+                rec.pts = _copyPts(pts);
+                return;
+            }
             // not found + pts present: redo of a creation (or a record dropped by loadPolygons).
             // Re-added at the TOP of the z-order; skipped silently if its class no longer exists
             // (the pixels are still restored — only the edit affordance is missing).
@@ -1294,12 +1387,16 @@
             if (_polyDraft || _dragVert) { return; }              // Inc-7/8: no-op mid-draft or mid-reshape-drag
             if (!_undoStack.length) { return; }
             var e = _undoStack.pop();
-            // Inc-11 (M3): tag-only entries (before === after === null) have no raster to
-            // restore — skip putImageData/_rebuildSilh/_maskDirty; the vertex fixup below
-            // is the whole restore (invariant I4).
-            if (e.before) {
-                _mctx.putImageData(e.before, e.x, e.y);
-                _rebuildSilh(e.x, e.y, e.w, e.h);
+            // Inc-11 (M3): tag-only entries carry an EMPTY planes list and have no raster to
+            // restore — skip putImageData/_maskDirty; the vertex fixup below is the whole
+            // restore (invariant I4). Inc-14 (§7.3): the restore is PER PLANE and there is NO
+            // _rebuildSilh call — re-deriving planes from the demoted _mask was the deterministic
+            // overlap destruction this increment exists to remove.
+            if (e.planes && e.planes.length) {
+                for (var pi = 0; pi < e.planes.length; pi++) {
+                    var use = _ensureSilh(e.planes[pi].sid);
+                    if (use) { use.ctx.putImageData(e.planes[pi].before, e.x, e.y); }
+                }
                 _maskDirty = true;                                // isEmpty stays coarse-true latch [AUDIT 10]
             }
             if (e.polyId !== undefined) { _applyPolyFixup(e.polyId, e.classId, e.ptsBefore); }
@@ -1314,12 +1411,14 @@
             if (_polyDraft || _dragVert) { return; }              // Inc-7/8: no-op mid-draft or mid-reshape-drag
             if (!_redoStack.length) { return; }
             var e = _redoStack.pop();
-            // Inc-11 (M3): tag-only entries (before === after === null) have no raster to
-            // restore — skip putImageData/_rebuildSilh/_maskDirty; the vertex fixup below
-            // is the whole restore (invariant I4).
-            if (e.after) {
-                _mctx.putImageData(e.after, e.x, e.y);
-                _rebuildSilh(e.x, e.y, e.w, e.h);
+            // Inc-11 (M3): tag-only entries carry an EMPTY planes list and have no raster to
+            // restore — skip putImageData/_maskDirty; the vertex fixup below is the whole
+            // restore (invariant I4). Inc-14 (§7.3): per-plane restore, NO _rebuildSilh.
+            if (e.planes && e.planes.length) {
+                for (var pi = 0; pi < e.planes.length; pi++) {
+                    var rse = _ensureSilh(e.planes[pi].sid);
+                    if (rse) { rse.ctx.putImageData(e.planes[pi].after, e.x, e.y); }
+                }
                 _maskDirty = true;
             }
             if (e.polyId !== undefined) { _applyPolyFixup(e.polyId, e.classId, e.ptsAfter); }
@@ -1449,10 +1548,17 @@
                         if (svd <= tolm && svd < bestD) { bestD = svd; bestK = svi; }
                     }
                     if (bestK >= 0) {
+                        // ---- Inc-13: the press SELECTS this anchor (yellow) and, in the same press,
+                        // arms the drag below. Selection is written BEFORE the latch so a release that
+                        // never moves still leaves the anchor selected; the existing _scheduleRender()
+                        // below paints it on this very press. idx mirrors _dragVert.idx (invariant I-13).
+                        // Backspace with this selection removes the anchor (_onKeyDown); Esc clears it.
+                        _selVert = { polyId: _selPoly.id, idx: bestK };
                         _view.setPointerCapture(e.pointerId);     // the EXISTING latch lines, reused
                         _activePointerId = e.pointerId;
                         _painting = true;
-                        _dragVert = { poly: _selPoly, idx: bestK, pts: _copyPts(_selPoly.pts) };
+                        _dragVert = { poly: _selPoly, idx: bestK, pts: _copyPts(_selPoly.pts),
+                                      downCss: pcss, moved: false };   // Inc-12: deadzone press origin — ON the literal (both sites)
                         _scheduleRender();
                         return;                                   // no vertex placed, no draft
                     }
@@ -1472,13 +1578,37 @@
                         _view.setPointerCapture(e.pointerId);
                         _activePointerId = e.pointerId;
                         _painting = true;
-                        _dragVert = { poly: _selPoly, idx: eBest.idx + 1, pts: ipts };
+                        // Inc-13: index coherence (invariant I-13) — the NEW anchor is the selected one.
+                        // _render draws from _dragVert.pts, which mid-insert holds one EXTRA point, so a
+                        // surviving stale _selVert would highlight the wrong handle. Side effect (ruled
+                        // intended, D-5): the inserted anchor is yellow and immediately Backspace-removable.
+                        _selVert = { polyId: _selPoly.id, idx: eBest.idx + 1 };
+                        _dragVert = { poly: _selPoly, idx: eBest.idx + 1, pts: ipts,
+                                      downCss: pcss, moved: false };   // Inc-12: deadzone fields — BOTH creation sites (never _polyDownCss)
                         _scheduleRender();
                         return;                                   // no vertex placed, no draft
                     }
                 }
                 // (2) a DRAFT always wins -> fall through to (iii)(iv) below unchanged.
                 if (!_polyDraft) {
+                    // (2.9) Inc-13c: a selection only governs INTERIOR clicks for its OWN class.
+                    //       Without this, a class-C polygon left selected while class D is active
+                    //       swallowed every interior press (3.5 keys on _selPoly identity, 4 on it
+                    //       being non-null) and blocked cross-class NESTING — the escape hatch for
+                    //       the accepted same-class limitation (ticket §11.4).
+                    //       PLACEMENT IS DELIBERATE AND TESTED: this sits BELOW clause (1) and the
+                    //       A4 edge insert, so a press in the POLY_HANDLE_PX band along the
+                    //       selected polygon's vertices/edges STILL reshapes that record even when
+                    //       its class is no longer active — pinned by inc11 I-09
+                    //       ("class switch KEEPS selection and insert uses the RECORD class") and
+                    //       inc8 R-16 ("reshape writes record's own class"). Moving this above
+                    //       clause (1) breaks both. The split is the design: BOUNDARY = edit the
+                    //       selected record, INTERIOR = draw in the active class.
+                    //       Deliberately NOT done in setActiveClass(): public API, and inc8 R-18
+                    //       calls it and then presses Esc against the live selection.
+                    if (_selPoly && _selPoly.classId !== _activeClassId) {
+                        _selPoly = null; _selVert = null;
+                    }
                     // (3) click inside a SAME-CLASS, not-currently-selected polygon -> select the
                     //     TOPMOST such record (last index first). The click is consumed: no latch,
                     //     no press, no vertex. A click inside a DIFFERENT-class polygon fails here
@@ -1489,9 +1619,30 @@
                         if (cand.classId !== _activeClassId || cand === _selPoly) { continue; }
                         if (_ptInPoly(cand.pts, pmd.x, pmd.y)) { hitp = cand; break; }
                     }
-                    if (hitp) { _selPoly = hitp; _scheduleRender(); return; }
-                    // (4) otherwise -> opening a draft DESELECTS (invariant I1), then (iii)(iv).
-                    _selPoly = null;
+                    if (hitp) { _selPoly = hitp; _selVert = null; _scheduleRender(); return; }   // Inc-13: another polygon clears the anchor
+                    // (3.5) Inc-13b: a click INSIDE the currently selected polygon KEEPS it
+                    //       selected and is CONSUMED. If an anchor was selected it is peeled
+                    //       off (the same end state as Esc #1). It NEVER opens a nested draft:
+                    //       clicking the middle of your own selected polygon must be a no-op,
+                    //       not a way to accidentally start a new one.
+                    //       ORDER: this sits AFTER the clause-3 scan, so a click into the
+                    //       OVERLAP of another same-class polygon still SELECTS that other
+                    //       record — clause 3 outranks this.
+                    if (_selPoly && _ptInPoly(_selPoly.pts, pmd.x, pmd.y)) {
+                        if (_selVert) { _selVert = null; _scheduleRender(); }
+                        return;                                  // consumed: no latch, no vertex
+                    }
+                    // (4) Inc-13b: the click hit NOTHING, but something IS selected -> act as
+                    //     Esc: DESELECT and CONSUME. It does NOT open a draft. A SECOND click,
+                    //     now with nothing selected, starts the new polygon as before. This
+                    //     stops "I clicked away to dismiss the selection" from silently
+                    //     placing the first vertex of a polygon the user never asked for.
+                    if (_selPoly) {
+                        _selPoly = null; _selVert = null; _dragVert = null;   // byte-for-byte the Esc-#2 end state
+                        _scheduleRender();
+                        return;                                  // consumed: no latch, no vertex
+                    }
+                    // (5) nothing selected -> fall through to (iii)(iv) and start/continue a draft.
                 }
                 // (iii) latch the press by REUSING the brush latch (_painting + capture), so
                 // right-drag pan, undo/redo and setActive(false) all behave mid-press as they do
@@ -1553,6 +1704,24 @@
                     if (!_painting || e.pointerId !== _activePointerId) { return; }
                     var pdm = _ptFromEvent(e);
                     if (!pdm) { return; }                         // off-mask sample skipped; the vertex stays put
+                    // ---- Inc-12: movement DEADZONE (the shipped jitter-nudge fix). Until the
+                    // press has travelled MORE than POLY_DRAG_PX CSS px from its origin, the
+                    // working copy is NOT written and nothing renders — a jittery double-click
+                    // press leaves rec.pts untouched, _ptsEqual stays true at release, and
+                    // _reshapeCommit returns before touching history. STICKY once crossed (a
+                    // drag that returns to its origin still counts as moved). The gate computes
+                    // its OWN CSS point: the `mcss` below is a hoisted var, still undefined
+                    // here. downCss/moved live ON the _dragVert literal (both creation sites) —
+                    // NEVER read _polyDownCss, which is null on the edge-insert lane. Applies
+                    // to BOTH _dragVert lanes (vertex grab AND Inc-11 edge-insert) uniformly:
+                    // a sub-threshold insert-drag now leaves the new vertex at its exact edge
+                    // projection. Same shape as the click->freehand promotion below.
+                    if (!_dragVert.moved) {
+                        var rdz = _view.getBoundingClientRect();
+                        var dcss = { x: e.clientX - rdz.left, y: e.clientY - rdz.top };
+                        if (Math.hypot(dcss.x - _dragVert.downCss.x, dcss.y - _dragVert.downCss.y) <= POLY_DRAG_PX) { return; }
+                        _dragVert.moved = true;
+                    }
                     _dragVert.pts[_dragVert.idx] = pdm;           // WORKING COPY only
                     _scheduleRender();
                     return;
@@ -1686,7 +1855,16 @@
             // when a draft was actually consumed, so an idle annotator never hijacks Esc/Enter.
             var key = e.key || '';
             // Inc-8: Esc ALSO deselects (and aborts a held reshape drag, via _dropDraft).
-            if (key === 'Escape') { if (_polyDraft || _selPoly) { e.preventDefault(); cancelPolygon(); } return; }
+            if (key === 'Escape') {
+                // Inc-13: the ANCHOR selection peels off FIRST, leaving the polygon selected;
+                // a second Esc then behaves exactly as before. NOT while a drag is live — a
+                // mid-drag Esc must still abort the drag through cancelPolygon/_dropDraft.
+                if (_selVert && !_dragVert && !_polyDraft) {
+                    e.preventDefault(); _selVert = null; _scheduleRender(); return;
+                }
+                if (_polyDraft || _selPoly) { e.preventDefault(); cancelPolygon(); }
+                return;
+            }
             if (key === 'Enter') { if (_polyDraft) { e.preventDefault(); finishPolygon(); } return; }
             if (e.ctrlKey || e.metaKey) {
                 var k = key.toLowerCase();
@@ -1714,9 +1892,40 @@
             }
             if (e.altKey || e.shiftKey) { return; }                // Alt combos are the browser's (Alt+Backspace =
                                                                    // history-back on some platforms); Shift is OSD zoom's
-            if (key === 'Backspace' || key === 'Delete') {         // R4 (§7)
+            if (key === 'Backspace' || key === 'Delete') {         // R4 (§7) + Inc-13 anchor lane
+                // ---- Inc-13 (spec §6.2a): ONE physical press = ONE removal. Without this,
+                // the OS auto-repeat of a HELD Backspace ESCALATES: keydown #1 removes the
+                // anchor and nulls _selVert while _selPoly survives, so keydown #2 sees a
+                // polygon-only selection and falls to the delete lane below — a user who
+                // held the key a beat too long loses the WHOLE record. Consumed, not
+                // ignored, so the browser's history-back default never fires either.
+                // Mirrors the Alt branch's own e.repeat guard above.
+                if (e.repeat) { e.preventDefault(); return; }
                 if (_selPoly && !_painting) {
-                    _reshapeCommit(_selPoly, null);                // erase footprint + remove record + one undo entry
+                    // ---- Inc-13: ANCHOR lane. Removal is a RESHAPE — rpts is a real array, NEVER
+                    // null (null is the polygon-delete lane below). The full three-conjunct validity
+                    // test guards the increment's only data-destroying path; the range check lives
+                    // HERE deliberately, as the counterpart to keeping it OUT of _render.
+                    if (_selVert && _selVert.polyId === _selPoly.id
+                        && _selVert.idx >= 0 && _selVert.idx < _selPoly.pts.length) {
+                        e.preventDefault();                        // consumed either way, refusal included —
+                                                                   // BEFORE the return below: a fall-through
+                                                                   // would delete the WHOLE polygon
+                        if (_selPoly.pts.length <= 3) { return; }  // a triangle keeps its three: refusal is
+                                                                   // consumed-and-inert; selection AND anchor
+                                                                   // stay (the anchor remains yellow)
+                        var rpts = _copyPts(_selPoly.pts);
+                        rpts.splice(_selVert.idx, 1);
+                        _selVert = null;                           // clearing condition 4, BEFORE the commit
+                                                                   // (the _dragVert-nulled-first precedent)
+                        _reshapeCommit(_selPoly, rpts);            // symmetric-difference repaint + ONE entry;
+                                                                   // a collinear anchor lands in the tag-only
+                                                                   // branch automatically
+                        _scheduleRender();                         // REQUIRED: _reshapeCommit does not render
+                                                                   // on the non-delete lane
+                        return;
+                    }
+                    _reshapeCommit(_selPoly, null);                // UNCHANGED polygon-delete lane
                     e.preventDefault();
                 }
                 return;                                            // nothing selected / mid-press: NOT consumed
@@ -1882,25 +2091,22 @@
                 return undefined;
             }
             if (!_classById(id)) { return undefined; }
-            // zero this class's pixels from the indexed mask via its silhouette (readback-free).
+            // Inc-14 (A5): dropping the PLANE is the whole operation — the planes are independent
+            // ground truth, so there is nothing to punch out of anything else. (The old _mctx
+            // punch destroyed OTHER classes' pixels wherever they overlapped this one.)
             // NOTE: does NOT touch _maskDirty — isEmpty stays the coarse first-paint latch (CODEX-2).
-            if (_silh[id] && _silh[id].ctx) {
-                _mctx.globalCompositeOperation = 'destination-out';
-                _mctx.drawImage(_silh[id].canvas, 0, 0);
-                _mctx.globalCompositeOperation = 'source-over';
-            }
             if (_silh[id]) { delete _silh[id]; }         // free the silhouette cache
             // ---- Inc-8: this class's edit records go with its pixels. Nothing holds the _polys
             // ARRAY object (only records, and the getter reads the variable), so a filter is safe.
             // The unconditional nulling costs nothing — a drag cannot be live during a host click
             // (the pointer is captured on _view) — and needs no reasoning about which record went.
             _polys = _polys.filter(function (p) { return p.classId !== id; });
-            _selPoly = null; _dragVert = null;
+            _selPoly = null; _dragVert = null; _selVert = null;
             for (var i = 0; i < _classes.length; i++) {
                 if (_classes[i].id === id) { _classes.splice(i, 1); break; }
             }
             if (_activeClassId === id) { _activeClassId = _classes[0].id; }
-            // Inc-B [AUDIT 3]: removeClass mutates mask pixels (destination-out above) →
+            // Inc-B [AUDIT 3]: removeClass destroys this class's pixels (the plane delete above) →
             // a stale undo entry would resurrect deleted-class pixels, so FLUSH history.
             // (Class-op undo — add/remove/rename/recolor — is OUT OF SCOPE for Inc-B.)
             _undoStack.length = 0; _redoStack.length = 0; _fireHistory();
@@ -2036,11 +2242,130 @@
             // selection/drag. This also aborts a drag hijacked by the host's async img.onload
             // (loadLabel is _frozen-guarded, not _painting-guarded). The host re-populates the
             // records afterwards via loadPolygons().
-            _polys.length = 0; _selPoly = null; _dragVert = null;
+            _polys.length = 0; _selPoly = null; _dragVert = null; _selVert = null;
             // (9) mark dirty + FLUSH history
             _maskDirty = true;
             _undoStack.length = 0; _redoStack.length = 0; _fireHistory();
             // (10) render
+            _render();
+            return true;
+        }
+
+        // ---- Inc-14 (§8.5/A10): load a WHOLE v3 session — one binary mask PNG per class — in ONE
+        // call. loadLabel cannot be called N times: it wipes _classes/_silh/_polys and both history
+        // stacks per call, so the second call would destroy the first's classes.
+        // [AUDIT 2] CONTRACT, same as loadLabel: every `entries[i].image` MUST be an ALREADY-DECODED
+        // ImageBitmap | HTMLImageElement (img.complete===true) | HTMLCanvasElement — the host does
+        // all file I/O; loadMasks is fully synchronous and does NO async decode.
+        //   entries = [{classId, image}]  (one per PNG supplied)
+        //   classes = the manifest's `classes` array (the ONLY File→class mapping; no filename parsing)
+        // RASTER ONLY: the two-step vector contract is KEPT — the HOST calls
+        // loadPolygons(manifest.polygons) afterwards, exactly as the legacy lane does.
+        // Never touches _mask; never calls _rebuildSilh (that would flatten the overlap away).
+        // Returns boolean; a malformed shape refuses ATOMICALLY (state untouched — loadPolygons precedent).
+        function loadMasks(entries, classes) {
+            if (_destroyed || !_mask || _frozen) {
+                if (!_mask && !_destroyed) { _warnOnce('no-image', 'OSDAnnotator: no image loaded yet'); }
+                return false;
+            }
+            // (1) structural validation FIRST — nothing is mutated until everything has passed
+            if (!Array.isArray(entries) || !Array.isArray(classes)) { return false; }
+            var i, j;
+            for (i = 0; i < entries.length; i++) {
+                var en = entries[i];
+                if (!en || typeof en.classId !== 'number' || !isFinite(en.classId) ||
+                    Math.floor(en.classId) !== en.classId || en.classId < 1 || !en.image) { return false; }
+                // Inc-14 [EXT-AUDIT 1]: `!en.image` is a TRUTHINESS test — a string or a plain
+                // object passes it and then throws inside drawImage() AFTER _classes/_silh have
+                // been replaced, destroying the previous session. Require a DRAWABLE source here,
+                // while nothing has been mutated yet (§8.5.1 atomic refusal).
+                var _im = en.image;
+                var _iw = _im.width || _im.naturalWidth || 0;
+                var _ih = _im.height || _im.naturalHeight || 0;
+                if (typeof _iw !== 'number' || typeof _ih !== 'number' || !isFinite(_iw) ||
+                    !isFinite(_ih) || _iw <= 0 || _ih <= 0) { return false; }
+            }
+            for (i = 0; i < classes.length; i++) {
+                var mc = classes[i];
+                if (!mc || typeof mc.id !== 'number' || !isFinite(mc.id) ||
+                    Math.floor(mc.id) !== mc.id || mc.id < 1) { return false; }
+            }
+            // (2) cap at maxClasses — keep the FIRST `cap` manifest classes, in array order
+            var cap = opts.maxClasses || MAX_CLASSES;
+            if (classes.length > cap) {
+                _warnOnce('load-overcap', 'OSDAnnotator: loaded label has more classes than the max — extra ids dropped');
+            }
+            // (3) rebuild _classes FROM THE MANIFEST — [AUDIT 8] IDS PRESERVED, NEVER RENUMBERED.
+            // Name/colour validation is loadLabel's, unchanged. EMPTY classes (a manifest entry with
+            // no PNG) are CREATED, with an unallocated plane — the Save→Load→Save round-trip rule.
+            var newClasses = [];
+            var keptIds = {};
+            for (i = 0; i < classes.length && newClasses.length < cap; i++) {
+                var cm = classes[i];
+                if (keptIds[cm.id]) { continue; }                 // ignore a duplicate id
+                var nm = (typeof cm.name === 'string' && String(cm.name).trim() !== '') ? String(cm.name).trim() : ('Class ' + cm.id);
+                var col = _validColor(cm.color) ? cm.color : PALETTE[(cm.id - 1) % PALETTE.length];
+                keptIds[cm.id] = true;
+                newClasses.push({ id: cm.id, name: nm, color: col });
+            }
+            if (newClasses.length === 0) {
+                newClasses.push({ id: 1, name: 'Class 1', color: PALETTE[0] });   // seed Inc-A default (_classes.length>=1 always)
+            }
+            // (4) pixels: SESSION REPLACE. Each entry is nearest-scaled onto a _maskW×_maskH temp
+            // canvas and thresholded at R > 127 (the Save encoding is 255/0; 127 is the midpoint).
+            // Entries whose classId is not a kept manifest class are SKIPPED SILENTLY (stale files,
+            // not malformed input — the loadPolygons precedent).
+            var tmp = document.createElement('canvas');
+            tmp.width = _maskW; tmp.height = _maskH;
+            var tctx = tmp.getContext('2d');
+            if (!tctx) { return false; }
+            tctx.imageSmoothingEnabled = false;
+            // Inc-14 [EXT-AUDIT 1]: snapshot BEFORE the commit so a throw inside the decode
+            // loop (drawImage TypeError, getImageData SecurityError on a tainted canvas)
+            // restores the previous session instead of leaving it half-destroyed.
+            var _prevClasses = _classes, _prevSilh = _silh, _prevActive = _activeClassId;
+            _classes = newClasses;
+            _silh = {};
+            var loadedAny = false;
+            try {
+            for (i = 0; i < entries.length; i++) {
+                var e2 = entries[i];
+                if (!keptIds[e2.classId]) { continue; }
+                var src = e2.image;
+                var sw = src.width || (src.naturalWidth || 0);
+                var sh = src.height || (src.naturalHeight || 0);
+                if (sw > 0 && sh > 0) {
+                    var srcAsp = sw / sh, dstAsp = _maskW / _maskH;
+                    if (Math.abs(srcAsp - dstAsp) / dstAsp > 0.01) {
+                        _warnOnce('load-aspect', 'OSDAnnotator: loaded label aspect differs from mask — nearest-scaled to fit');
+                    }
+                }
+                tctx.setTransform(1, 0, 0, 1, 0, 0);
+                tctx.globalCompositeOperation = 'source-over';
+                tctx.clearRect(0, 0, _maskW, _maskH);
+                tctx.drawImage(src, 0, 0, _maskW, _maskH);
+                var imgd = tctx.getImageData(0, 0, _maskW, _maskH);
+                var d = imgd.data;
+                for (j = 0; j < d.length; j += 4) {
+                    if (d[j] > 127) { d[j] = 255; d[j + 1] = 255; d[j + 2] = 255; d[j + 3] = 255; }
+                    else { d[j] = 0; d[j + 1] = 0; d[j + 2] = 0; d[j + 3] = 0; }
+                }
+                var se = _ensureSilh(e2.classId);
+                if (se) { se.ctx.putImageData(imgd, 0, 0); loadedAny = true; }
+            }
+            } catch (err) {
+                // [EXT-AUDIT 1] atomic refusal: undo the commit and report failure.
+                _classes = _prevClasses; _silh = _prevSilh; _activeClassId = _prevActive;
+                _warnOnce('load-masks-decode', 'OSDAnnotator: loadMasks could not decode a mask image — load refused, previous session kept');
+                return false;
+            }
+            // (5) active = first kept class; drop every edit record and any selection/drag. The
+            // loaded pixels carry NO vertices — the HOST re-populates them via loadPolygons().
+            _activeClassId = _classes[0].id;
+            _polys.length = 0; _selPoly = null; _dragVert = null; _selVert = null;
+            // (6) mark dirty (so isEmpty() goes false and Save works after a load) + FLUSH history
+            if (loadedAny) { _maskDirty = true; }
+            _undoStack.length = 0; _redoStack.length = 0; _fireHistory();
             _render();
             return true;
         }
@@ -2081,7 +2406,7 @@
                 if (!_mask && !_destroyed) { _warnOnce('no-image', 'OSDAnnotator: no image loaded yet'); }
                 return false;
             }
-            _polys.length = 0; _selPoly = null; _dragVert = null;   // ALWAYS first
+            _polys.length = 0; _selPoly = null; _dragVert = null; _selVert = null;   // ALWAYS first
             if (!Array.isArray(arr)) { _scheduleRender(); return false; }
             var i, k, r, ent;
             for (i = 0; i < arr.length; i++) {                      // pass 1: validate EVERYTHING
@@ -2109,14 +2434,19 @@
             return true;
         }
 
-        // GETTER (no guard/warn). ONE full-mask getImageData per call — Export-click only; never
-        // called from a render or status path.
+        // GETTER (no guard/warn). ONE full-plane getImageData per call — Export/Save-click only;
+        // never called from a render or status path.
+        // Inc-14 (A7/I-24): counts the class's OWN plane, alpha > 0. Under overlap the counts
+        // DOUBLE-COUNT — a pixel covered by two classes counts once for EACH. That is intended:
+        // there is no per-pixel owner any more. An unallocated plane counts 0.
         function getClassPixelCount(id) {
             if (_destroyed || !_mask || !_mctx) { return 0; }
             if (typeof id !== 'number' || !isFinite(id) || Math.floor(id) !== id) { return 0; }
-            var d = _mctx.getImageData(0, 0, _maskW, _maskH).data;
+            var se = _silh[id];
+            if (!se || !se.ctx) { return 0; }
+            var d = se.ctx.getImageData(0, 0, _maskW, _maskH).data;
             var n = 0;
-            for (var i = 0; i < d.length; i += 4) { if (d[i] === id && d[i + 3] > 0) { n++; } }
+            for (var i = 0; i < d.length; i += 4) { if (d[i + 3] > 0) { n++; } }
             return n;
         }
 
@@ -2187,21 +2517,23 @@
                 c.width = outW; c.height = outH;
                 var ectx = c.getContext('2d');
                 ectx.imageSmoothingEnabled = false;
-                ectx.drawImage(_mask, 0, 0, outW, outH);
+                // Inc-14 (A8/A9/A15): ALWAYS a per-class BINARY mask — the two-branch shape is
+                // gone. `opts2.classId` (integer, default = the active class) selects the plane so
+                // Save's per-class loop needs no setActiveClass round trip. `opts2.activeOnly` is
+                // ACCEPTED AND IGNORED: the binary is the only behaviour, so pre-Inc-14 callers
+                // passing activeOnly:true get exactly what they got. The indexed Save branch is
+                // deleted outright — after Inc-14 the module NEVER derives an indexed view.
+                var cid = (opts2 && typeof opts2.classId === 'number' && isFinite(opts2.classId))
+                    ? Math.floor(opts2.classId) : _activeClassId;
+                var se = _silh[cid];
+                if (se && se.canvas) { ectx.drawImage(se.canvas, 0, 0, outW, outH); }
                 var ed = ectx.getImageData(0, 0, outW, outH);
                 var d = ed.data;
-                var activeOnly = !!(opts2 && opts2.activeOnly);
-                var activeId = _activeClassId;   // captured once; nearest-scaled ids are exact
                 for (var i = 0; i < d.length; i += 4) {
-                    if (activeOnly) {
-                        // per-class BINARY mask (Export): white where the ACTIVE class is
-                        // painted (R === active id), black everywhere else. Fully opaque.
-                        var on = (d[i] === activeId) ? 255 : 0;
-                        d[i] = on; d[i + 1] = on; d[i + 2] = on; d[i + 3] = 255;
-                    } else {
-                        // indexed label mask (Save): R = class id (0=bg,1..N), OPAQUE, G=B=0.
-                        d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 255;   // R (d[i]) LEFT AS-IS = class id
-                    }
+                    // white where the class covers (plane alpha > 0), black elsewhere; fully opaque.
+                    // An unallocated or empty plane yields an all-black PNG.
+                    var on = (d[i + 3] > 0) ? 255 : 0;
+                    d[i] = on; d[i + 1] = on; d[i + 2] = on; d[i + 3] = 255;
                 }
                 ectx.putImageData(ed, 0, 0);
                 c.toBlob(function (blob) {
@@ -2257,6 +2589,7 @@
             getActiveClass: getActiveClass,
             // ---- Inc-B: persistence + stroke-level undo/redo API ----
             loadLabel: loadLabel,
+            loadMasks: loadMasks,        // Inc-14 (§8.5): the per-class v3 session load
             undo: undo,
             redo: redo,
             canUndo: canUndo,
@@ -2328,6 +2661,7 @@
             _polys:          { get: function () { return _polys; } },
             _selPoly:        { get: function () { return _selPoly; } },
             _dragVert:       { get: function () { return _dragVert; } },
+            _selVert:        { get: function () { return _selVert; } },   // Inc-13: the OBJECT {polyId, idx} | null (GETTER ONLY)
             __runsDiff:      { get: function () { return _runsDiff; } },
             __ptInPoly:      { get: function () { return _ptInPoly; } },
             // ---- Inc-9: Alt-hold latch (GETTER ONLY — every latch in tests is made by a dispatched
