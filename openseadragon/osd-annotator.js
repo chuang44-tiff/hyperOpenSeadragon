@@ -29,6 +29,11 @@
     var PALETTE = ['#4a7c8a', '#c0504d', '#9bbb59', '#8064a2', '#4bacc6', '#f79646',
                    '#2c4d75', '#a5a5a5', '#d99694', '#7f6084', '#4f81bd', '#c3d69b'];
 
+    // ---- Inc-15: raster → vector tracing constants (D3/D4) — NOT options, NOT runtime-tunable ----
+    var TRACE_TAU = 1.0;        // VW altitude floor, mask px (QuPath "Simplify shape" default)
+    var TRACE_CAP = 48;         // hard vertex cap per ring (outer AND hole), after the τ phase
+    var TRACE_MIN_AREA = 16;    // mask px²: components below are DROPPED, holes below are FILLED
+
     // ---- Inc-7: polygon freehand travel threshold (CSS px) — HARD-CODED, not an option ----
     var POLY_DRAG_PX = 6;
 
@@ -123,7 +128,17 @@
         // rendered as fill, never re-asserted at export/save/fill time, and may legally diverge
         // from the mask (brush over, eraser through, a later polygon on top, undo). Their ONLY
         // power is the symmetric-difference repaint of their OWN class when a vertex is dragged.
-        var _polys = [];               // [{id,classId,pts:[{x,y}]}] — array order = z-order (last = topmost)
+        var _polys = [];               // [{id,classId,pts:[{x,y}],holes?:[[{x,y}]],traced?:true}] — array order =
+                                       // z-order (last = topmost). Inc-15: `holes` (inner rings, NOT editable) and
+                                       // `traced` (machine-made marker) are OPTIONAL and absent on hand-drawn records.
+                                       // Inc-16: a brush/eraser stroke that meets a `traced` record re-traces the
+                                       // neighbourhood (`_retraceStroke`); hand-drawn records are never re-traced.
+        // ---- Inc-15 (§4.7): diagnostics record of the LAST _trace call — NOT state (I-28); read-only
+        // via __lastTraceStats. traceActiveClass overwrites `ms` with its end-to-end time (§5.2).
+        var _lastTraceStats = { regions: 0, holes: 0, dropped: 0, holesFilled: 0, capped: 0, ms: 0 };
+        // ---- Inc-16 (§5.7): end-to-end diagnostics of STROKE re-traces — NOT state; read-only via
+        // __retraceStats. _lastTraceStats stays the tracer's own (overwritten per _trace call).
+        var _retraceStats = { runs: 0, ms: 0, crop: null, grown: 0 };
         var _polySeq = 0;              // monotonic id source (++_polySeq per append); reset only by destroy
         var _selPoly = null;           // null | record reference into _polys — the selected polygon
         var _dragVert = null;          // null | {poly, idx, pts, downCss, moved} — pts is a WORKING COPY (no mask
@@ -583,6 +598,7 @@
             // ---- Inc-8: drop the edit records, selection, drag and the reshape scratch INLINE
             // (not via _dropDraft — same rAF reason as above) ----
             _polys = []; _polySeq = 0; _selPoly = null; _dragVert = null; _selVert = null;
+            _retraceStats = { runs: 0, ms: 0, crop: null, grown: 0 };   // ---- Inc-16 (§5.7): drop the re-trace diagnostics ----
             _polyScratch = null; _psctx = null;
             _altSavedTool = null;                            // ---- Inc-9: drop any latched Alt hold ----
             _protectRows = null; _protectSig1 = 0; _protectSig2 = 0; _eraserDidErase = false;   // ---- Inc-11: drop the protect cache ----
@@ -685,7 +701,10 @@
         // landing on the same length, undo/redo fixups, removeClass's array reassignment,
         // and a mask resize all change it. Inc-14 (§6/A12): the ACTIVE classId IS folded —
         // protection is scoped to the erase target, so the lazy cache re-keys on a class
-        // switch. Two independent 32-bit lanes (multipliers 31/37), both must
+        // switch. Inc-15: hole rings are folded too — a re-trace that only changes holes
+        // must invalidate. Inc-16: the `traced` marker is folded — a record that only flips
+        // the marker (hand-drawn → traced, or undo of it) must invalidate.
+        // Two independent 32-bit lanes (multipliers 31/37), both must
         // match: integer-only math, no strings, collision odds ~2^-64 per real change.
         // Cost O(total vertices) per ERASER dab, only while a polygon exists — the price
         // of invalidation that cannot be forgotten (per-dab, NEVER hoisted: loadLabel /
@@ -704,6 +723,11 @@
                 var pp = _polys[i].pts;
                 fold(pp.length);
                 for (var k = 0; k < pp.length; k++) { fold(pp[k].x); fold(pp[k].y); }
+                var hh = _polys[i].holes;
+                fold(hh ? hh.length : 0);                                   // Inc-15 (A12): holes re-key the cache
+                if (hh) { for (var hi = 0; hi < hh.length; hi++) { var hr = hh[hi]; fold(hr.length);
+                    for (var hk = 0; hk < hr.length; hk++) { fold(hr[hk].x); fold(hr[hk].y); } } }
+                fold(_polys[i].traced === true ? 1 : 0);                    // Inc-16 (A2): the marker alone re-keys the cache
             }
             return { h1: h1, h2: h2 };
         }
@@ -720,8 +744,8 @@
         function _protectRebuild() {
             var all = [];
             for (var i = 0; i < _polys.length; i++) {
-                if (_polys[i].classId !== _activeClassId) { continue; }   // Inc-14: active class only
-                var runs = _polyRuns(_polys[i].pts);
+                if (_polys[i].classId !== _activeClassId || _polys[i].traced === true) { continue; }   // Inc-14: active class only; Inc-16: traced records protect nothing
+                var runs = _recRuns(_polys[i].pts, _polys[i].holes);   // Inc-15 (I-30): outer − holes
                 for (var q = 0; q < runs.length; q++) { all.push(runs[q]); }
             }
             _protectRows = _mergeRunsToRows(all);
@@ -820,9 +844,11 @@
         // QuPath's PolygonROI WIND_NON_ZERO) — no coverage, no AA, no vertex rounding.
         // ctx.fill() on _mctx is FORBIDDEN: Canvas antialiases path fills regardless of
         // imageSmoothingEnabled, and a fractional R in an indexed label mask is an invalid class id.
-        function _polyRuns(pts) {
+        function _polyRuns(pts, w, h) {
             var out = [];
             if (!pts) { return out; }
+            var W = _maskW, H = _maskH;
+            if (isFinite(w) && w > 0 && isFinite(h) && h > 0) { W = w; H = h; }   // Inc-15: explicit dims (pre-init tests)
             var n = pts.length;
             if (n < 3) { return out; }                       // < 3 vertices encloses nothing
             var minY = Infinity, maxY = -Infinity;
@@ -834,7 +860,7 @@
                 if (p.y > maxY) { maxY = p.y; }
             }
             var j0 = Math.max(0, Math.floor(minY));
-            var j1 = Math.min(_maskH - 1, Math.ceil(maxY));   // rows outside the mask are never visited
+            var j1 = Math.min(H - 1, Math.ceil(maxY));   // rows outside the mask are never visited
             for (var j = j0; j <= j1; j++) {
                 var yc = j + 0.5;                            // scanline at the pixel CENTRE
                 var cr = [];
@@ -857,7 +883,7 @@
                     if (wind === 0) { continue; }             // NONZERO rule (even-odd is NOT the rule)
                     // columns whose centre lies in the half-open span [cr[c].x, cr[c+1].x)
                     var i0 = Math.max(0, Math.ceil(cr[c].x - 0.5));
-                    var i1 = Math.min(_maskW - 1, Math.ceil(cr[c + 1].x - 0.5) - 1);
+                    var i1 = Math.min(W - 1, Math.ceil(cr[c + 1].x - 0.5) - 1);
                     if (i1 < i0) { continue; }
                     out.push({ x: i0, y: j, w: (i1 - i0 + 1) });   // one integer run, clamped to the mask
                 }
@@ -1006,6 +1032,582 @@
             return { x0: x0, y0: y0, x1: x1, y1: y1 };            // EXPLICIT keys
         }
 
+        // =====================================================================================
+        // ---- Inc-15 ---- raster → vector TRACING (Inc-15 build spec, 2026-08-27)
+        // Everything in this block is NEW and NON-FROZEN. Order (spec §4.1): _trace + its private
+        // _trace* helpers (§4), _recRuns (§6.2), _copyRec / _applyPolySet (§7.2), _validRing (§8.2),
+        // traceActiveClass (§5).
+        // =====================================================================================
+
+        function _traceNow() {
+            return (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+                ? performance.now() : Date.now();
+        }
+
+        // Signed shoelace area, ½·Σ(x_k·y_{k+1} − x_{k+1}·y_k). In y-down mask coordinates a ring
+        // walked with the filled side on its RIGHT is > 0 for an OUTER ring and < 0 for a HOLE (§3).
+        function _traceShoelace(pts) {
+            var s = 0, n = pts.length;
+            for (var i = 0; i < n; i++) {
+                var a = pts[i], b = pts[(i + 1) % n];
+                s += a.x * b.y - b.x * a.y;
+            }
+            return s / 2;
+        }
+
+        // ---- Inc-15 (§4.3): crack-lattice ring walk on the PADDED label plane `lab` (stride W).
+        // Starts at padded corner (x0,y0) = top-left corner of an L pixel whose top edge is a
+        // boundary edge, heading E, and keeps label L on the RIGHT: at every corner, with d the
+        // incoming direction, `lab(pR) ≠ L` → turn right; else `lab(pL) = L` → turn left; else
+        // straight (saddles turn RIGHT — SEPARATING, matching 4-connectivity). A vertex is emitted
+        // at every direction change (collinear corners never); the start corner is always a turn
+        // and is emitted first. Every E-heading edge marks visitedTop of the pixel below it. The
+        // ring ends when the walker is back at c0 heading E. Coordinates are de-padded (−1) to
+        // MASK px. Directions: 0 = E, 1 = S, 2 = W, 3 = N; right of d = (d+1)&3, left = (d+3)&3.
+        function _traceWalk(lab, visitedTop, W, x0, y0, L) {
+            var pts = [{ x: x0 - 1, y: y0 - 1 }];
+            var x = x0, y = y0, d = 0;
+            visitedTop[y * W + x] = 1; x++;                     // first edge: E along the start pixel's top
+            for (;;) {
+                var pR, pL;                                       // the two pixels AHEAD of corner (x,y), §4.3 table
+                if (d === 0)      { pR = y * W + x;             pL = (y - 1) * W + x; }
+                else if (d === 1) { pR = y * W + x - 1;         pL = y * W + x; }
+                else if (d === 2) { pR = (y - 1) * W + x - 1;   pL = y * W + x - 1; }
+                else              { pR = (y - 1) * W + x;       pL = (y - 1) * W + x - 1; }
+                var nd;
+                if (lab[pR] !== L)      { nd = (d + 1) & 3; }     // turn right
+                else if (lab[pL] === L) { nd = (d + 3) & 3; }     // turn left
+                else                    { nd = d; }               // straight
+                if (x === x0 && y === y0 && nd === 0) { break; }  // back at c0 heading E: the ring is closed
+                if (nd !== d) { pts.push({ x: x - 1, y: y - 1 }); d = nd; }
+                if (d === 0)      { visitedTop[y * W + x] = 1; x++; }
+                else if (d === 1) { y++; }
+                else if (d === 2) { x--; }
+                else              { y--; }
+            }
+            return pts;
+        }
+
+        // ---- Inc-15 (§4.5.2): Visvalingam–Whyatt on ONE ring. Circular doubly-linked list over the
+        // ring's vertex indices; binary min-heap keyed on ALTITUDE alt(v) = 2·area(prev,v,next) /
+        // |prev − next| (0 when |prev − next| = 0), ties broken by the LOWER original index; lazy
+        // invalidation by per-vertex version stamp. Phase τ: while count > 3 and min altitude ≤ tau
+        // (INCLUSIVE — §0a L2, QuPath's own rule), remove. Phase cap: while count > cap (and > 3),
+        // remove the minimum. Guard: never below 3. `stats.capped` counts rings still > cap when
+        // phase τ ended. Vertices are REMOVED, never moved — the output is a subset of the input in
+        // ring order, freshly allocated. Deliberately keyed on altitude (A7) with guard 3 (D3), NOT
+        // QuPath's area queue / max(n/100, 3) — approved divergences, not to be "corrected".
+        function _traceSimplify(ring, tau, cap, stats) {
+            var n = ring.length, i;
+            var out = [];
+            if (n <= 3) {
+                if (n > cap) { stats.capped++; }
+                for (i = 0; i < n; i++) { out.push({ x: ring[i].x, y: ring[i].y }); }
+                return out;
+            }
+            var prev = new Int32Array(n), next = new Int32Array(n), ver = new Int32Array(n);
+            var alive = new Uint8Array(n);
+            var heap = [];
+            function altOf(v) {
+                var a = ring[prev[v]], b = ring[v], c = ring[next[v]];
+                var dx = c.x - a.x, dy = c.y - a.y;
+                var L2 = dx * dx + dy * dy;
+                if (L2 === 0) { return 0; }
+                return Math.abs((b.x - a.x) * dy - (b.y - a.y) * dx) / Math.sqrt(L2);
+            }
+            function less(e, f) { return e.a < f.a || (e.a === f.a && e.i < f.i); }
+            function push(e) {
+                heap.push(e);
+                var k = heap.length - 1;
+                while (k > 0) {
+                    var pk = (k - 1) >> 1;
+                    if (!less(heap[k], heap[pk])) { break; }
+                    var t = heap[k]; heap[k] = heap[pk]; heap[pk] = t; k = pk;
+                }
+            }
+            function pop() {
+                var top = heap[0];
+                var last = heap.pop();
+                if (heap.length) {
+                    heap[0] = last;
+                    var k = 0, len = heap.length;
+                    for (;;) {
+                        var l = 2 * k + 1, r = l + 1, m = k;
+                        if (l < len && less(heap[l], heap[m])) { m = l; }
+                        if (r < len && less(heap[r], heap[m])) { m = r; }
+                        if (m === k) { break; }
+                        var t = heap[k]; heap[k] = heap[m]; heap[m] = t; k = m;
+                    }
+                }
+                return top;
+            }
+            function peek() {                                     // discard stale entries, return the live minimum
+                while (heap.length) {
+                    var e = heap[0];
+                    if (alive[e.i] && e.v === ver[e.i]) { return e; }
+                    pop();
+                }
+                return null;
+            }
+            for (i = 0; i < n; i++) { prev[i] = (i + n - 1) % n; next[i] = (i + 1) % n; alive[i] = 1; }
+            for (i = 0; i < n; i++) { push({ a: altOf(i), i: i, v: 0 }); }
+            var count = n;
+            function removeMin() {                                // caller guarantees peek() !== null
+                var e = pop();
+                alive[e.i] = 0;
+                var pi = prev[e.i], ni = next[e.i];
+                next[pi] = ni; prev[ni] = pi;
+                count--;
+                ver[pi]++; push({ a: altOf(pi), i: pi, v: ver[pi] });
+                ver[ni]++; push({ a: altOf(ni), i: ni, v: ver[ni] });
+            }
+            while (count > 3) {                                   // phase τ (inclusive)
+                var e1 = peek();
+                if (!e1 || !(e1.a <= tau)) { break; }
+                removeMin();
+            }
+            if (count > cap) { stats.capped++; }
+            while (count > cap && count > 3) {                    // phase cap, guard 3
+                if (!peek()) { break; }
+                removeMin();
+            }
+            var s = 0;
+            while (s < n && !alive[s]) { s++; }
+            var cur = s;
+            do { out.push({ x: ring[cur].x, y: ring[cur].y }); cur = next[cur]; } while (cur !== s);
+            return out;
+        }
+
+        // ---- Inc-15 (§4): THE PURE TRACER. `occ` is a Uint8Array(w*h), row-major, index y*w+x,
+        // NONZERO = filled; w, h ≥ 1; opts optional {tau, cap, minArea} (each defaults to its
+        // constant). Returns [{pts:[{x,y}], holes:[[{x,y}],…], area}] — `holes` ALWAYS an array —
+        // ordered (nesting rank ASC, area DESC, label ASC). Reads NO module state, never mutates
+        // occ, allocates fresh output per call; its ONE side effect is overwriting _lastTraceStats
+        // (§4.7). Callable pre-init. Steps: (1) 4-connected component labelling on a 1-px-padded
+        // Int32Array; (2) crack-lattice ring walk (outer shoelace > 0, hole < 0 — the label IS the
+        // parent link); (3) nesting rank by 8-connected CAVITY labelling of the background in the
+        // SAME array with negative ids; (4) min-area, VW per ring, the ≥ 1-px invariant; (5) order.
+        function _trace(occ, w, h, opts) {
+            var t0 = _traceNow();
+            var tau = (opts && opts.tau !== undefined) ? opts.tau : TRACE_TAU;
+            var cap = (opts && opts.cap !== undefined) ? opts.cap : TRACE_CAP;
+            var minArea = (opts && opts.minArea !== undefined) ? opts.minArea : TRACE_MIN_AREA;
+            var stats = { regions: 0, holes: 0, dropped: 0, holesFilled: 0, capped: 0, ms: 0 };
+            var out = [];
+            if (!occ || !(w >= 1) || !(h >= 1)) {
+                stats.ms = _traceNow() - t0; _lastTraceStats = stats;
+                return out;
+            }
+            var W = w + 2, H = h + 2;                             // padded plane; the 1-px border is background
+            var lab = new Int32Array(W * H);                      // 0 = unlabelled; L ≥ 1 foreground; −k background (step 3)
+            var stack = [];
+            var p, px, py, q, qx, qy, prow, i;
+            // ---- step 1: 4-connected component labelling. Foreground is read from occ directly ----
+            var area = [0], topLeft = [0];                        // indexed by label L; slot 0 unused
+            var L = 0;
+            for (py = 1; py <= h; py++) {
+                prow = py * W;
+                var orow = (py - 1) * w - 1;                      // occ index of padded (px,py) = orow + px
+                for (px = 1; px <= w; px++) {
+                    p = prow + px;
+                    if (lab[p] !== 0 || occ[orow + px] === 0) { continue; }
+                    L++;
+                    lab[p] = L; topLeft.push(p);
+                    var cnt = 0;
+                    stack.push(p);
+                    while (stack.length) {
+                        q = stack.pop(); cnt++;
+                        qy = (q / W) | 0; qx = q - qy * W;
+                        var oq = (qy - 1) * w + (qx - 1);         // occ index of q (always interior)
+                        // the pad is never foreground: the coordinate tests keep every read inside occ
+                        if (qx > 1 && lab[q - 1] === 0 && occ[oq - 1] !== 0) { lab[q - 1] = L; stack.push(q - 1); }
+                        if (qx < w && lab[q + 1] === 0 && occ[oq + 1] !== 0) { lab[q + 1] = L; stack.push(q + 1); }
+                        if (qy > 1 && lab[q - W] === 0 && occ[oq - w] !== 0) { lab[q - W] = L; stack.push(q - W); }
+                        if (qy < h && lab[q + W] === 0 && occ[oq + w] !== 0) { lab[q + W] = L; stack.push(q + W); }
+                    }
+                    area.push(cnt);
+                }
+            }
+            // ---- step 2: ring enumeration + walk. Start at every L pixel whose top edge is a boundary
+            // edge and has not been traversed; classify by the sign of the raw shoelace area ----
+            var outerOf = new Array(L + 1), holesOf = new Array(L + 1);
+            var visitedTop = new Uint8Array(W * H);
+            for (py = 1; py <= h; py++) {
+                prow = py * W;
+                for (px = 1; px <= w; px++) {
+                    p = prow + px;
+                    var lp = lab[p];
+                    if (lp <= 0 || lab[p - W] === lp || visitedTop[p] !== 0) { continue; }
+                    var ring = _traceWalk(lab, visitedTop, W, px, py, lp);
+                    if (_traceShoelace(ring) > 0) { outerOf[lp] = ring; }
+                    else { (holesOf[lp] || (holesOf[lp] = [])).push(ring); }
+                }
+            }
+            // ---- step 3: nesting rank by 8-connected CAVITY labelling (negative ids, same array).
+            // Seed at padded index 0 so the OUTSIDE is −1; parent[k] = the label directly above
+            // cavity k's topmost-leftmost pixel; rank[L] = 0 if the pixel above topLeft[L] is
+            // outside, else rank[parent] + 1 — one pass in label order, parents always ranked first ----
+            var parent = [0, 0];                                  // indexed by k = −lab; slots 0/1 unused
+            var K = 0, total = W * H, Wm1 = W - 1, Hm1 = H - 1;
+            for (p = 0; p < total; p++) {
+                if (lab[p] !== 0) { continue; }
+                K++;
+                var neg = -K;
+                lab[p] = neg; stack.push(p);
+                while (stack.length) {
+                    q = stack.pop();
+                    qy = (q / W) | 0; qx = q - qy * W;
+                    var xl = qx > 0, xr = qx < Wm1, yu = qy > 0, yd = qy < Hm1;
+                    if (xl && lab[q - 1] === 0)          { lab[q - 1] = neg;     stack.push(q - 1); }
+                    if (xr && lab[q + 1] === 0)          { lab[q + 1] = neg;     stack.push(q + 1); }
+                    if (yu && lab[q - W] === 0)          { lab[q - W] = neg;     stack.push(q - W); }
+                    if (yd && lab[q + W] === 0)          { lab[q + W] = neg;     stack.push(q + W); }
+                    if (yu && xl && lab[q - W - 1] === 0) { lab[q - W - 1] = neg; stack.push(q - W - 1); }
+                    if (yu && xr && lab[q - W + 1] === 0) { lab[q - W + 1] = neg; stack.push(q - W + 1); }
+                    if (yd && xl && lab[q + W - 1] === 0) { lab[q + W - 1] = neg; stack.push(q + W - 1); }
+                    if (yd && xr && lab[q + W + 1] === 0) { lab[q + W + 1] = neg; stack.push(q + W + 1); }
+                }
+                if (K >= 2) { parent.push(lab[p - W]); }          // the seed is the cavity's top-left; above it is foreground
+            }
+            var rank = new Int32Array(L + 1);
+            for (i = 1; i <= L; i++) {
+                var above = lab[topLeft[i] - W];                  // always background (§4.4)
+                if (above === -1) { rank[i] = 0; continue; }
+                var pl = parent[-above];
+                rank[i] = (pl > 0 ? rank[pl] : 0) + 1;
+            }
+            // ---- step 4: min-area, VW per ring (outer AND holes), the ≥ 1-px invariant ----
+            var recs = [];
+            for (i = 1; i <= L; i++) {
+                if (area[i] < minArea) { stats.dropped++; continue; }
+                var outer = outerOf[i];
+                if (!outer) { stats.dropped++; continue; }        // unreachable: every component has one outer ring
+                var hl = holesOf[i] || [];
+                var sholes = [];
+                for (var hi = 0; hi < hl.length; hi++) {
+                    if (Math.abs(_traceShoelace(hl[hi])) < minArea) { stats.holesFilled++; continue; }   // FILLED
+                    sholes.push(_traceSimplify(hl[hi], tau, cap, stats));
+                }
+                var spts = _traceSimplify(outer, tau, cap, stats);
+                if (_recRuns(spts, sholes, w, h).length === 0) { stats.dropped++; continue; }   // A19: never emit an empty record
+                recs.push({ pts: spts, holes: sholes, area: area[i], rank: rank[i], label: i });
+            }
+            // ---- step 5: order (rank ASC, area DESC, label ASC) and output ----
+            recs.sort(function (u, v) {
+                if (u.rank !== v.rank) { return u.rank - v.rank; }
+                if (u.area !== v.area) { return v.area - u.area; }
+                return u.label - v.label;
+            });
+            for (i = 0; i < recs.length; i++) {
+                out.push({ pts: recs[i].pts, holes: recs[i].holes, area: recs[i].area });
+                stats.holes += recs[i].holes.length;
+            }
+            stats.regions = out.length;
+            stats.ms = _traceNow() - t0;
+            _lastTraceStats = stats;
+            return out;
+        }
+
+        // ---- Inc-15 (§6.2, A5): rasterise a RECORD — runs(outer) − ∪runs(holes). Pure beyond
+        // _polyRuns's dims fallback. A hole partly or wholly outside the outer subtracts nothing
+        // there — no special case. Every site that rasterises a record goes through here (I-30).
+        function _recRuns(pts, holes, w, h) {
+            var outer = _polyRuns(pts, w, h);
+            if (!holes || holes.length === 0 || outer.length === 0) { return outer; }
+            var all = [];
+            for (var i = 0; i < holes.length; i++) {
+                var hr = _polyRuns(holes[i], w, h);
+                for (var q = 0; q < hr.length; q++) { all.push(hr[q]); }
+            }
+            return _runsSubtract(outer, _mergeRunsToRows(all));
+        }
+
+        // ---- Inc-15 (§7.2): deep copy of a record WITH its id. Emits `holes` ONLY when non-empty
+        // and `traced` ONLY when exactly true — never `holes: []`, never `traced: false` (§3).
+        function _copyRec(rec) {
+            var c = { id: rec.id, classId: rec.classId, pts: _copyPts(rec.pts) };
+            if (rec.holes && rec.holes.length) {
+                var hs = [];
+                for (var i = 0; i < rec.holes.length; i++) { hs.push(_copyPts(rec.holes[i])); }
+                c.holes = hs;
+            }
+            if (rec.traced === true) { c.traced = true; }
+            return c;
+        }
+
+        // ---- Inc-15 (§7.2): REPLACE class `cid`'s record set with deep copies of `recs` (ids kept).
+        // Never writes pixels, never schedules a render (undo/redo call _render() themselves, as
+        // _applyPolyFixup documents). Restored records go to the END of _polys (top of z-order) in
+        // their own relative order; records whose class no longer exists are skipped silently.
+        function _applyPolySet(cid, recs) {
+            _polys = _polys.filter(function (p) { return p.classId !== cid; });
+            for (var i = 0; i < recs.length; i++) {
+                var c = _copyRec(recs[i]);
+                if (c.id > _polySeq) { _polySeq = c.id; }
+                if (_classById(c.classId)) { _polys.push(c); }
+            }
+            if (_selPoly && _selPoly.classId === cid) { _selPoly = null; _selVert = null; }   // _dragVert is null under undo/redo's guard
+        }
+
+
+        // ---- Inc-16 ----
+        // (§5.3) The INCLUSIVE pixel bbox {x0,y0,x1,y1} of a ring. EXACT for a traced record's
+        // integer crack vertices; a SUPERSET after a hand reshape of a traced record (float
+        // vertices), because _polyRuns fills centre-inside pixels only (E7). Holes lie inside the
+        // outer, so `pts` alone suffices. A degenerate result (x1 < x0 or y1 < y0) is SKIPPED by
+        // every caller BEFORE dilating — dilation would otherwise widen it into a 1-px strip.
+        function _recBBox(pts) {
+            var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+            for (var i = 0; i < pts.length; i++) {
+                var p = pts[i];
+                if (p.x < x0) { x0 = p.x; } if (p.x > x1) { x1 = p.x; }
+                if (p.y < y0) { y0 = p.y; } if (p.y > y1) { y1 = p.y; }
+            }
+            return { x0: Math.floor(x0), y0: Math.floor(y0), x1: Math.ceil(x1) - 1, y1: Math.ceil(y1) - 1 };
+        }
+
+        // ---- Inc-16 (§6, A6/A7/M5): swap class `cid`'s records — drop `drop` BY ID, append deep
+        // copies of `add`, and re-lay the class as the stable partition
+        // `others ⧺ untouched-traced ⧺ add ⧺ hand-drawn`. By id, never identity (the
+        // _applyPolyFixup lesson): undo/redo hold copies. Hand-drawn records of the class end up on
+        // TOP so a polygon drawn by hand inside a traced region keeps winning the click walk
+        // (:2049-2055, last-index-first, class-gated — interleaving with OTHER classes is not
+        // preserved and is unobservable). Never writes pixels, never schedules a render.
+        function _applyPolyDiff(cid, drop, add) {
+            var dropIds = {}, i, c;
+            for (i = 0; i < drop.length; i++) { dropIds[drop[i].id] = true; }
+            var rest = [], tr = [], hd = [];
+            for (i = 0; i < _polys.length; i++) {
+                var p = _polys[i];
+                if (p.classId !== cid) { rest.push(p); }
+                else if (p.traced === true) { if (!dropIds[p.id]) { tr.push(p); } }
+                else { hd.push(p); }
+            }
+            for (i = 0; i < add.length; i++) {
+                c = _copyRec(add[i]);
+                if (c.id > _polySeq) { _polySeq = c.id; }
+                if (_classById(c.classId)) { tr.push(c); }
+            }
+            _polys = rest.concat(tr, hd);
+            if (_selPoly && _selPoly.classId === cid) { _selPoly = null; _selVert = null; }   // _dragVert is null under undo/redo's guard and during a stroke commit
+        }
+
+        // ---- Inc-16 (§5, A3-A5/A8-A12, M1/M2): PIXELS ARE THE TRUTH (FP1). A brush/eraser stroke
+        // whose bbox meets a `traced` record of the ACTIVE class re-derives that neighbourhood's
+        // traced records from the LIVE plane and returns the swap for the stroke's OWN history
+        // entry. It writes no plane, schedules no render, mints no record for a hand-drawn one and
+        // never touches a hand-drawn record object (I-35). The predicate is bbox-only and allocates
+        // NOTHING before its last check (I-38): a null return leaves _polys, _retraceStats and the
+        // entry exactly as they were.
+        function _retraceStroke(cid, x, y, w, h) {
+            var t0 = _traceNow();                                // discarded on a null return; lets `ms` be end-to-end
+            var se = _silh[cid];
+            if (!se || !se.ctx) { return null; }                 // §5.2 check 3
+            // §5.2 check 4: S = the UNFILTERED stroke bbox (INCLUSIVE mask px; _strokeBBox accumulates
+            // every CLAMPED dab run before the eraser filter). The meet uses the 1-px-DILATED record
+            // bbox (E1): a brush pixel 4-adjacent to a record pixel merges with it without overlapping
+            // its bbox. No memcmp of planes (R2), no _tool test (R7), no rPx term (R8).
+            var sx0 = x, sy0 = y, sx1 = x + w - 1, sy1 = y + h - 1;
+            var i, r, b, met = false;
+            for (i = 0; i < _polys.length; i++) {
+                r = _polys[i];
+                if (r.classId !== cid || r.traced !== true) { continue; }
+                b = _recBBox(r.pts);
+                if (!(b.x1 >= b.x0 && b.y1 >= b.y0)) { continue; }          // §5.3 degenerate guard
+                if (b.x0 - 1 <= sx1 && sx0 <= b.x1 + 1 && b.y0 - 1 <= sy1 && sy0 <= b.y1 + 1) { met = true; break; }
+            }
+            if (!met) { return null; }                           // E11 — before any readback or allocation
+            // ---- §5.4: the crop — PULL-AND-GROW. C starts as clamp(dilate(S, 1)) (E8: the dilation
+            // at a plane corner yields -1). Each pass pulls every traced record of `cid` whose
+            // clamped dilated bbox meets C and unions that bbox in (L1: the 1-px margin keeps a
+            // pulled record's own pixels off C's border), re-scanning until nothing is added so the
+            // set is closed under ancestors AND descendants (E2). Hand-drawn runs are subtracted
+            // from the occupancy BEFORE the border scan and clipped to C (E3), so hand-drawn pixels
+            // on the border never force growth. A dirty side that is not a plane edge (E4) grows by
+            // `step` (64, doubling) and the pull re-runs (E5). Terminates: |Tset| and C both grow
+            // monotonically and are bounded by the record count and the plane.
+            var C = { x0: sx0 - 1, y0: sy0 - 1, x1: sx1 + 1, y1: sy1 + 1 };
+            if (C.x0 < 0) { C.x0 = 0; }
+            if (C.y0 < 0) { C.y0 = 0; }
+            if (C.x1 > _maskW - 1) { C.x1 = _maskW - 1; }
+            if (C.y1 > _maskH - 1) { C.y1 = _maskH - 1; }
+            var Tset = {}, step = 64, grown = 0, Cw = 0, Ch = 0, occ = null;
+            var pulled, d, p, q, k, runs, run, xs, xe, rowOff, yy, xx;
+            var bx0, by0, bx1, by1, dirtyL, dirtyR, dirtyT, dirtyB;
+            for (;;) {
+                // (1) PULL
+                pulled = false;
+                for (i = 0; i < _polys.length; i++) {
+                    r = _polys[i];
+                    if (r.classId !== cid || r.traced !== true || Tset[r.id]) { continue; }
+                    b = _recBBox(r.pts);
+                    if (!(b.x1 >= b.x0 && b.y1 >= b.y0)) { continue; }      // §5.3 degenerate guard
+                    bx0 = b.x0 - 1; by0 = b.y0 - 1; bx1 = b.x1 + 1; by1 = b.y1 + 1;
+                    if (bx0 < 0) { bx0 = 0; }
+                    if (by0 < 0) { by0 = 0; }
+                    if (bx1 > _maskW - 1) { bx1 = _maskW - 1; }
+                    if (by1 > _maskH - 1) { by1 = _maskH - 1; }
+                    if (!(bx0 <= C.x1 && C.x0 <= bx1 && by0 <= C.y1 && C.y0 <= by1)) { continue; }
+                    Tset[r.id] = true; pulled = true;
+                    if (bx0 < C.x0) { C.x0 = bx0; }
+                    if (by0 < C.y0) { C.y0 = by0; }
+                    if (bx1 > C.x1) { C.x1 = bx1; }
+                    if (by1 > C.y1) { C.y1 = by1; }
+                }
+                if (pulled) { continue; }                        // re-scan until no record is added
+                // (2) READBACK — one per iteration that reaches here; the LIVE plane (E12): the
+                // stroke's own pixels are already in it, and planes[]/_strokeSilhIds are not consulted.
+                Cw = C.x1 - C.x0 + 1; Ch = C.y1 - C.y0 + 1;
+                d = se.ctx.getImageData(C.x0, C.y0, Cw, Ch).data;
+                occ = new Uint8Array(Cw * Ch);
+                for (p = 0, q = 3; p < occ.length; p++, q += 4) { occ[p] = (d[q] > 0) ? 1 : 0; }
+                d = null;
+                // (3) HAND-DRAWN SUBTRACTION — their pixels are invisible to the tracer; the record
+                // OBJECTS keep their identity and their ids (I-35). _recRuns runs are half-open
+                // (x .. x+w-1 inclusive), so the `+ 1` on fill's end index is the conversion.
+                for (i = 0; i < _polys.length; i++) {
+                    r = _polys[i];
+                    if (r.classId !== cid || r.traced === true) { continue; }
+                    b = _recBBox(r.pts);
+                    if (!(b.x0 <= C.x1 && C.x0 <= b.x1 && b.y0 <= C.y1 && C.y0 <= b.y1)) { continue; }
+                    runs = _recRuns(r.pts, r.holes);             // module dims; half-open runs {x, y, w}
+                    for (k = 0; k < runs.length; k++) {
+                        run = runs[k];
+                        if (run.y < C.y0 || run.y > C.y1) { continue; }
+                        xs = (run.x < C.x0) ? C.x0 : run.x;
+                        xe = run.x + run.w - 1; if (xe > C.x1) { xe = C.x1; }
+                        if (xs > xe) { continue; }
+                        rowOff = (run.y - C.y0) * Cw;
+                        occ.fill(0, rowOff + (xs - C.x0), rowOff + (xe - C.x0) + 1);
+                    }
+                }
+                // (4) BORDER SCAN — a side that IS a plane edge is never dirty (E4).
+                dirtyL = false; dirtyR = false; dirtyT = false; dirtyB = false;
+                if (C.x0 > 0) { for (yy = 0; yy < Ch; yy++) { if (occ[yy * Cw]) { dirtyL = true; break; } } }
+                if (C.x1 < _maskW - 1) { for (yy = 0; yy < Ch; yy++) { if (occ[yy * Cw + Cw - 1]) { dirtyR = true; break; } } }
+                if (C.y0 > 0) { for (xx = 0; xx < Cw; xx++) { if (occ[xx]) { dirtyT = true; break; } } }
+                if (C.y1 < _maskH - 1) { rowOff = (Ch - 1) * Cw; for (xx = 0; xx < Cw; xx++) { if (occ[rowOff + xx]) { dirtyB = true; break; } } }
+                if (dirtyL || dirtyR || dirtyT || dirtyB) {
+                    if (dirtyL) { C.x0 = Math.max(0, C.x0 - step); }
+                    if (dirtyR) { C.x1 = Math.min(_maskW - 1, C.x1 + step); }
+                    if (dirtyT) { C.y0 = Math.max(0, C.y0 - step); }
+                    if (dirtyB) { C.y1 = Math.min(_maskH - 1, C.y1 + step); }
+                    step *= 2; grown++; occ = null;
+                    continue;                                    // the pull re-runs on the grown C
+                }
+                break;
+            }
+            // ---- §5.5: trace the crop and mint the replacements. _trace is UNCHANGED and called
+            // with its DEFAULTS (τ 1.0, cap 48, min-area 16); it overwrites _lastTraceStats, which
+            // stays the TRACER's own record. The crop offset is added to `pts` AND to every hole
+            // ring (E6) in place — _trace's arrays are freshly allocated. res.length === 0 is an
+            // ANSWER, not a refusal (E10): the pulled records are removed and nothing is added. A
+            // >= 16 px² orphan component inside C is minted as a traced record (E9; ticket §1).
+            var res = _trace(occ, Cw, Ch);
+            occ = null;
+            var N = [], ring, nr;
+            for (i = 0; i < res.length; i++) {
+                for (k = 0; k < res[i].pts.length; k++) { res[i].pts[k].x += C.x0; res[i].pts[k].y += C.y0; }
+                for (q = 0; q < res[i].holes.length; q++) {
+                    ring = res[i].holes[q];
+                    for (k = 0; k < ring.length; k++) { ring[k].x += C.x0; ring[k].y += C.y0; }
+                }
+                nr = { id: ++_polySeq, classId: cid, pts: res[i].pts, traced: true };   // fresh id (R5), `holes` only when non-empty
+                if (res[i].holes.length) { nr.holes = res[i].holes; }
+                N.push(nr);
+            }
+            // ---- §5.6: apply and return. `removed` is the pulled set in _polys ORDER (L5) — never
+            // in pull order, or undo would re-add an island above its parent. Both lists are
+            // _copyRec deep copies WITH ids; the live _polys holds its own copies.
+            var removed = [], added = [];
+            for (i = 0; i < _polys.length; i++) { if (Tset[_polys[i].id]) { removed.push(_copyRec(_polys[i])); } }
+            _applyPolyDiff(cid, removed, N);
+            for (i = 0; i < N.length; i++) { added.push(_copyRec(N[i])); }
+            _retraceStats = { runs: _retraceStats.runs + 1, ms: _traceNow() - t0, crop: { x: C.x0, y: C.y0, w: Cw, h: Ch }, grown: grown };
+            return { classId: cid, removed: removed, added: added };
+        }
+
+        // ---- Inc-15 (§8.2): FILE-form ring validator — true iff an Array of ≥ 3 [x, y] pairs of
+        // finite numbers (loadPolygons' exact pre-Inc-15 point test, factored; used for pts AND holes).
+        function _validRing(a) {
+            if (!Array.isArray(a) || a.length < 3) { return false; }
+            for (var k = 0; k < a.length; k++) {
+                var ent = a[k];
+                if (!Array.isArray(ent) || ent.length !== 2
+                    || typeof ent[0] !== 'number' || !isFinite(ent[0])
+                    || typeof ent[1] !== 'number' || !isFinite(ent[1])) { return false; }
+            }
+            return true;
+        }
+
+        // ---- Inc-15 (§5): PUBLIC — trace the ACTIVE class's silhouette plane into polygon records
+        // (outer ring + hole rings), re-rasterise the plane from the simplified records (D1: mask ==
+        // vectors by construction), REPLACE the class's records, push ONE history entry. No
+        // arguments (D4). Returns `false` (busy / no image), `null` (nothing to trace) or
+        // {regions, holes, capped}. NOTHING is written before the last refusal passes (I-28).
+        function traceActiveClass() {
+            // refusal 1 — no image / destroyed / frozen (mirrors loadPolygons' guard)
+            if (_destroyed || !_mask || _frozen) {
+                if (!_mask && !_destroyed) { _warnOnce('no-image', 'OSDAnnotator: no image loaded yet'); }
+                return false;
+            }
+            // refusal 2 — busy. `_tool === 'eraser'` is the :1288 trap: _histCommit would drop the
+            // entry of a trace made during an Alt latch or after setTool('eraser').
+            if (_painting || _polyDraft || _dragVert || _tool === 'eraser') { return false; }
+            var t0 = _traceNow();
+            var cid = _activeClassId;
+            var se = _silh[cid];
+            if (!se || !se.ctx) { return null; }                 // refusal 3a — plane unallocated
+            // readback: the module's SINGLE full-plane read (J5); occ + inclusive pixel bbox `ob`
+            var d = se.ctx.getImageData(0, 0, _maskW, _maskH).data;
+            var occ = new Uint8Array(_maskW * _maskH);
+            var ob = null;
+            var x, y, p = 0, di = 3;
+            for (y = 0; y < _maskH; y++) {
+                for (x = 0; x < _maskW; x++, p++, di += 4) {
+                    if (d[di] > 0) {
+                        occ[p] = 1;
+                        if (ob === null) { ob = { x0: x, y0: y, x1: x, y1: y }; }   // EXPLICIT keys
+                        else {
+                            if (x < ob.x0) { ob.x0 = x; }
+                            if (x > ob.x1) { ob.x1 = x; }
+                            if (y > ob.y1) { ob.y1 = y; }               // rows are visited ascending: y0 is the first hit
+                        }
+                    }
+                }
+            }
+            d = null;
+            if (ob === null) { return null; }                    // refusal 3b — no alpha > 0 pixel
+            var res = _trace(occ, _maskW, _maskH);              // defaults (τ 1.0, cap 48, min-area 16)
+            occ = null;
+            if (res.length === 0) { return null; }               // refusal 4 — every component dropped (_lastTraceStats updated)
+            // records: fresh ids, `holes` only when non-empty, `traced` always
+            var recs = [], i, holesTotal = 0;
+            for (i = 0; i < res.length; i++) {
+                var nr = { id: ++_polySeq, classId: cid, pts: res[i].pts, traced: true };
+                if (res[i].holes.length) { nr.holes = res[i].holes; }
+                holesTotal += res[i].holes.length;
+                recs.push(nr);
+            }
+            var before = [];
+            for (i = 0; i < _polys.length; i++) { if (_polys[i].classId === cid) { before.push(_copyRec(_polys[i])); } }
+            // commit — clear-and-refill through the existing _polyCommit (A3, "Commit shape: A")
+            _histBegin();
+            _shadow(cid);                                        // pre-image BEFORE the clear
+            se.ctx.globalCompositeOperation = 'source-over';
+            se.ctx.clearRect(0, 0, _maskW, _maskH);              // plane := ∅
+            for (i = 0; i < recs.length; i++) { _polyCommit(_recRuns(recs[i].pts, recs[i].holes), cid); }   // sets _maskDirty
+            _strokeBBox = { x0: ob.x0, y0: ob.y0, x1: ob.x1, y1: ob.y1 };   // OVERRIDE _polyCommit's last-record bbox: the union
+            _polys = _polys.filter(function (q) { return q.classId !== cid; }).concat(recs);   // REPLACED (J2); precedent removeClass
+            if (_selPoly && _selPoly.classId === cid) { _selPoly = null; _selVert = null; }   // _dragVert is null by refusal 2
+            var after = [];
+            for (i = 0; i < recs.length; i++) { after.push(_copyRec(recs[i])); }
+            _histCommit({ polys: { classId: cid, before: before, after: after } });
+            _lastTraceStats.ms = _traceNow() - t0;               // END-TO-END (readback through _histCommit)
+            _scheduleRender();
+            return { regions: recs.length, holes: holesTotal, capped: _lastTraceStats.capped };
+        }
+
         // ---- Inc-7: commit a closed polygon into its class plane (mirrors _stampDisc's write) ----
         // _stampDisc stays byte-identical (frozen); this reuses the same non-frozen _fillRuns helper.
         function _polyCommit(runs, cid) {
@@ -1130,8 +1732,8 @@
             // then REMOVES the record. It is never emptied: a pts:[] record would poison the NEXT
             // loadPolygons, whose ≥3-vertex validation is atomic.
             var deleting = (newPts === null);
-            var O = _polyRuns(rec.pts);
-            var N = deleting ? [] : _polyRuns(newPts);        // may be [] if the drag made the ring degenerate
+            var O = _recRuns(rec.pts, rec.holes);             // Inc-15 (I-30): holes ride the record (D2)
+            var N = deleting ? [] : _recRuns(newPts, rec.holes);   // may be [] if the drag made the ring degenerate
             var d = _runsDiff(O, N);
             // (2) O △ N empty at the RUNS level → no pixel changes hands. Inc-11 (M3): BOTH
             // zero-footprint lanes now push a TAG-ONLY entry (null raster) — the record
@@ -1144,14 +1746,14 @@
                     // Undo re-adds the record via _applyPolyFixup's not-found branch (at
                     // the TOP of the z-order, the documented pre-existing fixup rule);
                     // redo removes it via the null branch.
-                    _histPushTag({ polyId: rec.id, classId: rec.classId, ptsBefore: _copyPts(rec.pts), ptsAfter: null });
+                    _histPushTag({ polyId: rec.id, classId: rec.classId, ptsBefore: _copyPts(rec.pts), ptsAfter: null, holes: rec.holes, traced: rec.traced });
                     _removePolyRec(rec);
                     return;
                 }
                 if (!_ptsEqual(rec.pts, newPts)) {
                     // reshape lane (e.g. a zero-drag A4 edge insert): tag then mutate. The
                     // helper subsumes the old `_redoStack.length = 0; _fireHistory();` pair.
-                    _histPushTag({ polyId: rec.id, classId: rec.classId, ptsBefore: _copyPts(rec.pts), ptsAfter: _copyPts(newPts) });
+                    _histPushTag({ polyId: rec.id, classId: rec.classId, ptsBefore: _copyPts(rec.pts), ptsAfter: _copyPts(newPts), holes: rec.holes, traced: rec.traced });
                     rec.pts = _copyPts(newPts);
                 }
                 return;
@@ -1201,7 +1803,7 @@
             // ptsAfter is null — the exact MIRROR of a creation entry, so _applyPolyFixup's existing
             // null branch drops the record on redo and its not-found branch re-adds it on undo, with
             // ZERO changes to undo/redo/_applyPolyFixup.
-            _histCommit({ polyId: rec.id, classId: rec.classId, ptsBefore: _copyPts(rec.pts), ptsAfter: deleting ? null : _copyPts(newPts) });
+            _histCommit({ polyId: rec.id, classId: rec.classId, ptsBefore: _copyPts(rec.pts), ptsAfter: deleting ? null : _copyPts(newPts), holes: rec.holes, traced: rec.traced });
             if (deleting) { _removePolyRec(rec); } else { rec.pts = _copyPts(newPts); }
             _mctx.globalCompositeOperation = 'source-over';   // belt-and-braces
         }
@@ -1302,9 +1904,21 @@
                 planes.push({ sid: sid, before: sh.ctx.getImageData(x, y, w, h), after: tse.ctx.getImageData(x, y, w, h) });
             }
             _releaseShadows();                                   // back to ONE retained canvas (M1)
+            // Inc-16 (§5): a BARE call is a brush/eraser stroke (only _endStroke calls without a tag);
+            // re-trace the neighbourhood if the stroke met a traced record. Runs AFTER the M2 gate
+            // and reads the LIVE plane, so no shadow is needed. Writes no pixels.
+            var rt = (tag === undefined) ? _retraceStroke(_activeClassId, x, y, w, h) : null;
             var ent = { x: x, y: y, w: w, h: h, planes: planes };
             _undoStack.push(ent);
-            if (tag) { ent.polyId = tag.polyId; ent.classId = tag.classId; ent.ptsBefore = tag.ptsBefore; ent.ptsAfter = tag.ptsAfter; }
+            // Inc-15 (§7.3): the single-record tag copies exactly as before; `holes`/`traced` ride
+            // beside it (deep-copied); a trace entry carries `polys` and NO polyId.
+            if (tag) {
+                if (tag.polyId !== undefined) { ent.polyId = tag.polyId; ent.classId = tag.classId; ent.ptsBefore = tag.ptsBefore; ent.ptsAfter = tag.ptsAfter; }
+                if (tag.holes !== undefined && tag.holes) { ent.holes = tag.holes.map(_copyPts); }
+                if (tag.traced === true) { ent.traced = true; }
+                if (tag.polys !== undefined) { ent.polys = tag.polys; }
+            }
+            if (rt) { ent.retrace = rt; }
             while (_undoStack.length > (opts.undoDepth || DEFAULTS.undoDepth)) { _undoStack.shift(); }
             _redoStack.length = 0;
             _fireHistory();
@@ -1319,6 +1933,8 @@
             var ent = { x: 0, y: 0, w: 0, h: 0, planes: [] };   // Inc-14: tag-only ⇒ no raster planes
             ent.polyId = tag.polyId; ent.classId = tag.classId;
             ent.ptsBefore = tag.ptsBefore; ent.ptsAfter = tag.ptsAfter;
+            if (tag.holes !== undefined && tag.holes) { ent.holes = tag.holes.map(_copyPts); }   // Inc-15 (§7.3)
+            if (tag.traced === true) { ent.traced = true; }                                   // (a tag-only entry never carries `polys`)
             _undoStack.push(ent);
             while (_undoStack.length > (opts.undoDepth || DEFAULTS.undoDepth)) { _undoStack.shift(); }
             _redoStack.length = 0;
@@ -1352,8 +1968,10 @@
         }
 
         // ---- Inc-8: vertex FIXUP applied after a raster restore. Never writes the mask, never
-        // schedules its own render (undo/redo call _render() themselves). ----
-        function _applyPolyFixup(polyId, classId, pts) {
+        // schedules its own render (undo/redo call _render() themselves). Inc-15 (§7.3): +holes,
+        // +traced — used ONLY by the not-found re-add (a found record keeps its own; a reshape or
+        // delete never changes holes). ----
+        function _applyPolyFixup(polyId, classId, pts, holes, traced) {
             var rec = null, at = -1, i;
             for (i = 0; i < _polys.length; i++) {
                 if (_polys[i].id === polyId) { rec = _polys[i]; at = i; break; }
@@ -1378,7 +1996,12 @@
             // Re-added at the TOP of the z-order; skipped silently if its class no longer exists
             // (the pixels are still restored — only the edit affordance is missing).
             if (polyId > _polySeq) { _polySeq = polyId; }
-            if (_classById(classId)) { _polys.push({ id: polyId, classId: classId, pts: _copyPts(pts) }); }
+            if (_classById(classId)) {
+                var nr = { id: polyId, classId: classId, pts: _copyPts(pts) };
+                if (holes && holes.length) { nr.holes = holes.map(_copyPts); }   // Inc-15: the re-add carries both
+                if (traced === true) { nr.traced = true; }
+                _polys.push(nr);
+            }
         }
 
         function undo() {
@@ -1399,7 +2022,9 @@
                 }
                 _maskDirty = true;                                // isEmpty stays coarse-true latch [AUDIT 10]
             }
-            if (e.polyId !== undefined) { _applyPolyFixup(e.polyId, e.classId, e.ptsBefore); }
+            if (e.polyId !== undefined) { _applyPolyFixup(e.polyId, e.classId, e.ptsBefore, e.holes, e.traced); }
+            if (e.polys) { _applyPolySet(e.polys.classId, e.polys.before); }   // Inc-15 (§7.3): trace entry → pre-trace record set
+            if (e.retrace) { _applyPolyDiff(e.retrace.classId, e.retrace.added, e.retrace.removed); }   // Inc-16 (§7): stroke re-trace → pre-stroke records
             _redoStack.push(e);
             _fireHistory();
             _render();
@@ -1421,7 +2046,9 @@
                 }
                 _maskDirty = true;
             }
-            if (e.polyId !== undefined) { _applyPolyFixup(e.polyId, e.classId, e.ptsAfter); }
+            if (e.polyId !== undefined) { _applyPolyFixup(e.polyId, e.classId, e.ptsAfter, e.holes, e.traced); }
+            if (e.polys) { _applyPolySet(e.polys.classId, e.polys.after); }    // Inc-15 (§7.3): trace entry → post-trace record set
+            if (e.retrace) { _applyPolyDiff(e.retrace.classId, e.retrace.removed, e.retrace.added); }   // Inc-16 (§7): stroke re-trace → post-stroke records
             _undoStack.push(e);
             _fireHistory();
             _render();
@@ -2393,7 +3020,14 @@
                 var p = _polys[i];
                 var pts = [];
                 for (var k = 0; k < p.pts.length; k++) { pts.push([p.pts[k].x, p.pts[k].y]); }
-                out.push({ classId: p.classId, pts: pts });
+                var rec = { classId: p.classId, pts: pts };
+                // Inc-15 (§8.1): `holes` ONLY when non-empty, `traced: true` ONLY when set — files
+                // without traced/holed records are byte-identical to v3.4.2 output.
+                if (p.holes && p.holes.length) {
+                    rec.holes = p.holes.map(function (ring) { return ring.map(function (q) { return [q.x, q.y]; }); });
+                }
+                if (p.traced === true) { rec.traced = true; }
+                out.push(rec);
             }
             return out;
         }
@@ -2415,20 +3049,36 @@
                 if (typeof r.classId !== 'number' || !isFinite(r.classId)
                     || Math.floor(r.classId) !== r.classId
                     || r.classId < 1 || r.classId > 255) { _scheduleRender(); return false; }
-                if (!Array.isArray(r.pts) || r.pts.length < 3) { _scheduleRender(); return false; }
-                for (k = 0; k < r.pts.length; k++) {
-                    ent = r.pts[k];
-                    if (!Array.isArray(ent) || ent.length !== 2
-                        || typeof ent[0] !== 'number' || !isFinite(ent[0])
-                        || typeof ent[1] !== 'number' || !isFinite(ent[1])) { _scheduleRender(); return false; }
+                if (!_validRing(r.pts)) { _scheduleRender(); return false; }
+                // Inc-15 (§8.2): OPTIONAL `holes` (Array of valid rings; [] is valid) and OPTIONAL
+                // `traced` (boolean) — validated here so the whole file is still refused atomically.
+                if (r.holes !== undefined) {
+                    if (!Array.isArray(r.holes)) { _scheduleRender(); return false; }
+                    for (k = 0; k < r.holes.length; k++) {
+                        if (!_validRing(r.holes[k])) { _scheduleRender(); return false; }
+                    }
                 }
+                if (r.traced !== undefined && typeof r.traced !== 'boolean') { _scheduleRender(); return false; }
             }
             for (i = 0; i < arr.length; i++) {                      // pass 2: adopt
                 r = arr[i];
                 if (!_classById(r.classId)) { continue; }           // unreachable vectors — skipped silently
                 var pts = [];
                 for (k = 0; k < r.pts.length; k++) { pts.push({ x: r.pts[k][0], y: r.pts[k][1] }); }
-                _polys.push({ id: ++_polySeq, classId: r.classId, pts: pts });
+                var nrec = { id: ++_polySeq, classId: r.classId, pts: pts };
+                // Inc-15 (§8.2): `holes` ONLY if present AND non-empty; `traced: true` ONLY if exactly
+                // true (`false` loads UNMARKED — key absent). Loading never INVENTS the marker (I-29).
+                if (r.holes !== undefined && r.holes.length) {
+                    var hs = [];
+                    for (k = 0; k < r.holes.length; k++) {
+                        var hring = [];
+                        for (var hk = 0; hk < r.holes[k].length; hk++) { hring.push({ x: r.holes[k][hk][0], y: r.holes[k][hk][1] }); }
+                        hs.push(hring);
+                    }
+                    nrec.holes = hs;
+                }
+                if (r.traced === true) { nrec.traced = true; }
+                _polys.push(nrec);
             }
             _scheduleRender();
             return true;
@@ -2602,6 +3252,8 @@
             getPolygons: getPolygons,
             loadPolygons: loadPolygons,
             getClassPixelCount: getClassPixelCount,
+            // ---- Inc-15: raster → vector tracing ----
+            traceActiveClass: traceActiveClass,
             // private — exposed for Inc1 tests/harness (instance._render(), __seedMask, __readView)
             _render: _render
         };
@@ -2671,7 +3323,13 @@
             // pre-init — nothing here reads the mask or the records) ----
             __runsSubtract:     { get: function () { return function (dab, prot) { return _runsSubtract(dab, _mergeRunsToRows(prot)); }; } },
             __projectPointToSeg:{ get: function () { return _projectPointToSeg; } },
-            __nearestEdge:      { get: function () { return _nearestEdge; } }
+            __nearestEdge:      { get: function () { return _nearestEdge; } },
+            // ---- Inc-15 (§11.1): tracer hooks (GETTERS ONLY). __trace and __recRuns are pure and
+            // callable pre-init; __lastTraceStats is the diagnostics record, not state (I-28) ----
+            __trace:            { get: function () { return _trace; } },
+            __recRuns:          { get: function () { return _recRuns; } },
+            __lastTraceStats:   { get: function () { return _lastTraceStats; } },
+            __retraceStats:     { get: function () { return _retraceStats; } }   // Inc-16 (§5.7): {runs, ms, crop, grown} — diagnostics, not state
         });
 
         return instance;

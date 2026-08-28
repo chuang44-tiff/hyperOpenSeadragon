@@ -290,7 +290,7 @@
 					<div id="osdAnnClassList" class="ann-class-list"></div>
 					<button id="osdAnnAddClass" class="pp-btn">+ Add class</button>
 					<div class="pp-row">
-						<label><input type="radio" name="osdAnnTool" id="osdAnnToolPolygon" value="polygon" checked title="Click to place vertices; double-click or Enter closes; click-drag draws freehand and closes on release; Esc cancels. Click inside one of your polygons to select it and drag its handles to reshape, or drag on an edge to add a handle; click a handle to select it (it turns yellow), then Backspace/Delete removes it (a triangle keeps its three); Esc deselects. The eraser cannot remove pixels inside a committed polygon — it only erases brush paint outside them. Backspace/Delete removes the selected polygon (erases that class's pixels inside it — Undo restores both)."> Polygon (P)</label>
+						<label><input type="radio" name="osdAnnTool" id="osdAnnToolPolygon" value="polygon" checked title="Click to place vertices; double-click or Enter closes; click-drag draws freehand and closes on release; Esc cancels. Click inside one of your polygons to select it and drag its handles to reshape, or drag on an edge to add a handle; click a handle to select it (it turns yellow), then Backspace/Delete removes it (a triangle keeps its three); Esc deselects. The eraser cannot remove pixels inside a hand-drawn polygon — it only erases brush paint outside them (traced polygons are editable with the brush and eraser). Backspace/Delete removes the selected polygon (erases that class's pixels inside it — Undo restores both)."> Polygon (P)</label>
 						<label><input type="radio" name="osdAnnTool" id="osdAnnToolBrush" value="brush" title="Paint with the active class. Hold Alt to erase (Brush mode only). Shift+wheel resizes the brush."> Brush (B)</label>
 					</div>
 					<div class="pp-row">
@@ -308,6 +308,7 @@
 					<button id="osdAnnSaveBtn" class="pp-btn" title="Downloads one binary PNG per class with pixels (white = that class, black = everything else) at the Downscale resolution, PLUS a classes.json — several files at once. To reopen here, Load Mask them ALL together.">Save Mask</button>
 					<button id="osdAnnLoadBtn" class="pp-btn" title="Reopen a save — select EVERY mask PNG from that save AND its classes.json together in one pick (multi-select). A single PNG on its own loads as a legacy label mask.">Load Mask</button>
 					<input type="file" id="osdAnnLoadFile" accept=".png,.json,image/png,application/json" multiple style="display:none">
+					<button id="osdAnnTraceBtn" class="pp-btn" title="Trace the ACTIVE class's pixels into editable polygons. Holes are kept — carve or fill them with the brush and eraser. The class's pixels are REPLACED by the traced outlines — edges may move by about 1 px; Undo restores them.">Trace Class</button>
 					<button id="osdAnnUndoBtn" class="pp-btn" disabled>Undo</button>
 					<button id="osdAnnRedoBtn" class="pp-btn" disabled>Redo</button>
 					<style>
@@ -4410,6 +4411,19 @@
 		});
 		$('#osdAnnUndoBtn').on('click', function () { if (window.annotator) { window.annotator.undo(); _annUpdateStatus(); } });
 		$('#osdAnnRedoBtn').on('click', function () { if (window.annotator) { window.annotator.redo(); _annUpdateStatus(); } });
+		// Inc-15: trace the ACTIVE class's pixels into editable polygons (D1 REPLACE, holes kept).
+		// The status is written AFTER the call: _histCommit → onHistory → _annUpdateStatus has
+		// already overwritten #osdAnnStatus by the time traceActiveClass() returns (Load precedent).
+		$('#osdAnnTraceBtn').on('click', function () {
+			if (!window.annotator || window.annotator.isEmpty()) {
+				$('#osdAnnStatus').text('Nothing painted yet.');
+				return;
+			}
+			var tr = window.annotator.traceActiveClass();
+			if (tr === null) { $('#osdAnnStatus').text('Trace: nothing to trace.'); return; }
+			if (tr === false) { $('#osdAnnStatus').text('Trace: finish the open polygon first.'); return; }
+			$('#osdAnnStatus').text('Traced: ' + tr.regions + ' region' + (tr.regions === 1 ? '' : 's') + ', ' + tr.holes + ' hole' + (tr.holes === 1 ? '' : 's') + ' kept' + (tr.capped ? ', ' + tr.capped + ' ring' + (tr.capped === 1 ? '' : 's') + ' capped' : '') + ' — pixels replaced');
+		});
 
 		if (viewer && viewer.world) {
 			viewer.world.addHandler('add-item', function () {
