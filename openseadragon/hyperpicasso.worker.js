@@ -69,6 +69,16 @@ self.onmessage = (e) => {
                 self.postMessage({ type: 'error', error: 'enabledMask must enable at least 2 channels' });
                 return;
             }
+            // Upper bound, mirroring the lower bound above. 8 is window._picassoMaxN
+            // (zstackHyper.html) — the 2-RGBA-texel PICASSO kernel cap, so N > 8 can
+            // never be applied. Without this gate the optimizer runs anyway; because
+            // progress is posted at ITERATION START, a long iteration goes silent and
+            // the 45 s idle watchdog terminates a HEALTHY run, surfacing a false
+            // "optimizer unavailable" banner. Reject before any work is done.
+            if (enabledCount > 8) {
+                self.postMessage({ type: 'error', error: `PICASSO supports at most 8 enabled channels (got ${enabledCount}); disable ${enabledCount - 8} channel(s) and run again` });
+                return;
+            }
         } else {
             self.postMessage({ type: 'error', error: "route must be 'picasso' or 'hyperpicasso'" });
             return;
