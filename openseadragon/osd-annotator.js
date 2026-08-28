@@ -30,8 +30,8 @@
                    '#2c4d75', '#a5a5a5', '#d99694', '#7f6084', '#4f81bd', '#c3d69b'];
 
     // ---- Inc-15: raster → vector tracing constants (D3/D4) — NOT options, NOT runtime-tunable ----
-    var TRACE_TAU = 1.0;        // VW altitude floor, mask px (QuPath "Simplify shape" default)
-    var TRACE_CAP = 48;         // hard vertex cap per ring (outer AND hole), after the τ phase
+    var TRACE_TAU = 2.0;        // VW altitude floor, mask px (Inc-17 D3: 2.0 halves the handle count at <= ~1 % round-trip error; 3.0 destroys r8 blobs)
+    var TRACE_CAP = 24;         // hard vertex cap per ring (outer AND hole), after the τ phase
     var TRACE_MIN_AREA = 16;    // mask px²: components below are DROPPED, holes below are FILLED
 
     // ---- Inc-7: polygon freehand travel threshold (CSS px) — HARD-CODED, not an option ----
@@ -1498,7 +1498,7 @@
                 break;
             }
             // ---- §5.5: trace the crop and mint the replacements. _trace is UNCHANGED and called
-            // with its DEFAULTS (τ 1.0, cap 48, min-area 16); it overwrites _lastTraceStats, which
+            // with its DEFAULTS (τ 2.0, cap 24, min-area 16); it overwrites _lastTraceStats, which
             // stays the TRACER's own record. The crop offset is added to `pts` AND to every hole
             // ring (E6) in place — _trace's arrays are freshly allocated. res.length === 0 is an
             // ANSWER, not a refusal (E10): the pulled records are removed and nothing is added. A
@@ -1540,22 +1540,16 @@
             return true;
         }
 
-        // ---- Inc-15 (§5): PUBLIC — trace the ACTIVE class's silhouette plane into polygon records
-        // (outer ring + hole rings), re-rasterise the plane from the simplified records (D1: mask ==
-        // vectors by construction), REPLACE the class's records, push ONE history entry. No
-        // arguments (D4). Returns `false` (busy / no image), `null` (nothing to trace) or
-        // {regions, holes, capped}. NOTHING is written before the last refusal passes (I-28).
-        function traceActiveClass() {
-            // refusal 1 — no image / destroyed / frozen (mirrors loadPolygons' guard)
-            if (_destroyed || !_mask || _frozen) {
-                if (!_mask && !_destroyed) { _warnOnce('no-image', 'OSDAnnotator: no image loaded yet'); }
-                return false;
-            }
-            // refusal 2 — busy. `_tool === 'eraser'` is the :1288 trap: _histCommit would drop the
-            // entry of a trace made during an Alt latch or after setTool('eraser').
-            if (_painting || _polyDraft || _dragVert || _tool === 'eraser') { return false; }
+        // ---- Inc-15 (§5) / Inc-17 (§5): the ONE trace body, shared by the public traceActiveClass()
+        // (pushHist === true: ONE history entry, exactly as Inc-15) and by traceLoadedClasses()
+        // (pushHist === false: NO shadow, NO before/after copies, NO _histCommit — the caller flushes).
+        // Trace the class's silhouette plane into polygon records (outer ring + hole rings),
+        // re-rasterise the plane from the simplified records (D1: mask == vectors by construction),
+        // REPLACE the class's records. Returns `null` (nothing to trace) or {regions, holes, capped}.
+        // NOTHING is written before the last refusal passes (I-28). Refusals 1 and 2 (no image /
+        // busy) belong to traceActiveClass — this body assumes the caller has decided them.
+        function _traceClass(cid, pushHist) {
             var t0 = _traceNow();
-            var cid = _activeClassId;
             var se = _silh[cid];
             if (!se || !se.ctx) { return null; }                 // refusal 3a — plane unallocated
             // readback: the module's SINGLE full-plane read (J5); occ + inclusive pixel bbox `ob`
@@ -1578,7 +1572,7 @@
             }
             d = null;
             if (ob === null) { return null; }                    // refusal 3b — no alpha > 0 pixel
-            var res = _trace(occ, _maskW, _maskH);              // defaults (τ 1.0, cap 48, min-area 16)
+            var res = _trace(occ, _maskW, _maskH);              // defaults (τ 2.0, cap 24, min-area 16)
             occ = null;
             if (res.length === 0) { return null; }               // refusal 4 — every component dropped (_lastTraceStats updated)
             // records: fresh ids, `holes` only when non-empty, `traced` always
@@ -1590,22 +1584,66 @@
                 recs.push(nr);
             }
             var before = [];
-            for (i = 0; i < _polys.length; i++) { if (_polys[i].classId === cid) { before.push(_copyRec(_polys[i])); } }
+            if (pushHist) { for (i = 0; i < _polys.length; i++) { if (_polys[i].classId === cid) { before.push(_copyRec(_polys[i])); } } }
             // commit — clear-and-refill through the existing _polyCommit (A3, "Commit shape: A")
-            _histBegin();
-            _shadow(cid);                                        // pre-image BEFORE the clear
+            _histBegin();                                        // Inc-15 order: release the previous stroke's shadows FIRST (kept unconditional — Inc-17 L4)
+            if (pushHist) { _shadow(cid); }                      // pre-image BEFORE the clear — only when an entry will be pushed
             se.ctx.globalCompositeOperation = 'source-over';
             se.ctx.clearRect(0, 0, _maskW, _maskH);              // plane := ∅
             for (i = 0; i < recs.length; i++) { _polyCommit(_recRuns(recs[i].pts, recs[i].holes), cid); }   // sets _maskDirty
             _strokeBBox = { x0: ob.x0, y0: ob.y0, x1: ob.x1, y1: ob.y1 };   // OVERRIDE _polyCommit's last-record bbox: the union
             _polys = _polys.filter(function (q) { return q.classId !== cid; }).concat(recs);   // REPLACED (J2); precedent removeClass
-            if (_selPoly && _selPoly.classId === cid) { _selPoly = null; _selVert = null; }   // _dragVert is null by refusal 2
-            var after = [];
-            for (i = 0; i < recs.length; i++) { after.push(_copyRec(recs[i])); }
-            _histCommit({ polys: { classId: cid, before: before, after: after } });
-            _lastTraceStats.ms = _traceNow() - t0;               // END-TO-END (readback through _histCommit)
+            if (_selPoly && _selPoly.classId === cid) { _selPoly = null; _selVert = null; }   // _dragVert is null by refusal 2 (button) or irrelevant (load)
+            if (pushHist) {
+                var after = [];
+                for (i = 0; i < recs.length; i++) { after.push(_copyRec(recs[i])); }
+                _histCommit({ polys: { classId: cid, before: before, after: after } });
+            }
+            _lastTraceStats.ms = _traceNow() - t0;               // END-TO-END (readback through the commit)
             _scheduleRender();
             return { regions: recs.length, holes: holesTotal, capped: _lastTraceStats.capped };
+        }
+
+        // ---- Inc-15 (§5): PUBLIC — trace the ACTIVE class; ONE history entry (D4). Returns `false`
+        // (busy / no image), `null` (nothing to trace) or {regions, holes, capped}. Inc-17 (D2): the
+        // hosts no longer call this (the Trace button is gone); kept as module API for tests
+        // and scripts. The body is _traceClass.
+        function traceActiveClass() {
+            // refusal 1 — no image / destroyed / frozen (mirrors loadPolygons' guard)
+            if (_destroyed || !_mask || _frozen) {
+                if (!_mask && !_destroyed) { _warnOnce('no-image', 'OSDAnnotator: no image loaded yet'); }
+                return false;
+            }
+            // refusal 2 — busy. `_tool === 'eraser'` is the :1288 trap: _histCommit would drop the
+            // entry of a trace made during an Alt latch or after setTool('eraser').
+            if (_painting || _polyDraft || _dragVert || _tool === 'eraser') { return false; }
+            return _traceClass(_activeClassId, true);
+        }
+
+        // ---- Inc-17 (D1/D2, spec §6): PUBLIC — trace EVERY class that has a plane, for the host's
+        // json-less Load Mask lane ("without json everything is a polygon"). A load is not a gesture,
+        // so there is NO _tool / _polyDraft / _painting / _dragVert refusal (the eraser latch and an
+        // open draft are left exactly as they were). Pushes NO history — N full-plane entries would be
+        // ~1.57 GB at maxClasses — and FLUSHES both stacks, like loadLabel / loadMasks / clear.
+        // Returns null (no image / destroyed / frozen) or the AGGREGATE {classes, regions, holes,
+        // capped}; `classes` counts classes that produced >= 1 record; `capped` is SUMMED across
+        // classes (_lastTraceStats is per _trace call and describes the LAST class only).
+        function traceLoadedClasses() {
+            if (_destroyed || !_mask || _frozen) { return null; }
+            var tot = { classes: 0, regions: 0, holes: 0, capped: 0 }, i, r;
+            for (i = 0; i < _classes.length; i++) {
+                _histBegin();                       // PER CLASS (I-41, belt-and-braces): frees the previous class's _polyCommit
+                                                    // shadow BEFORE this class's 49 MB readback. The pool bound itself comes from
+                                                    // _traceClass's own UNCONDITIONAL _histBegin() — never guard that one by pushHist.
+                r = _traceClass(_classes[i].id, false);
+                if (r) { tot.classes++; tot.regions += r.regions; tot.holes += r.holes; tot.capped += r.capped; }
+            }
+            _histBegin();                           // LOAD-BEARING (I-40): nulls _strokeBBox and releases the last shadow, so a
+                                                    // pointer-up landing after an async load early-returns in _histCommit (:1881)
+                                                    // instead of pushing an entry over the tracer's union bbox. Do not "simplify".
+            _undoStack.length = 0; _redoStack.length = 0; _fireHistory();   // a load is never undoable
+            _scheduleRender();
+            return tot;
         }
 
         // ---- Inc-7: commit a closed polygon into its class plane (mirrors _stampDisc's write) ----
@@ -3252,8 +3290,9 @@
             getPolygons: getPolygons,
             loadPolygons: loadPolygons,
             getClassPixelCount: getClassPixelCount,
-            // ---- Inc-15: raster → vector tracing ----
+            // ---- Inc-15: raster → vector tracing; Inc-17: the json-less Load auto-trace ----
             traceActiveClass: traceActiveClass,
+            traceLoadedClasses: traceLoadedClasses,
             // private — exposed for Inc1 tests/harness (instance._render(), __seedMask, __readView)
             _render: _render
         };

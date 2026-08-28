@@ -312,9 +312,8 @@
 					</div>
 					<button id="osdAnnClearBtn" class="pp-btn pp-btn-clear">Clear Mask</button>
 					<button id="osdAnnSaveBtn" class="pp-btn" title="Downloads one binary PNG per class with pixels (white = that class, black = everything else) at the Downscale resolution, PLUS a classes.json — several files at once. To reopen here, Load Mask them ALL together.">Save Mask</button>
-					<button id="osdAnnLoadBtn" class="pp-btn" title="Reopen a save — select EVERY mask PNG from that save AND its classes.json together in one pick (multi-select). A single PNG on its own loads as a legacy label mask.">Load Mask</button>
+					<button id="osdAnnLoadBtn" class="pp-btn" title="Reopen a save — select EVERY mask PNG from that save AND its classes.json together in one pick (multi-select). A single PNG on its own loads as a legacy label mask and its pixels are traced into editable polygons.">Load Mask</button>
 					<input type="file" id="osdAnnLoadFile" accept=".png,.json,image/png,application/json" multiple style="display:none">
-					<button id="osdAnnTraceBtn" class="pp-btn" title="Trace the ACTIVE class's pixels into editable polygons. Holes are kept — carve or fill them with the brush and eraser. The class's pixels are REPLACED by the traced outlines — edges may move by about 1 px; Undo restores them.">Trace Class</button>
 					<button id="osdAnnUndoBtn" class="pp-btn" disabled>Undo</button>
 					<button id="osdAnnRedoBtn" class="pp-btn" disabled>Redo</button>
 					<style>
@@ -4420,11 +4419,18 @@
 				img.onload = function () {
 					if (!window.annotator || window.annotator._destroyed) { URL.revokeObjectURL(url); return; }
 					var cls = Array.isArray(j) ? j : (j && Array.isArray(j.classes) ? j.classes : null);
+					// Inc-17 (D1/D2): no v3 classes.json ⇒ every loaded class is traced into editable polygons
+					// (pixels REPLACED, holes kept); a non-v3 json's `polygons` array is NOT honoured. The module
+					// flushes history itself; its onHistory status write lands BEFORE the Loaded write below.
 					var ok = window.annotator.loadLabel(img, cls);
-					if (ok) { window.annotator.loadPolygons(j && !Array.isArray(j) ? j.polygons : null); }
+					var sfx = '';
+					if (ok) {
+						var tr = window.annotator.traceLoadedClasses();
+						if (tr && tr.regions > 0) { sfx = ' — traced ' + tr.classes + ' class' + (tr.classes === 1 ? '' : 'es') + ', ' + tr.regions + ' region' + (tr.regions === 1 ? '' : 's') + ', ' + tr.holes + ' hole' + (tr.holes === 1 ? '' : 's') + ' kept' + (tr.capped ? ', ' + tr.capped + ' ring' + (tr.capped === 1 ? '' : 's') + ' capped' : '') + ' — pixels replaced'; }
+					}
 					URL.revokeObjectURL(url);
 					_annRenderClassList(); _annUpdateStatus();
-					$('#osdAnnStatus').text(ok ? 'Loaded: ' + pngFile.name : 'Load failed.');
+					$('#osdAnnStatus').text(ok ? 'Loaded: ' + pngFile.name + sfx : 'Load failed.');
 				};
 				img.onerror = function () { URL.revokeObjectURL(url); $('#osdAnnStatus').text('Load: invalid PNG.'); };
 				img.src = url;
@@ -4432,19 +4438,6 @@
 		});
 		$('#osdAnnUndoBtn').on('click', function () { if (window.annotator) { window.annotator.undo(); _annUpdateStatus(); } });
 		$('#osdAnnRedoBtn').on('click', function () { if (window.annotator) { window.annotator.redo(); _annUpdateStatus(); } });
-		// Inc-15: trace the ACTIVE class's pixels into editable polygons (D1 REPLACE, holes kept).
-		// The status is written AFTER the call: _histCommit → onHistory → _annUpdateStatus has
-		// already overwritten #osdAnnStatus by the time traceActiveClass() returns (Load precedent).
-		$('#osdAnnTraceBtn').on('click', function () {
-			if (!window.annotator || window.annotator.isEmpty()) {
-				$('#osdAnnStatus').text('Nothing painted yet.');
-				return;
-			}
-			var tr = window.annotator.traceActiveClass();
-			if (tr === null) { $('#osdAnnStatus').text('Trace: nothing to trace.'); return; }
-			if (tr === false) { $('#osdAnnStatus').text('Trace: finish the open polygon first.'); return; }
-			$('#osdAnnStatus').text('Traced: ' + tr.regions + ' region' + (tr.regions === 1 ? '' : 's') + ', ' + tr.holes + ' hole' + (tr.holes === 1 ? '' : 's') + ' kept' + (tr.capped ? ', ' + tr.capped + ' ring' + (tr.capped === 1 ? '' : 's') + ' capped' : '') + ' — pixels replaced');
-		});
 
 		if (viewer && viewer.world) {
 			viewer.world.addHandler('add-item', function () {
