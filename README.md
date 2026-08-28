@@ -19,6 +19,10 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
 
+## New in v3.4.3
+
+- **One output button: Save Mask** — the separate **Export Mask** button is gone. **Save Mask** writes one binary PNG per class that has pixels (white = that class, black = everything else) plus the `classes.json` that maps them back, and the status line now says how many files will download (`Saving 3 files…`). The **Downscale** setting (Full / 4096 / 2048, default 4096) now sets the resolution of those PNGs, and **Load Mask** reopens a set saved at any of them — a downscaled set is scaled back up to the mask when it loads. At the viewer's default mask resolution Full and 4096 write the same files; 2048 halves them. A mask with no pixels in any class is refused instead of downloading a lone `classes.json`. See [Annotation](#annotation) below.
+
 ## New in v3.4.2
 
 - **Annotation classes may overlap** — two classes can now cover the same pixels. Where they overlap the colours add (red over green reads as yellow) at the *same* opacity as everywhere else, so an overlap no longer shows up as a darker, muddier band. Each class keeps its own mask, so erasing, undo and Save all act on one class at a time. See [Annotation](#annotation) below.
@@ -218,9 +222,8 @@ OSDAnnotator lets you draw multi-class pixel masks on top of the image — usefu
    - **Enter** / **Esc** — close the open polygon / cancel the draft or deselect.
    - **Backspace** / **Delete** — delete the selected polygon.
    - **Ctrl+Z** / **Ctrl+Y** — undo / redo (**Ctrl+Shift+Z** also redoes).
-6. **Export Mask** downloads a binary PNG of the *active* class only (white = painted, black = everywhere else), named after the class. A class with no pixels is reported in the status line instead of downloading a blank image. An optional **Downscale** setting (Full / 4096 / 2048) caps the shorter side of the exported image.
-7. **Save Session** downloads a timestamped bundle — one indexed label PNG (class id in the red channel, all classes) plus a `<name>.classes.json` sidecar with class names/colors **and the polygons**. **Load Session** reopens that bundle and restores the polygon handles, so you can carry on reshaping where you left off (the PNG alone also loads, defaulting to auto-named classes, and sidecars written by v3.3 still load).
-8. **Undo / Redo** (Ctrl+Z / Ctrl+Y) operate at stroke granularity, depth 20 — one polygon fill, one brush stroke, or one reshape per step. **Clear Mask** wipes all classes' pixels (not undoable).
+6. **Save Mask** downloads a timestamped set — one binary PNG per class that has pixels (white = that class, black = everywhere else) plus a `<name>.classes.json` that maps each PNG to its class and carries the class names/colors **and the polygons**. The status line tells you how many files will download; if no class has any pixels the save is refused. The **Downscale** setting (Full / 4096 / 2048, default 4096) sets the shorter side of the PNGs. **Load Mask** reopens a set — **select every PNG from that save and its `classes.json` together** in the file dialog — and restores the polygon handles, so you can carry on reshaping where you left off; a downscaled set is scaled back up to the mask as it loads. A single PNG on its own still loads as a legacy label mask (defaulting to auto-named classes), and sidecars written by v3.3 still load.
+7. **Undo / Redo** (Ctrl+Z / Ctrl+Y) operate at stroke granularity, depth 20 — one polygon fill, one brush stroke, or one reshape per step. **Clear Mask** wipes all classes' pixels (not undoable).
 
 ## Requirements
 
