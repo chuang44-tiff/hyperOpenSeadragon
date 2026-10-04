@@ -10,6 +10,7 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 - **Z-stack navigation** — Switch between focal planes using a slider.
 - **H&E and Masson Trichrome rendering** — Apply virtual histology stains as post-processing on top of your fluorescence data [1].
 - **Tone mapping** — Choose between a knee-curve (preserves intensity ratios) or Reinhard (smooth compression for publication figures).
+- **Denoise** — Optional edge-preserving GPU denoise with a 0–100 strength slider. It is display-only: your tile data is never modified.
 - **Save snapshots** — Export the current view as a PNG with an optional scale bar.
 - **Pan, zoom, and rotate** — Explore your full-resolution image at any magnification, just like a digital slide scanner.
 - **Linear spectral unmixing** — Load a spectral unmixing matrix to decompose overlapping fluorescence spectra into pure component channels. The matrix editor is built into the viewer.
@@ -19,43 +20,9 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
 
-## New in v3.4.4
+## New in v3.5
 
-- **Any mask you load becomes editable polygons** — load a mask that has no `classes.json` (a model's output, a colleague's segmentation, an older label mask) and every class in it is traced into polygons with vertex handles automatically, holes kept as holes. There is no button to press. A save that *does* include its `classes.json` is loaded exactly as written: its polygons come back as polygons, and pixels it does not describe stay brush paint. The traced pixels are replaced by the outlines so mask and polygons always agree; edges may move by about 2 px. See [Annotation](#annotation) below.
-- **Traced polygons are brush- and eraser-editable** — a brush or eraser stroke that touches a traced polygon re-traces that neighbourhood from the pixels, so carving a hole, filling one, splitting a region or bridging two all just work; the stroke and its re-trace are one **Undo** step. Polygons you drew by hand keep their eraser protection. See [Annotation](#annotation) below.
-
-## New in v3.4.3
-
-- **One output button: Save Mask** — the separate **Export Mask** button is gone. **Save Mask** writes one binary PNG per class that has pixels (white = that class, black = everything else) plus the `classes.json` that maps them back, and the status line now says how many files will download (`Saving 3 files…`). The **Downscale** setting (Full / 4096 / 2048, default 4096) now sets the resolution of those PNGs, and **Load Mask** reopens a set saved at any of them — a downscaled set is scaled back up to the mask when it loads. At the viewer's default mask resolution Full and 4096 write the same files; 2048 halves them. A mask with no pixels in any class is refused instead of downloading a lone `classes.json`. See [Annotation](#annotation) below.
-
-## New in v3.4.2
-
-- **Annotation classes may overlap** — two classes can now cover the same pixels. Where they overlap the colours add (red over green reads as yellow) at the *same* opacity as everywhere else, so an overlap no longer shows up as a darker, muddier band. Each class keeps its own mask, so erasing, undo and Save all act on one class at a time. See [Annotation](#annotation) below.
-- **Save Session now writes one PNG per class** — a session is now **one mask PNG for each class that has pixels, plus a `classes.json`**, instead of a single combined label PNG. **To reload a session, select all of those files together in the Load dialog** — the `classes.json` is what maps each PNG back to its class, so it must be part of the selection. Sessions saved by earlier versions still load exactly as before: pick the single PNG on its own.
-- **The eraser now clears only the active class** — previously one eraser stroke removed every class's pixels under the brush. To clear several classes, switch class and erase again.
-- **Editing polygons got easier** — click a vertex to select it (it highlights), then press **Backspace** or **Delete** to remove it. A small dead zone means clicking a handle no longer nudges the shape by a pixel. Clicking inside a shape behaves predictably whether you work in one class or nest several: the boundary edits the selected shape, the interior draws in the active class.
-
-## New in v3.4.1
-
-- **Eraser-proof polygons and edge handles** — the eraser now only removes brush paint *outside* your closed polygons, so a finished region cannot be nibbled away by a stray stroke; the protection spans every class, and an unclosed draft protects nothing. Reshaping gained an edge grab: **drag anywhere on a polygon's edge** to insert a new handle at that point, instead of having to place every vertex when you first draw the shape. Deleting a polygon still erases its pixels, and a single **Ctrl+Z** still restores both. See [Annotation](#annotation) below.
-- **Hardening and a long-session fix** — the tile-generation web app now refuses to read or write outside the dataset folder, including through symlinks, and escapes dataset-supplied text before it reaches the generated viewer. Stepping through z-levels quickly no longer leaks tile layers, which previously accumulated for the life of the page.
-
-## New in v3.4
-
-- **Polygon annotation** — The annotator is now a two-tool package: **Polygon** for click-to-place or freehand regions, **Brush** for free-form painting. Closed polygons stay editable — click one to select it, drag its vertex handles to reshape it, press **Backspace** to delete it — and a reshape rewrites only the pixels that actually changed. The separate Eraser radio is gone: **hold Alt** to erase while brushing. Bare keys **P**/**B** switch tool and **1**–**9** switch class, and a saved session now carries its polygons alongside the label mask, so a reloaded session is still editable. See [Annotation](#annotation) below.
-
-## New in v3.3
-
-- **OSDAnnotator — multi-class paintbrush annotation** — Paint free-form pixel masks directly on the image. Supports up to 16 classes, each with its own color, stored as a single indexed mask. The brush is screen-space (its on-screen size stays constant as you zoom); **Shift + scroll wheel** resizes it without affecting the normal zoom-on-scroll behavior. Includes stroke-level **Undo/Redo** (Ctrl+Z / Ctrl+Y), one-click **Export Mask** (binary PNG of the active class), and **Save/Load Session** (indexed label PNG + a `.classes.json` sidecar, reloadable later). See [Annotation](#annotation) below.
-
-## New in v3.2.1
-
-- **GPU guided-filter denoise** — Edge-preserving, display-only denoising applied as a post-processing pass between HyperBlend and Beer's law. Off by default; enable via the **Denoise (Guided)** toggle in Post-Processing and tune with the 0–100 **Strength** slider. Original tile data is never modified. The toggle is hidden automatically when the GPU does not support float framebuffers.
-
-## New in v3.2
-
-- **PICASSO unmixing Matrix Generation** — Generate a PICASSO unmixing matrix using the web interface. The matrix is generated using the built-in optimizer.
-![hyperOpenSeadragon Logo](PICASSO.png)
+- **Every channel survives zoom-out** — tile generation no longer drops packed channels at coarse zoom levels. Before, a dataset whose channel count was not a multiple of 4 showed its last tile source black at the home view, and a sparse 4th channel blacked out the other three wherever it was empty. Full-resolution tiles are unchanged, but **packed RGBA datasets generated by older versions should be regenerated** to fix their zoomed-out levels. This release also simplifies the viewer, renderer and tile-generator code, with no intended change to how they look or behave. See [Getting Started](#getting-started) below.
 
 ## How It Works
 
@@ -105,22 +72,17 @@ Open the URL shown in your terminal (typically `http://127.0.0.1:5000`). The app
 3. Edit z-level names if needed
 4. Click **Generate** — the app creates tiled pyramids and a ready-to-open viewer HTML in your dataset folder
 
-The app auto-detects whether your images are grayscale (channel packing), RGB/RGBA (pre-composed), or multi-page TIFF stacks. Output tiles are always RGBA/PNG for maximum quality.
+The app auto-detects whether your images are grayscale (channel packing), RGB/RGBA (pre-composed), or multi-page TIFF stacks. Output tiles are always RGBA/PNG for maximum quality. For safety, the app refuses to read or write outside the dataset folder you select (including through symlinks) and escapes dataset-supplied text before it reaches the generated viewer.
 
 **Open Viewer mode** — View existing datasets without generating anything. Paste a folder path containing a viewer HTML and DZI tiles, and click **Load**. Useful for sharing datasets with collaborators who don't have a local HTTP server set up.
 
 ### 3. Alternative: command-line tool
 
-For scripting or batch workflows, a command-line tool is also available:
+For scripting or batch workflows, a command-line tool is also available: `--channels` packs single-channel grayscale TIFFs (up to 16 channels), `--rgb` takes pre-composed RGB images, and `--config` reads a multi-z-level dataset from a YAML file:
 
 ```bash
-# Single-channel grayscale TIFFs (up to 16 channels):
 python generate_dzi.py --channels ch0.tif ch1.tif ch2.tif ch3.tif -o output_dir
-
-# Pre-composed RGB images:
 python generate_dzi.py --rgb image1.tif image2.tif -o output_dir
-
-# Multi-z-level dataset via YAML config:
 python generate_dzi.py --config example_config.yaml
 ```
 
@@ -144,7 +106,7 @@ var imageSources = [
 
 ### 5. Open in a browser
 
-Open the viewer HTML in Chrome, Firefox, or Edge. No server required — it runs from your local file system.
+Open the viewer HTML in Chrome, Firefox, or Edge. Viewing works straight from your local file system — no server required. The sole file:// exception is PICASSO's **Generate from current view**, which needs the page served over `http://` (from disk it reports "in-browser optimizer unavailable — serve over http://").
 
 ## Viewer Controls
 
@@ -185,6 +147,8 @@ PICASSO applies iterative non-negative unmixing on top of linear unmixing (or as
 
 To generate a PICASSO matrix from your data, you can generate it directly in the web browser using the built-in optimizer (by clicking the **Generate from current view** button in the PICASSO panel). Alternatively, you can pre-generate it using the [original author's repo](https://github.com/biomicrodev/picasso) and the hyperPICASSO adaptation [3].
 
+![PICASSO matrix generation panel with the in-browser optimizer](PICASSO.png)
+
 **Matrix file format** (plain text, `.txt`):
 
 ```
@@ -216,10 +180,12 @@ OSDAnnotator lets you draw multi-class pixel masks on top of the image — usefu
 
 1. Open the **Annotation** panel and check **Active (arm painting)** to arm the tool. While active, left-drag draws and right-drag pans the viewer (plain scroll still zooms). While disarmed the controls dim and every click pans and zooms the slide as usual.
 2. Use **+ Add class** to create up to 16 classes; each row lets you recolor, rename, or delete a class, and a radio button picks which class is active (everything you draw takes the active class's id).
+   - **Overlapping classes** — two classes may cover the same pixels; where they overlap, the colours add (red over green reads as yellow) at the same opacity as everywhere else.
 3. Pick a tool — **Polygon (P)** or **Brush (B)**:
    - **Polygon** — click to place vertices; **double-click** or **Enter** closes the ring and fills it with the active class; **Esc** cancels the draft. Click-drag instead draws freehand and closes on release.
    - **Brush** — left-drag paints with the active class, and **hold Alt** to erase for as long as the key is down. The eraser cannot remove pixels inside a closed **hand-drawn** polygon of any class — it only erases brush paint outside them, so a finished region cannot be nibbled away by a stray stroke. Traced polygons (see step 7) are the exception: the brush and eraser edit them, and the polygon follows the pixels. An unclosed draft protects nothing. Set the size with the slider (1–100 px) or **Shift + scroll wheel**; the footprint is screen-space, so it stays the same size on screen regardless of zoom level.
-4. Closed polygons stay editable. Click inside one of your polygons in the active class to select it — its outline and vertex handles appear — then drag a handle to reshape it, or **drag on an edge** to insert a new handle at the point you grabbed. The mask is rewritten on release and only the pixels that actually changed are touched. With a polygon selected, clicking inside it again starts a new polygon nested within it, **Esc** deselects, and **Backspace** or **Delete** removes it (erasing that class's pixels inside it — a single **Undo** restores both).
+   - **Eraser scope** — the eraser clears only the active class; to clear several classes, switch class and erase again.
+4. Closed polygons stay editable. Click inside one of your polygons in the active class to select it — its outline and vertex handles appear — then drag a handle to reshape it, or **drag on an edge** to insert a new handle at the point you grabbed. The mask is rewritten on release and only the pixels that actually changed are touched. With a polygon selected, clicking inside it again starts a new polygon nested within it, **Esc** deselects, and **Backspace** or **Delete** removes it (erasing that class's pixels inside it — a single **Undo** restores both). Click a vertex handle to select it (it highlights); **Backspace** or **Delete** then removes just that vertex (a polygon keeps at least three).
 5. Keyboard shortcuts are live while the annotator is armed, and never while you are typing in a text field:
    - **P** / **B** — switch to the Polygon / Brush tool.
    - **1**–**9** — select that class, by position in the class list.
@@ -233,7 +199,7 @@ OSDAnnotator lets you draw multi-class pixel masks on top of the image — usefu
 
 ## Requirements
 
-- A modern web browser with WebGL support (Chrome, Firefox, Edge, Safari)
+- A modern web browser with WebGL support (Chrome, Firefox, or Edge)
 - Python 3 with `pyvips` and `pyyaml` for tile generation
 - `flask` for the tile generator web app (optional if using CLI only)
 - On macOS/Linux without conda: `brew install vips` or `apt install libvips-dev`
