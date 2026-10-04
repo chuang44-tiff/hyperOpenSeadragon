@@ -12,29 +12,6 @@
 	<link rel="stylesheet" href="openseadragon/static/css/NISTStyle.css">
 	<link rel="stylesheet" href="openseadragon/static/css/NISTPages.css">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<style>
-		#filterWindow h3 {
-			font-size: 0.85em;
-			margin: 8px 0 4px 0;
-			padding: 0;
-		}
-
-		#filterWindow ul,
-		#filterWindow>div:not(#rotationSlider):not(#zlevel) {
-			padding-left: 10px;
-			margin: 4px 0;
-			list-style: none;
-		}
-
-		#filterWindow .ui-slider {
-			width: 100%;
-			margin: 5px 0;
-		}
-
-		/* ── Variant A: PICASSO generate-workflow zone, progress bar, pip strip,
-		   dependency line, and status band now live in openseadragon/style.css
-		   (shared single source of truth across all three viewer copies). ── */
-	</style>
 </head>
 
 <body>
@@ -611,7 +588,7 @@
 			}, 'image/png');
 		});
 
-		// ---- DEBUG: PICASSO Phase-2 FOV extraction (demo-only) ----
+		// ---- PICASSO Phase-2 FOV extraction ----
 		// Chunked base64 encoder: a flat btoa(String.fromCharCode(...buf))
 		// overflows the call stack at ~1M bytes (1024^2 canvas). Encode in 8KB
 		// windows over slices, then btoa the concatenated binary string.
@@ -1175,6 +1152,71 @@
 			return 'rgb(' + Math.round(r * 255) + ',' + Math.round(g * 255) + ',' + Math.round(b * 255) + ')';
 		}
 
+		// Shared innerHTML template for a channel-control row (raw channels and unmix
+		// outputs share byte-identical DOM; inputAttrs is appended to BOTH inputs,
+		// e.g. the output rows' data-output attribute).
+		function _buildControlRowHTML(tag, hueCss, hueValStr, gainValStr, inputAttrs) {
+			return '<span class="cs-ch-tag">' + tag + '</span>' +
+				'<div class="cs-hue-swatch" data-role="swatch" style="background:' + hueCss + '"></div>' +
+				'<div class="cs-control-group">' +
+				'  <span class="cs-ctrl-label">H</span>' +
+				'  <div class="cs-spinner">' +
+				'    <input type="number" value="' + hueValStr + '" min="0" max="1" step="0.01" data-role="hue"' + inputAttrs + '>' +
+				'    <div class="cs-spinner-btns">' +
+				'      <button data-role="hue-up"><svg viewBox="0 0 8 8"><polyline points="1,5 4,2 7,5"/></svg></button>' +
+				'      <button data-role="hue-down"><svg viewBox="0 0 8 8"><polyline points="1,3 4,6 7,3"/></svg></button>' +
+				'    </div>' +
+				'  </div>' +
+				'</div>' +
+				'<div class="cs-control-group">' +
+				'  <span class="cs-ctrl-label">G</span>' +
+				'  <div class="cs-spinner">' +
+				'    <input type="number" value="' + gainValStr + '" min="0" max="10" step="0.1" data-role="gain"' + inputAttrs + '>' +
+				'    <div class="cs-spinner-btns">' +
+				'      <button data-role="gain-up"><svg viewBox="0 0 8 8"><polyline points="1,5 4,2 7,5"/></svg></button>' +
+				'      <button data-role="gain-down"><svg viewBox="0 0 8 8"><polyline points="1,3 4,6 7,3"/></svg></button>' +
+				'    </div>' +
+				'  </div>' +
+				'</div>';
+		}
+
+		// Shared spinner wiring for a channel-control row. opts.parseHue returns the
+		// parsed hue, or null to ignore the event (raw-site NaN guard); opts.commitHue /
+		// opts.commitGain carry the per-site commit (writeNISTSpinner vs.
+		// _pushUnmixChannelConfig) and keep their own text/NaN path per family.
+		function _wireSpinner($hueInput, $gainInput, opts) {
+			var $row = $hueInput.closest('.cs-channel-control');
+			var $swatch = $row.find('[data-role="swatch"]');
+			$hueInput.on('input', function () {
+				var v = opts.parseHue($(this).val());
+				if (v === null) return;
+				$swatch.css('background', _hueToCSS(v));
+			});
+			$hueInput.on('change', function () {
+				var v = opts.parseHue($(this).val());
+				if (v === null) return;
+				opts.commitHue(v);
+				$swatch.css('background', _hueToCSS(v));
+			});
+			$gainInput.on('change', function () { opts.commitGain($(this).val()); });
+			$row.find('[data-role="hue-up"]').on('click', function () {
+				var v = Math.min(1, Math.round((parseFloat($hueInput.val()) + 0.01) * 100) / 100);
+				$hueInput.val(v).trigger('change');
+			});
+			$row.find('[data-role="hue-down"]').on('click', function () {
+				var v = Math.max(0, Math.round((parseFloat($hueInput.val()) - 0.01) * 100) / 100);
+				$hueInput.val(v).trigger('change');
+			});
+			$row.find('[data-role="gain-up"]').on('click', function () {
+				var v = Math.min(10, Math.round((parseFloat($gainInput.val()) + 0.1) * 10) / 10);
+				$gainInput.val(v.toFixed(1)).trigger('change');
+			});
+			$row.find('[data-role="gain-down"]').on('click', function () {
+				var v = Math.max(0, Math.round((parseFloat($gainInput.val()) - 0.1) * 10) / 10);
+				$gainInput.val(v.toFixed(1)).trigger('change');
+			});
+		}
+
 		/**
 		 * Build the two-zone channel selector UI.
 		 * Populates the dropdown with visible channels, reads initial H/G values
@@ -1236,7 +1278,7 @@
 				// jQuery UI Spinner widget binds no listener to raw DOM `change` on its
 				// <input>; it only reacts to `spin:`, Enter keyup, or its own internal
 				// _trigger("change") on blur. So `.trigger('change')` is dead — push the
-				// drawer directly, matching toggleItem (L1020) and All-Channels (L983).
+				// drawer directly, matching toggleItem and the All-Channels toggle.
 				// Honour the suppress flag used by _adaptChannelUI batch ops.
 				if (window.__hyperBlendSuppressUpdates) return;
 				_pushChannelConfigToDrawer();
@@ -1259,71 +1301,12 @@
 				row.className = 'cs-channel-control';
 				row.dataset.idx = internalIdx;
 				row.dataset.visIdx = visIdx;
-				row.innerHTML =
-					'<span class="cs-ch-tag">' + (visIdx + 1) + 'ch</span>' +
-					'<div class="cs-hue-swatch" data-role="swatch" style="background:' + _hueToCSS(state.h) + '"></div>' +
-					'<div class="cs-control-group">' +
-					'  <span class="cs-ctrl-label">H</span>' +
-					'  <div class="cs-spinner">' +
-					'    <input type="number" value="' + state.h + '" min="0" max="1" step="0.01" data-role="hue">' +
-					'    <div class="cs-spinner-btns">' +
-					'      <button data-role="hue-up"><svg viewBox="0 0 8 8"><polyline points="1,5 4,2 7,5"/></svg></button>' +
-					'      <button data-role="hue-down"><svg viewBox="0 0 8 8"><polyline points="1,3 4,6 7,3"/></svg></button>' +
-					'    </div>' +
-					'  </div>' +
-					'</div>' +
-					'<div class="cs-control-group">' +
-					'  <span class="cs-ctrl-label">G</span>' +
-					'  <div class="cs-spinner">' +
-					'    <input type="number" value="' + state.gain.toFixed(1) + '" min="0" max="10" step="0.1" data-role="gain">' +
-					'    <div class="cs-spinner-btns">' +
-					'      <button data-role="gain-up"><svg viewBox="0 0 8 8"><polyline points="1,5 4,2 7,5"/></svg></button>' +
-					'      <button data-role="gain-down"><svg viewBox="0 0 8 8"><polyline points="1,3 4,6 7,3"/></svg></button>' +
-					'    </div>' +
-					'  </div>' +
-					'</div>';
-
+				row.innerHTML = _buildControlRowHTML((visIdx + 1) + 'ch', _hueToCSS(state.h), state.h, state.gain.toFixed(1), '');
 				var $row = $(row);
-				var $hueInput = $row.find('[data-role="hue"]');
-				var $gainInput = $row.find('[data-role="gain"]');
-				var $swatch = $row.find('[data-role="swatch"]');
-
-				// Hue input: visual-only on typing, full sync on commit
-				$hueInput.on('input', function () {
-					var val = parseFloat($(this).val());
-					if (isNaN(val)) return;
-					$swatch.css('background', _hueToCSS(val));
-				});
-				$hueInput.on('change', function () {
-					var val = parseFloat($(this).val());
-					if (isNaN(val)) return;
-					writeNISTSpinner('h', internalIdx, val);
-					$swatch.css('background', _hueToCSS(val));
-				});
-				$row.find('[data-role="hue-up"]').on('click', function () {
-					var val = Math.min(1, parseFloat($hueInput.val()) + 0.01);
-					val = Math.round(val * 100) / 100;
-					$hueInput.val(val).trigger('change');
-				});
-				$row.find('[data-role="hue-down"]').on('click', function () {
-					var val = Math.max(0, parseFloat($hueInput.val()) - 0.01);
-					val = Math.round(val * 100) / 100;
-					$hueInput.val(val).trigger('change');
-				});
-
-				// Gain input: sync only on commit (no visual preview needed)
-				$gainInput.on('change', function () {
-					var val = parseFloat($(this).val());
-					if (isNaN(val)) return;
-					writeNISTSpinner('g', internalIdx, val);
-				});
-				$row.find('[data-role="gain-up"]').on('click', function () {
-					var val = Math.min(10, Math.round((parseFloat($gainInput.val()) + 0.1) * 10) / 10);
-					$gainInput.val(val.toFixed(1)).trigger('change');
-				});
-				$row.find('[data-role="gain-down"]').on('click', function () {
-					var val = Math.max(0, Math.round((parseFloat($gainInput.val()) - 0.1) * 10) / 10);
-					$gainInput.val(val.toFixed(1)).trigger('change');
+				_wireSpinner($row.find('[data-role="hue"]'), $row.find('[data-role="gain"]'), {
+					parseHue: function (t) { var v = parseFloat(t); return isNaN(v) ? null : v; },
+					commitHue: function (v) { writeNISTSpinner('h', internalIdx, v); },
+					commitGain: function (t) { var v = parseFloat(t); if (isNaN(v)) return; writeNISTSpinner('g', internalIdx, v); }
 				});
 
 				// Insert in channel order
@@ -2571,13 +2554,33 @@
 				// _unmixCurrentData in lockstep.
 				_initZeroTable(_unmixInputCount);
 				// Mark dirty via the existing mechanism (same pattern as the
-				// output-count change handler at L1825-1828). Do NOT touch drawer
+				// #unmixOutputCount change handler). Do NOT touch drawer
 				// engagement — Zero is panel-only.
 				_unmixIsDirty = true;
 				$('#unmixDirtyTag').addClass('visible');
 				$('#unmixPinvTag').hide();
 				$('#unmixStatus').text('Matrix zeroed. Click Apply to push to drawer.').css('color', '#a09d95');
 			});
+
+			// Apply a successfully-parsed rectangular Cout×Cin matrix to the Linear panel.
+			// Shared by the .txt file picker and the init auto-load; each caller keeps its
+			// own source handling and error paths (ragged-rows validation is picker-only).
+			function _applyParsedLinearMatrix(parsed, srcLabel) {
+				var N = parsed[0].length;
+				$('#unmixOutputCount').val(parsed.length);
+				$('#unmixDimDisplay').text(parsed.length);
+				window._unmixOutputCount = parsed.length;
+				_unmixCurrentData = parsed;
+				$('#unmixInputCount').text(N);
+				_buildUnmixTable(_unmixCurrentData, parsed.length, N);
+				_unmixIsDirty = false;
+				$('#unmixDirtyTag').removeClass('visible');
+				$('#unmixPinvTag').hide();
+				$('#autoLoadMsg').text('Loaded from ' + srcLabel).css('color', '#3d7c3f');
+				$('#unmixStatus').text(parsed.length + '×' + N + ' loaded').css('color', '#3d7c3f');
+				$('#unmixReload').prop('disabled', false);
+				_spUpdateComponentDropdown();
+			}
 
 			// ---- Load .txt file picker (rectangular Cout×Cin matrix) ----
 			// NOTE: Reload always re-fetches the config-defined matrix file (matrixFileName).
@@ -2609,19 +2612,7 @@
 						ev.target.value = '';
 						return;
 					}
-					$('#unmixOutputCount').val(parsed.length);
-					$('#unmixDimDisplay').text(parsed.length);
-					window._unmixOutputCount = parsed.length;
-					_unmixCurrentData = parsed;
-					$('#unmixInputCount').text(N);
-					_buildUnmixTable(_unmixCurrentData, parsed.length, N);
-					_unmixIsDirty = false;
-					$('#unmixDirtyTag').removeClass('visible');
-					$('#unmixPinvTag').hide();
-					$('#autoLoadMsg').text('Loaded from ' + f.name).css('color', '#3d7c3f');
-					$('#unmixStatus').text(parsed.length + '×' + N + ' loaded').css('color', '#3d7c3f');
-					$('#unmixReload').prop('disabled', false);
-					_spUpdateComponentDropdown();
+					_applyParsedLinearMatrix(parsed, f.name);
 					ev.target.value = '';
 				};
 				reader.onerror = function () {
@@ -2657,17 +2648,7 @@
 							$('#autoLoadMsg').text(matrixFileName + ' has invalid data').css('color', '#c45050');
 							return;
 						}
-						$('#unmixOutputCount').val(parsed.length);
-						$('#unmixDimDisplay').text(parsed.length);
-						window._unmixOutputCount = parsed.length;
-						_unmixCurrentData = parsed;
-						var N = parsed[0].length;
-						$('#unmixInputCount').text(N);
-						_buildUnmixTable(_unmixCurrentData, parsed.length, N);
-						$('#autoLoadMsg').text('Loaded from ' + fileUrl).css('color', '#3d7c3f');
-						$('#unmixStatus').text(parsed.length + '\u00d7' + N + ' loaded').css('color', '#3d7c3f');
-						$('#unmixReload').prop('disabled', false);
-						_spUpdateComponentDropdown();
+						_applyParsedLinearMatrix(parsed, fileUrl);
 					})
 					.catch(function () {
 						_initZeroTable(_unmixInputCount);
@@ -2755,7 +2736,7 @@
 			var _picassoIsDirty = false;
 			var _picassoLoadedOnce = false;
 
-			// Verbatim port of parseMpFile from demo/picasso-osd-demo.html L193–244.
+			// Verbatim port of the parseMpFile function from demo/picasso-osd-demo.html.
 			// Enforces square N×N×K shape — rectangular matrices fail the per-row
 			// column-count check before the N gate (forbidden move #1 unreachable).
 			function parseMpFile(text) {
@@ -3572,22 +3553,6 @@
 			var _spLastChannelData = null;  // last readPixelChannels result for "Add to Matrix"
 			var _spEscHandler = null;
 
-			function _spHsvToRgb(h) {
-				var r, g, b;
-				var i = Math.floor(h * 6);
-				var f = h * 6 - i;
-				var q = 1 - f;
-				switch (i % 6) {
-					case 0: r = 1; g = f; b = 0; break;
-					case 1: r = q; g = 1; b = 0; break;
-					case 2: r = 0; g = 1; b = f; break;
-					case 3: r = 0; g = q; b = 1; break;
-					case 4: r = f; g = 0; b = 1; break;
-					case 5: r = 1; g = 0; b = q; break;
-				}
-				return 'rgb(' + Math.round(r * 255) + ',' + Math.round(g * 255) + ',' + Math.round(b * 255) + ')';
-			}
-
 			function _spGetVisibleIndices() {
 				var total = window.imagesPerZ * 4;
 				var isRgb = window.__hyperBlendChannelMode === 'rgb';
@@ -3669,7 +3634,7 @@
 					} else {
 						hue = config[points[di].idx] ? config[points[di].idx].h : 0;
 					}
-					ctx.fillStyle = _spHsvToRgb(hue);
+					ctx.fillStyle = _hueToCSS(hue);
 					ctx.beginPath();
 					ctx.arc(points[di].x, points[di].y, 4, 0, Math.PI * 2);
 					ctx.fill();
@@ -3861,88 +3826,13 @@
 					row.dataset.idx = oi;
 					row.dataset.unmixOutput = 'true';
 
-					// Use hueToCSS from _buildChannelSelector scope — replicate here
-					var fi = Math.floor(hue * 6.0), f = hue * 6.0 - fi;
-					var mm = ((fi % 6) + 6) % 6;
-					var r, g, b;
-					switch (mm) {
-						case 0: r = 1; g = f; b = 0; break;
-						case 1: r = 1 - f; g = 1; b = 0; break;
-						case 2: r = 0; g = 1; b = f; break;
-						case 3: r = 0; g = 1 - f; b = 1; break;
-						case 4: r = f; g = 0; b = 1; break;
-						default: r = 1; g = 0; b = 1 - f;
-					}
-					var cssCol = 'rgb(' + Math.round(r * 255) + ',' + Math.round(g * 255) + ',' + Math.round(b * 255) + ')';
-
-					row.innerHTML =
-						'<span class="cs-ch-tag">out' + (oi + 1) + '</span>' +
-						'<div class="cs-hue-swatch" data-role="swatch" style="background:' + cssCol + '"></div>' +
-						'<div class="cs-control-group">' +
-						'  <span class="cs-ctrl-label">H</span>' +
-						'  <div class="cs-spinner">' +
-						'    <input type="number" value="' + hue.toFixed(2) + '" min="0" max="1" step="0.01" data-role="hue" data-output="' + oi + '">' +
-						'    <div class="cs-spinner-btns">' +
-						'      <button data-role="hue-up"><svg viewBox="0 0 8 8"><polyline points="1,5 4,2 7,5"/></svg></button>' +
-						'      <button data-role="hue-down"><svg viewBox="0 0 8 8"><polyline points="1,3 4,6 7,3"/></svg></button>' +
-						'    </div>' +
-						'  </div>' +
-						'</div>' +
-						'<div class="cs-control-group">' +
-						'  <span class="cs-ctrl-label">G</span>' +
-						'  <div class="cs-spinner">' +
-						'    <input type="number" value="1.0" min="0" max="10" step="0.1" data-role="gain" data-output="' + oi + '">' +
-						'    <div class="cs-spinner-btns">' +
-						'      <button data-role="gain-up"><svg viewBox="0 0 8 8"><polyline points="1,5 4,2 7,5"/></svg></button>' +
-						'      <button data-role="gain-down"><svg viewBox="0 0 8 8"><polyline points="1,3 4,6 7,3"/></svg></button>' +
-						'    </div>' +
-						'  </div>' +
-						'</div>';
-
+					row.innerHTML = _buildControlRowHTML('out' + (oi + 1), _hueToCSS(hue), hue.toFixed(2), '1.0', ' data-output="' + oi + '"');
 					var $row = $(row);
-					var $hueInput = $row.find('[data-role="hue"]');
-					var $gainInput = $row.find('[data-role="gain"]');
-					var $swatch = $row.find('[data-role="swatch"]');
-
-					// Live swatch + push config on change
-					(function ($hi, $gi, $sw, idx) {
-						$hi.on('input', function () {
-							var h = parseFloat($(this).val()) || 0;
-							var _fi = Math.floor(h * 6), _f = h * 6 - _fi, _m = ((_fi % 6) + 6) % 6;
-							var _r, _g, _b;
-							switch (_m) { case 0: _r = 1; _g = _f; _b = 0; break; case 1: _r = 1 - _f; _g = 1; _b = 0; break; case 2: _r = 0; _g = 1; _b = _f; break; case 3: _r = 0; _g = 1 - _f; _b = 1; break; case 4: _r = _f; _g = 0; _b = 1; break; default: _r = 1; _g = 0; _b = 1 - _f; }
-							$sw.css('background', 'rgb(' + Math.round(_r * 255) + ',' + Math.round(_g * 255) + ',' + Math.round(_b * 255) + ')');
-						});
-						$hi.on('change', function () {
-							var h = parseFloat($(this).val()) || 0;
-							var _fi = Math.floor(h * 6), _f = h * 6 - _fi, _m = ((_fi % 6) + 6) % 6;
-							var _r, _g, _b;
-							switch (_m) { case 0: _r = 1; _g = _f; _b = 0; break; case 1: _r = 1 - _f; _g = 1; _b = 0; break; case 2: _r = 0; _g = 1; _b = _f; break; case 3: _r = 0; _g = 1 - _f; _b = 1; break; case 4: _r = _f; _g = 0; _b = 1; break; default: _r = 1; _g = 0; _b = 1 - _f; }
-							$sw.css('background', 'rgb(' + Math.round(_r * 255) + ',' + Math.round(_g * 255) + ',' + Math.round(_b * 255) + ')');
-							_pushUnmixChannelConfig();
-						});
-						$gi.on('change', function () { _pushUnmixChannelConfig(); });
-					})($hueInput, $gainInput, $swatch, oi);
-
-					// Spinner buttons
-					(function ($hi, $gi) {
-						$row.find('[data-role="hue-up"]').on('click', function () {
-							var v = Math.min(1, Math.round((parseFloat($hi.val()) + 0.01) * 100) / 100);
-							$hi.val(v).trigger('change');
-						});
-						$row.find('[data-role="hue-down"]').on('click', function () {
-							var v = Math.max(0, Math.round((parseFloat($hi.val()) - 0.01) * 100) / 100);
-							$hi.val(v).trigger('change');
-						});
-						$row.find('[data-role="gain-up"]').on('click', function () {
-							var v = Math.min(10, Math.round((parseFloat($gi.val()) + 0.1) * 10) / 10);
-							$gi.val(v.toFixed(1)).trigger('change');
-						});
-						$row.find('[data-role="gain-down"]').on('click', function () {
-							var v = Math.max(0, Math.round((parseFloat($gi.val()) - 0.1) * 10) / 10);
-							$gi.val(v.toFixed(1)).trigger('change');
-						});
-					})($hueInput, $gainInput);
+					_wireSpinner($row.find('[data-role="hue"]'), $row.find('[data-role="gain"]'), {
+						parseHue: function (t) { return parseFloat(t) || 0; },
+						commitHue: function () { _pushUnmixChannelConfig(); },
+						commitGain: function () { _pushUnmixChannelConfig(); }
+					});
 
 					$controlsZone.append(row);
 				}

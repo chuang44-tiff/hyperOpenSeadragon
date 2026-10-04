@@ -356,5 +356,3 @@ export function reshapeFlatToNested(M, N) {
     for (let i = 0; i < N; i++) { const row = []; for (let j = 0; j < N; j++) row.push(M[i * N + j]); out.push(row); }
     return out;
 }
-
-export default { generateUnmixMatrix, buildRoute1Stack, buildRoute2Stack, reshapeFlatToNested, _roundHalfEven, _selectLowSsimPixels };
