@@ -521,19 +521,6 @@
         '}'
     ].join('\n');
 
-    // PICASSO uint8 cast: clamp [0..255] then divide by 255 (+0.5 round bias).
-    // Port of FS_CAST from demo/picasso-osd-demo.html L360–366.
-    var PICASSO_CAST_FRAGMENT_SHADER_SRC = [
-        'precision highp float;',
-        'uniform sampler2D uSrc;',
-        'varying vec2 vTexCoord;',
-        'void main() {',
-        '    vec4 v = texture2D(uSrc, vTexCoord);',
-        '    v = clamp(v, 0.0, 255.0);',
-        '    gl_FragColor = (v + vec4(0.5)) / 255.0;',
-        '}'
-    ].join('\n');
-
     // PICASSO fused kernel+cast (v5.2 2.2): applies the final kernel matrix AND
     // the uint8 cast in one pass. Used for the K-1 iteration (and the sole pass
     // when K=1), eliminating the dedicated cast pass. precision highp is required
@@ -646,7 +633,6 @@
             // Post-process (Beer's law) state
             this._postProcessConfig = {
                 active: false,
-                filterType: 'none',  // 'he', 'trichrome', or 'none'
                 mode: 0.0,           // 0.0 = H&E (nuc=B, str=G), 1.0 = Trichrome (nuc=G, str=R, col=B)
                 k: 2.5,
                 unmix: 0.1,
@@ -782,7 +768,6 @@
             this._picassoFBOWidth = 0;
             this._picassoFBOHeight = 0;
             this._picassoProgram = null;
-            this._picassoCastProgram = null;
             this._picassoKernelCastProgram = null;  // fused kernel+cast (v5.2 2.2)
             this._picassoUniforms = {};
             this._picassoKernelCastUniforms = {};
@@ -884,7 +869,6 @@
                 self._picassoTex_B = null;         // shared scalar (v5.2 2.1)
                 self._picassoTex_Out = [];
                 self._picassoProgram = null;
-                self._picassoCastProgram = null;
                 self._picassoKernelCastProgram = null;  // fused program (v5.2 2.2)
                 self._picassoFBOWidth = 0;
                 self._picassoFBOHeight = 0;
@@ -1137,7 +1121,6 @@
                     }
                 }
                 if (this._picassoProgram) gl.deleteProgram(this._picassoProgram);
-                if (this._picassoCastProgram) gl.deleteProgram(this._picassoCastProgram);
                 if (this._picassoKernelCastProgram) gl.deleteProgram(this._picassoKernelCastProgram);
                 // Block-pass programs (plain + fused-cast); freed alongside the N≤4 programs.
                 if (this._picassoBlockPlain && this._picassoBlockPlain.program) gl.deleteProgram(this._picassoBlockPlain.program);
@@ -2100,13 +2083,12 @@
 
         /**
          * Update post-process (Beer's law) configuration and request a re-draw.
-         * @param {Object} config - { active, filterType, k, unmix, nucGain, strGain, colGain, nucRGB, strRGB, colRGB }
+         * @param {Object} config - { active, mode, k, unmix, nucGain, strGain, colGain, nucRGB, strRGB, colRGB }
          */
         updatePostProcessConfig(config) {
             if (!config) return;
             var pp = this._postProcessConfig;
             if (typeof config.active !== 'undefined') pp.active = !!config.active;
-            if (typeof config.filterType !== 'undefined') pp.filterType = config.filterType;
             if (typeof config.mode !== 'undefined') pp.mode = config.mode;
             if (typeof config.k !== 'undefined') pp.k = config.k;
             if (typeof config.unmix !== 'undefined') pp.unmix = config.unmix;
@@ -2332,7 +2314,7 @@
                 if (want && !wasActive) {
                     // Lazy alloc on first activation. Programs link once;
                     // FBOs sized to current canvas (will resize each frame as needed).
-                    if (!this._picassoProgram || !this._picassoCastProgram) {
+                    if (!this._picassoProgram) {
                         this._initPicassoPrograms();
                     }
                     if (!this._picassoFBOsAllocated) {
@@ -2988,24 +2970,6 @@
                 gl.deleteShader(fs);
             }
 
-            // Cast program (float → uint8)
-            var vs2 = this._compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC);
-            var fs2 = this._compileShader(gl, gl.FRAGMENT_SHADER, PICASSO_CAST_FRAGMENT_SHADER_SRC);
-            if (vs2 && fs2) {
-                var cprog = gl.createProgram();
-                gl.attachShader(cprog, vs2);
-                gl.attachShader(cprog, fs2);
-                gl.linkProgram(cprog);
-                if (gl.getProgramParameter(cprog, gl.LINK_STATUS)) {
-                    this._picassoCastProgram = cprog;
-                } else {
-                    $.console.error('[HyperBlendWebGLDrawer] PICASSO cast program link failed:', gl.getProgramInfoLog(cprog));
-                    this._picassoSupported = false;
-                }
-                gl.deleteShader(vs2);
-                gl.deleteShader(fs2);
-            }
-
             // Fused kernel+cast program (v5.2 2.2): final-iteration matrix + uint8
             // cast in one pass. For K=1 this single program replaces blit+kernel+cast.
             var vs3 = this._compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC);
@@ -3288,7 +3252,7 @@
             var gl = this._gl;
             // v5.2 1.5: return false on every early-return so draw() does NOT
             // mark _picassoOutputReady when the body did not execute.
-            if (!gl || !this._picassoFBOsAllocated || !this._picassoProgram || !this._picassoCastProgram || !this._picassoKernelCastProgram) return false;
+            if (!gl || !this._picassoFBOsAllocated || !this._picassoProgram || !this._picassoKernelCastProgram) return false;
             if (this._picassoN > 4) {
                 return this._runPicassoKernelWide(activeLayers);
             }
@@ -3565,26 +3529,13 @@
             }
         }
 
-        // ---- Internal: transpose row-major 4×4 to column-major + optional scale ----
-        // Port of picasso-osd-demo.html L546–552 transposeAndScale.
-        _picassoTransposeAndScale(rowMajor, scale) {
-            var out = new Float32Array(16);
-            for (var i = 0; i < 4; i++) {
-                for (var j = 0; j < 4; j++) {
-                    out[j * 4 + i] = rowMajor[i * 4 + j] * scale;
-                }
-            }
-            return out;
-        }
-
         // ---- Internal: pad a native N×N (N≤4) row-major matrix into the 4×4
         //      column-major GL uniform the RGBA-packed kernel expects. ----
         // The used N×N block is transposed (row-major → GL column-major) and scaled;
         // the unused i≥N diagonal is set to identity (1.0, NOT scaled) so the unused
         // RGBA lanes pass through unchanged. Off-block entries stay 0, so the used
         // output lanes depend only on the used input lanes — the N×N math is exact
-        // and unused lanes are inert (never read downstream). N=4 reduces to the
-        // plain _picassoTransposeAndScale (no padding). See doc/plans/picasso-dynamic-N-rework.md.
+        // and unused lanes are inert (never read downstream).
         _picassoPadTransposeAndScale(rowMajor, N, scale) {
             var out = new Float32Array(16);
             for (var d = N; d < 4; d++) {
@@ -3749,9 +3700,9 @@
                 this._probePicassoExtensions();
             }
             if (this._picassoSupported === false) return false;
-            if (!this._picassoProgram || !this._picassoCastProgram || !this._picassoKernelCastProgram) {
+            if (!this._picassoProgram || !this._picassoKernelCastProgram) {
                 this._initPicassoPrograms();
-                if (!this._picassoProgram || !this._picassoCastProgram || !this._picassoKernelCastProgram) return false;
+                if (!this._picassoProgram || !this._picassoKernelCastProgram) return false;
             }
             if (!this._picassoFBOsAllocated) {
                 this._createPicassoFBOs(w, h);
