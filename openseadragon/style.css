@@ -45,17 +45,6 @@ software is used.
     margin-right: 10px;
 }
 
-.column-2 {
-    width: 90%;
-    vertical-align: top;
-    padding: 3px;
-}
-
-.flex-container{
-	display:flex;
-	flex-direction: row;
-}
-
 #available {
     list-style-type: none;
 }
@@ -154,27 +143,6 @@ li {
     font-weight: 600;
     color: #1a1917;
     top: -7px;
-}
-
-#overlayMode {
-	height: 50px;
-	width: 100px;
-	text-align: center;
-	background-color: #c2cbf0;
-}
-
-#savePathology {
-	height: 50px;
-	width: 200px;
-	text-align: center;
-	background-color: #f2fbf0;
-}
-
-#loadPathology {
-	height: 50px;
-	width: 200px;
-	text-align: center;
-	background-color: #e0a2a8;
 }
 
 /* Remove extra spacing — z-level is now inside View Controls panel */
@@ -726,27 +694,6 @@ li {
     color: #3a3832;
 }
 
-.pp-label {
-    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 10px;
-    font-weight: 600;
-    color: #908d85;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    min-width: 90px;
-}
-
-.pp-info {
-    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 11px;
-    font-weight: 500;
-    color: #3a3832;
-    background: #fff;
-    border: 1px solid #ccc9c0;
-    border-radius: 3px;
-    padding: 3px 8px;
-}
-
 .pp-select {
     font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
     font-size: 12px;
@@ -758,28 +705,6 @@ li {
     padding: 3px 8px;
     cursor: pointer;
     box-shadow: inset 0 1px 2px rgba(0,0,0,0.06);
-}
-
-.pp-textarea {
-    width: 100%;
-    min-height: 100px;
-    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 11px;
-    line-height: 1.5;
-    color: #1a1917;
-    background: #fff;
-    border: 1px solid #ccc9c0;
-    border-radius: 3px;
-    padding: 6px 8px;
-    resize: vertical;
-    box-sizing: border-box;
-    tab-size: 8;
-}
-
-.pp-textarea:focus {
-    outline: none;
-    border-color: #4a7c8a;
-    box-shadow: inset 0 1px 3px rgba(0,0,0,0.08), 0 0 0 2px rgba(74,124,138,0.15);
 }
 
 .pp-btn {
@@ -1805,4 +1730,26 @@ li {
 }
 #spectrumPanel .sp-confirm-btns #spConfirmNo:hover {
     background: #555;
+}
+
+/* #filterWindow typography overrides, shared by every viewer host (single
+   source of truth; formerly duplicated in each host's inline <style>).
+   Appended at the END of this file on purpose — they must keep winning
+   the cascade against the base #filterWindow h3 rule earlier in this file. */
+#filterWindow h3 {
+    font-size: 0.85em;
+    margin: 8px 0 4px 0;
+    padding: 0;
+}
+
+#filterWindow ul,
+#filterWindow>div:not(#rotationSlider):not(#zlevel) {
+    padding-left: 10px;
+    margin: 4px 0;
+    list-style: none;
+}
+
+#filterWindow .ui-slider {
+    width: 100%;
+    margin: 5px 0;
 }
