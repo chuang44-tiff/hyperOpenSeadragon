@@ -103,6 +103,22 @@
             background: #2563eb;
         }
 
+        .tab-active {
+            flex: 1;
+        }
+
+        .tab-inactive {
+            flex: 1;
+            padding: 8px 20px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: #fff;
+            color: #333;
+        }
+
         .btn-green {
             background: #10b981;
             color: #fff;
@@ -274,10 +290,8 @@
 
     <!-- Mode Tabs -->
     <div style="display:flex; gap:4px; margin-bottom:16px;">
-        <button class="btn-blue" id="tabGenerate" style="flex:1;">Generate</button>
-        <button id="tabReader"
-            style="flex:1;padding:8px 20px;border:1px solid #ccc;border-radius:6px;font-size:0.9rem;font-weight:600;cursor:pointer;background:#fff;color:#333;">Open
-            Viewer</button>
+        <button class="btn-blue tab-active" id="tabGenerate">Generate</button>
+        <button class="tab-inactive" id="tabReader">Open Viewer</button>
     </div>
 
     <!-- Reader Card -->
@@ -351,24 +365,18 @@
 
     <script>
         var scanData = null;
-        var currentTab = 'generate';
 
         function switchTab(tab) {
-            currentTab = tab;
             var genBtn = document.getElementById('tabGenerate');
             var readBtn = document.getElementById('tabReader');
             if (tab === 'generate') {
-                genBtn.className = 'btn-blue';
-                genBtn.style.cssText = 'flex:1;';
-                readBtn.className = '';
-                readBtn.style.cssText = 'flex:1;padding:8px 20px;border:1px solid #ccc;border-radius:6px;font-size:0.9rem;font-weight:600;cursor:pointer;background:#fff;color:#333;';
+                genBtn.className = 'btn-blue tab-active';
+                readBtn.className = 'tab-inactive';
                 show('scanCard');
                 hide('readerCard');
             } else {
-                readBtn.className = 'btn-blue';
-                readBtn.style.cssText = 'flex:1;';
-                genBtn.className = '';
-                genBtn.style.cssText = 'flex:1;padding:8px 20px;border:1px solid #ccc;border-radius:6px;font-size:0.9rem;font-weight:600;cursor:pointer;background:#fff;color:#333;';
+                readBtn.className = 'btn-blue tab-active';
+                genBtn.className = 'tab-inactive';
                 hide('scanCard');
                 hide('resultsCard');
                 hide('generateCard');
