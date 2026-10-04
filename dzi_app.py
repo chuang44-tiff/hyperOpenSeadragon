@@ -47,6 +47,14 @@ def _is_contained(candidate, root):
     return resolved == real_root or resolved.startswith(real_root + os.sep)
 
 
+def _z_folder_path(image_root, folder):
+    """Join a z-level subfolder onto the image root, shape-identical to the
+    inline ternaries it replaces. Pure join: NO resolve/normalize — the
+    worker's containment audit runs on the joined candidate downstream.
+    """
+    return image_root if folder == "." else os.path.join(image_root, folder)
+
+
 # ---------------------------------------------------------------------------
 # Progress tracking (single-user local app)
 # ---------------------------------------------------------------------------
@@ -91,6 +99,25 @@ def _check_osd_dir(osd_dir):
     missing = [f for f in REQUIRED_OSD_FILES
                if not os.path.isfile(os.path.join(osd_dir, f))]
     return len(missing) == 0, missing
+
+
+def _resolve_osd(folder):
+    """Resolve OSD asset availability and the serve dir for a dataset folder.
+
+    Dataset root's openseadragon/ wins; the copy next to this app is the
+    fallback; neither present -> status "missing" and serve_dir None.
+    Returns (osd_status, serve_dir, dataset_osd_missing). PURE: assigns no
+    globals - callers set _dataset_root/_osd_serve_dir under _state_lock.
+    """
+    dataset_osd = os.path.join(folder, "openseadragon")
+    app_osd = os.path.join(_SCRIPT_DIR, "openseadragon")
+    dataset_osd_ok, dataset_osd_missing = _check_osd_dir(dataset_osd)
+    app_osd_ok, _ = _check_osd_dir(app_osd)
+    if dataset_osd_ok:
+        return "dataset", dataset_osd, dataset_osd_missing
+    if app_osd_ok:
+        return "app_fallback", app_osd, dataset_osd_missing
+    return "missing", None, dataset_osd_missing
 
 
 def _reset_progress():
@@ -143,20 +170,12 @@ def load():
     folder = os.path.abspath(folder)
 
     # Check openseadragon availability (same fallback logic as scan)
-    dataset_osd = os.path.join(folder, "openseadragon")
-    app_osd = os.path.join(_SCRIPT_DIR, "openseadragon")
-    dataset_osd_ok, _ = _check_osd_dir(dataset_osd)
-    app_osd_ok, _ = _check_osd_dir(app_osd)
+    _, serve_dir, _ = _resolve_osd(folder)
 
     global _dataset_root, _osd_serve_dir
     with _state_lock:
         _dataset_root = folder
-        if dataset_osd_ok:
-            _osd_serve_dir = dataset_osd
-        elif app_osd_ok:
-            _osd_serve_dir = app_osd
-        else:
-            _osd_serve_dir = None
+        _osd_serve_dir = serve_dir
 
     # Find viewer HTML files (contain zstackHyper or DATASET CONFIGURATION)
     viewers = []
@@ -203,30 +222,12 @@ def scan():
     warnings = []
 
     # Check for openseadragon/ — dataset root first, then fallback to app dir
-    dataset_osd = os.path.join(scan_path, "openseadragon")
-    app_osd = os.path.join(_SCRIPT_DIR, "openseadragon")
-
-    dataset_osd_ok, dataset_osd_missing = _check_osd_dir(dataset_osd)
-    app_osd_ok, _ = _check_osd_dir(app_osd)
-
-    if dataset_osd_ok:
-        osd_status = "dataset"
-    elif app_osd_ok:
-        osd_status = "app_fallback"
-    else:
-        osd_status = "missing"
+    osd_status, serve_dir, dataset_osd_missing = _resolve_osd(scan_path)
 
     global _dataset_root, _osd_serve_dir
     with _state_lock:
         _dataset_root = scan_path
-        if dataset_osd_ok:
-            # Best case: openseadragon/ in dataset root with all files
-            _osd_serve_dir = dataset_osd
-        elif app_osd_ok:
-            # Fallback: openseadragon/ next to dzi_app.py
-            _osd_serve_dir = app_osd
-        else:
-            _osd_serve_dir = None
+        _osd_serve_dir = serve_dir
 
     # Determine image root: use raw_data/ if it exists, else scan_path itself
     raw_data_dir = os.path.join(scan_path, "raw_data")
@@ -262,7 +263,7 @@ def scan():
     band_mode = None
 
     for folder in subfolders:
-        folder_path = os.path.join(image_root, folder) if folder != "." else image_root
+        folder_path = _z_folder_path(image_root, folder)
         images = _find_images(folder_path)
 
         if not images:
@@ -369,7 +370,7 @@ def scan():
         "z_levels": z_levels,
         "band_mode": band_mode,
         "osd_status": osd_status,  # "dataset", "app_fallback", or "missing"
-        "osd_missing_files": dataset_osd_missing if not dataset_osd_ok else [],
+        "osd_missing_files": dataset_osd_missing if osd_status != "dataset" else [],
         "using_raw_data": using_raw_data,
         "warnings": warnings,
     })
@@ -614,10 +615,7 @@ def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
         # Determine band mode from first image in first z-level
         first_z = z_levels[0]
         first_folder = first_z["folder"]
-        first_folder_path = (
-            image_root if first_folder == "." else
-            os.path.join(image_root, first_folder)
-        )
+        first_folder_path = _z_folder_path(image_root, first_folder)
         first_images = _find_images(first_folder_path)
         if not first_images:
             _set_progress(error="No images found in first z-level folder.")
@@ -634,9 +632,7 @@ def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
         first_bands = first_img.bands
         for z in z_levels[1:]:
             v_folder = z["folder"]
-            v_path = (
-                image_root if v_folder == "." else os.path.join(image_root, v_folder)
-            )
+            v_path = _z_folder_path(image_root, v_folder)
             v_images = _find_images(v_path)
             if not v_images:
                 _set_progress(error=f"No images found in z-level '{v_folder}'.")
@@ -658,8 +654,8 @@ def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
                 return
 
         # Cap total channel count at 16 (viewer shader limit: 4 layers × 4 channels)
-        max_channels = 16
-        max_tile_sources = 4
+        max_channels = generate_dzi.PACK_MODES["rgba"]["max_channels"]
+        max_tile_sources = generate_dzi.MAX_TILE_SOURCES
         if is_tiff_stack:
             total_channels = n_pages
             if total_channels > max_channels:
@@ -690,9 +686,7 @@ def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
         total_steps = 0
         for z in z_levels:
             folder = z["folder"]
-            folder_path = (
-                image_root if folder == "." else os.path.join(image_root, folder)
-            )
+            folder_path = _z_folder_path(image_root, folder)
             images = _find_images(folder_path)
             if is_tiff_stack:
                 total_steps += math.ceil(n_pages / 4)
@@ -713,9 +707,7 @@ def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
         for z in z_levels:
             z_name = z.get("name", z["folder"])
             folder = z["folder"]
-            folder_path = (
-                image_root if folder == "." else os.path.join(image_root, folder)
-            )
+            folder_path = _z_folder_path(image_root, folder)
             images = sorted(_find_images(folder_path))
             image_paths = [os.path.join(folder_path, img) for img in images]
 
@@ -765,14 +757,10 @@ def _generate_worker(root_path, image_root, z_levels, um_per_pixel=None):
                         # Extract first band if page is multi-band
                         if page_img.bands > 1:
                             page_img = page_img[0]
-                        # Convert to 8-bit if needed
-                        if page_img.format == "ushort":
-                            page_img = (page_img / 256).cast("uchar")
-                        elif page_img.format not in ("uchar",):
-                            if page_img.format in ("float", "double"):
-                                page_img = (page_img * 255).cast("uchar")
-                            else:
-                                page_img = page_img.cast("uchar")
+                        # Convert to 8-bit if needed (worker prints stay out —
+                        # the CLI owns stdout)
+                        if page_img.format != "uchar":
+                            page_img = generate_dzi.to_8bit(page_img)
                         channels.append(page_img)
 
                     packed = generate_dzi.pack_channels(channels, pack_mode)
@@ -887,12 +875,10 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
     z_level_count = len(z_levels)
     z_level_values = [_parse_z_value(z.get("name", z["folder"])) for z in z_levels]
 
-    if is_grayscale:
-        channels_per_image = 4  # RGBA packing
-    elif is_rgb:
-        channels_per_image = 3
-    else:
-        channels_per_image = 4  # RGBA
+    # is_grayscale is retained for call-site clarity, no effect: the branch is
+    # unreachable-by-construction divergence (both flags cannot be set) and both
+    # non-RGB paths were 4 anyway.
+    channels_per_image = 3 if is_rgb else 4
 
     total_channels = actual_channel_count or (images_per_z * channels_per_image)
     default_channels = list(range(1, total_channels + 1))
@@ -914,7 +900,7 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
             um_val = 0.0
         um_line = f"\t\tvar umPerPixel = {um_val};          // micrometers per pixel at full resolution\n"
     else:
-        um_line = f"\t\tvar umPerPixel = 0;              // no pixel size provided — scale bar disabled\n"
+        um_line = "\t\tvar umPerPixel = 0;              // no pixel size provided — scale bar disabled\n"
 
     # Build replacement config block
     config_block = (

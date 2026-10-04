@@ -79,6 +79,21 @@ PACK_MODES = {
 }
 
 
+def to_8bit(image):
+    """Shared non-uchar -> uchar conversion ladder.
+
+    Byte-identical arithmetic to the three former inline copies:
+    ushort /256; float/double x255; any other format direct cast.
+    The CALLER keeps the force-8bit gate and its prints (keyed on the
+    PRE-CALL format, keeping CLI stdout byte-stable).
+    """
+    if image.format == "ushort":
+        return (image / 256).cast("uchar")
+    if image.format in ("float", "double"):
+        return (image * 255).cast("uchar")
+    return image.cast("uchar")
+
+
 def load_channel(path, force_8bit=True):
     """Load a single-channel image, converting to 8-bit if needed."""
     _require_pyvips()
@@ -94,15 +109,12 @@ def load_channel(path, force_8bit=True):
         image = image[0]
 
     # Convert 16-bit to 8-bit
-    if force_8bit and image.format == "ushort":
-        print(f"  Converting 16-bit -> 8-bit: {os.path.basename(path)}")
-        image = (image / 256).cast("uchar")
-    elif force_8bit and image.format not in ("uchar",):
-        print(f"  Converting {image.format} -> 8-bit: {os.path.basename(path)}")
-        if image.format in ("float", "double"):
-            image = (image * 255).cast("uchar")
+    if force_8bit and image.format != "uchar":
+        if image.format == "ushort":
+            print(f"  Converting 16-bit -> 8-bit: {os.path.basename(path)}")
         else:
-            image = image.cast("uchar")
+            print(f"  Converting {image.format} -> 8-bit: {os.path.basename(path)}")
+        image = to_8bit(image)
 
     return image
 
@@ -138,8 +150,14 @@ def pack_channels(channels, pack_mode):
         padded.append(pyvips.Image.black(width, height).cast("uchar"))
 
     joined = padded[0].bandjoin(padded[1:])
-    # Force srgb interpretation so dzsave generates true 4-band RGBA PNGs
-    return joined.copy(interpretation="srgb")
+    # The bands are independent channel data, not colour + alpha: tag them
+    # 'multiband'. dzsave then writes every band as data (a 4-band PNG, not
+    # the 2-band grey+alpha the inputs' 'b-w' tag would give) and shrinks
+    # each band on its own for the coarse pyramid levels. Tagged 'srgb',
+    # band 4 is read as alpha and the coarse levels of bands 1-3 are
+    # alpha-weighted - black wherever band 4 is 0, so a zero-padded slot
+    # blacks out the whole tile source at zoom-out.
+    return joined.copy(interpretation="multiband")
 
 
 def load_rgb_tile_source(path, pack_mode, force_8bit=True):
@@ -156,15 +174,12 @@ def load_rgb_tile_source(path, pack_mode, force_8bit=True):
     target_bands = PACK_MODES[pack_mode]["channels_per_tile"]
 
     # Convert 16-bit to 8-bit
-    if force_8bit and image.format == "ushort":
-        print(f"  Converting 16-bit -> 8-bit: {basename}")
-        image = (image / 256).cast("uchar")
-    elif force_8bit and image.format not in ("uchar",):
-        print(f"  Converting {image.format} -> 8-bit: {basename}")
-        if image.format in ("float", "double"):
-            image = (image * 255).cast("uchar")
+    if force_8bit and image.format != "uchar":
+        if image.format == "ushort":
+            print(f"  Converting 16-bit -> 8-bit: {basename}")
         else:
-            image = image.cast("uchar")
+            print(f"  Converting {image.format} -> 8-bit: {basename}")
+        image = to_8bit(image)
 
     # Adjust bands to target
     if image.bands == 1:
@@ -193,7 +208,8 @@ def load_rgb_tile_source(path, pack_mode, force_8bit=True):
         bands = [image[i] for i in range(min(image.bands, target_bands))]
         while len(bands) < target_bands:
             bands.append(pyvips.Image.black(image.width, image.height).cast("uchar"))
-        image = bands[0].bandjoin(bands[1:])
+        # Channel data, not colour + alpha: see pack_channels.
+        image = bands[0].bandjoin(bands[1:]).copy(interpretation="multiband")
 
     return image
 
@@ -211,10 +227,11 @@ def generate_tile_source(image, output_dir, tile_index, suffix):
         overlap=OVERLAP,
         suffix=suffix,
         layout=LAYOUT,
-        # Mean (intensity-preserving) pyramid downsample, locked in over 'max' to
-        # match the processing-team fix: mean keeps photometric ratios for
-        # quantitative fluorescence. Only honored because pack_channels now tags
-        # the image 'multiband' (the old srgb/alpha path ignored region_shrink).
+        # Mean (intensity-preserving) pyramid downsample, chosen over 'max':
+        # mean keeps photometric ratios for quantitative fluorescence.
+        # dzsave ignores region_shrink for an image with an alpha band (it
+        # alpha-weights the shrink instead); pack_channels tags its output
+        # 'multiband' so that this setting applies to packed channels.
         region_shrink="mean",
     )
 
