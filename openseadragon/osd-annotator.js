@@ -83,7 +83,6 @@
         var _panLastX = 0, _panLastY = 0;     // last client coords during a pan drag
 
         // ---- E-INC4: appearance + hover state ----
-        var _color = '#4a7c8a';        // default fill/outline color (matches .osd-ann-dot)
         var _fillAlpha = 0.6;          // translucent fill opacity (R1 default ~60%)
         var _outlineW = 3;             // outline thickness in CSS px (constant screen-space hairline)
         var _lastSPerImg = 1;          // CSS px per 1 image px, captured each _render (R3 ring)
@@ -899,6 +898,21 @@
             return out;
         }
 
+        // ---- ring pair<->object conversion single owners (getPolygons out / loadPolygons in) ----
+        function _ptsToPairs(pts) {
+            var out = [];
+            if (!pts) { return out; }
+            for (var i = 0; i < pts.length; i++) { out.push([pts[i].x, pts[i].y]); }
+            return out;
+        }
+
+        function _pairsToPts(a) {
+            var out = [];
+            if (!a) { return out; }
+            for (var i = 0; i < a.length; i++) { out.push({ x: a[i][0], y: a[i][1] }); }
+            return out;
+        }
+
         // ---- Inc-10 (§5.9): pure vertex-list equality. Used ONLY by the _reshapeCommit zero-diff
         // branch to tell a real (pixel-identical) vertex move from a no-move handle grab-release,
         // which reaches that branch on every click and must NOT touch history.
@@ -1015,8 +1029,8 @@
             return { fill: fill, erase: erase };
         }
 
-        // ---- Inc-8: inclusive bbox over a run list, or null for [] (same arithmetic as
-        // _polyCommit's, factored so it can be applied to the erase list too) ----
+        // ---- Inc-8: inclusive bbox over a run list, or null for [] (single owner:
+        // _polyCommit's fill bbox and the erase-list bbox both route here) ----
         function _runsBBox(runs) {
             if (!runs || runs.length === 0) { return null; }
             var x0 = runs[0].x, x1 = runs[0].x + runs[0].w - 1;
@@ -1663,19 +1677,8 @@
             // The brush accumulates _strokeBBox inside _stampDisc (frozen), which a polygon fill
             // never calls; raw vertices must not be used (an off-mask vertex would give an
             // out-of-range getImageData rect in _histCommit).
-            var x0 = runs[0].x, x1 = runs[0].x + runs[0].w - 1;
-            var y0 = runs[0].y, y1 = runs[0].y;
-            for (var i = 1; i < runs.length; i++) {
-                var r = runs[i];
-                var rx1 = r.x + r.w - 1;
-                if (r.x < x0) { x0 = r.x; }
-                if (rx1 > x1) { x1 = rx1; }
-                if (r.y < y0) { y0 = r.y; }
-                if (r.y > y1) { y1 = r.y; }
-            }
-            _strokeBBox = { x0: x0, y0: y0, x1: x1, y1: y1 };   // EXPLICIT keys
+            _strokeBBox = _runsBBox(runs);
             _maskDirty = true;              // set DIRECTLY: _maskDirtyOnBrush is brush-gated AND frozen
-            _mctx.globalCompositeOperation = 'source-over';     // belt-and-braces (_fillRuns already restores)
         }
 
         // ---- E3: pointer FSM helpers ----
@@ -1843,7 +1846,6 @@
             // ZERO changes to undo/redo/_applyPolyFixup.
             _histCommit({ polyId: rec.id, classId: rec.classId, ptsBefore: _copyPts(rec.pts), ptsAfter: deleting ? null : _copyPts(newPts), holes: rec.holes, traced: rec.traced });
             if (deleting) { _removePolyRec(rec); } else { rec.pts = _copyPts(newPts); }
-            _mctx.globalCompositeOperation = 'source-over';   // belt-and-braces
         }
 
         // ---- Inc-9 (R4): drop an edit record from _polys by IDENTITY. Never writes the mask, never
@@ -1909,6 +1911,17 @@
             _eraserDidErase = false;   // Inc-11 (M2): reset the per-stroke suppression flag
         }
 
+        // Single owner for the undo push / trim / redo-clear / fire discipline and the
+        // undoDepth default expression (used by the harness _undoDepth getter below).
+        function _undoLimit() { return opts.undoDepth || DEFAULTS.undoDepth; }
+
+        function _pushUndoEntry(ent) {
+            _undoStack.push(ent);
+            while (_undoStack.length > _undoLimit()) { _undoStack.shift(); }
+            _redoStack.length = 0;
+            _fireHistory();
+        }
+
         // Inc-8: `tag` is OPTIONAL — {polyId, classId, ptsBefore, ptsAfter}. There is no `kind`
         // discriminator and no second restore path: every entry still carries a raster bbox;
         // the vertex fields are a FIXUP applied after the raster restore (see _applyPolyFixup).
@@ -1947,7 +1960,6 @@
             // and reads the LIVE plane, so no shadow is needed. Writes no pixels.
             var rt = (tag === undefined) ? _retraceStroke(_activeClassId, x, y, w, h) : null;
             var ent = { x: x, y: y, w: w, h: h, planes: planes };
-            _undoStack.push(ent);
             // Inc-15 (§7.3): the single-record tag copies exactly as before; `holes`/`traced` ride
             // beside it (deep-copied); a trace entry carries `polys` and NO polyId.
             if (tag) {
@@ -1957,9 +1969,7 @@
                 if (tag.polys !== undefined) { ent.polys = tag.polys; }
             }
             if (rt) { ent.retrace = rt; }
-            while (_undoStack.length > (opts.undoDepth || DEFAULTS.undoDepth)) { _undoStack.shift(); }
-            _redoStack.length = 0;
-            _fireHistory();
+            _pushUndoEntry(ent);
         }
 
         // ---- Inc-11 (M3): push a TAG-ONLY entry (null raster) for the two zero-footprint
@@ -1973,10 +1983,7 @@
             ent.ptsBefore = tag.ptsBefore; ent.ptsAfter = tag.ptsAfter;
             if (tag.holes !== undefined && tag.holes) { ent.holes = tag.holes.map(_copyPts); }   // Inc-15 (§7.3)
             if (tag.traced === true) { ent.traced = true; }                                   // (a tag-only entry never carries `polys`)
-            _undoStack.push(ent);
-            while (_undoStack.length > (opts.undoDepth || DEFAULTS.undoDepth)) { _undoStack.shift(); }
-            _redoStack.length = 0;
-            _fireHistory();
+            _pushUndoEntry(ent);
         }
 
         // Re-derive per-class silhouettes over the bbox from mask ground-truth.
@@ -3056,13 +3063,12 @@
             if (_destroyed) { return out; }
             for (var i = 0; i < _polys.length; i++) {
                 var p = _polys[i];
-                var pts = [];
-                for (var k = 0; k < p.pts.length; k++) { pts.push([p.pts[k].x, p.pts[k].y]); }
+                var pts = _ptsToPairs(p.pts);
                 var rec = { classId: p.classId, pts: pts };
                 // Inc-15 (§8.1): `holes` ONLY when non-empty, `traced: true` ONLY when set — files
                 // without traced/holed records are byte-identical to v3.4.2 output.
                 if (p.holes && p.holes.length) {
-                    rec.holes = p.holes.map(function (ring) { return ring.map(function (q) { return [q.x, q.y]; }); });
+                    rec.holes = p.holes.map(_ptsToPairs);
                 }
                 if (p.traced === true) { rec.traced = true; }
                 out.push(rec);
@@ -3101,19 +3107,12 @@
             for (i = 0; i < arr.length; i++) {                      // pass 2: adopt
                 r = arr[i];
                 if (!_classById(r.classId)) { continue; }           // unreachable vectors — skipped silently
-                var pts = [];
-                for (k = 0; k < r.pts.length; k++) { pts.push({ x: r.pts[k][0], y: r.pts[k][1] }); }
+                var pts = _pairsToPts(r.pts);
                 var nrec = { id: ++_polySeq, classId: r.classId, pts: pts };
                 // Inc-15 (§8.2): `holes` ONLY if present AND non-empty; `traced: true` ONLY if exactly
                 // true (`false` loads UNMARKED — key absent). Loading never INVENTS the marker (I-29).
                 if (r.holes !== undefined && r.holes.length) {
-                    var hs = [];
-                    for (k = 0; k < r.holes.length; k++) {
-                        var hring = [];
-                        for (var hk = 0; hk < r.holes[k].length; hk++) { hring.push({ x: r.holes[k][hk][0], y: r.holes[k][hk][1] }); }
-                        hs.push(hring);
-                    }
-                    nrec.holes = hs;
+                    nrec.holes = r.holes.map(_pairsToPts);
                 }
                 if (r.traced === true) { nrec.traced = true; }
                 _polys.push(nrec);
@@ -3325,7 +3324,6 @@
             _activePointerId: { get: function () { return _activePointerId; } },
             _rafId:           { get: function () { return _rafId; } },
             __mapFn:          { get: function () { return _pointerToMask; } },  // (= __viewToImageMask in harness Part F)
-            _color:       { get: function () { return _activeColor(); } },   // Inc-A: active class color
             _fillAlpha:   { get: function () { return _fillAlpha; } },
             _outlineW:    { get: function () { return _outlineW; } },
             _lastSPerImg: { get: function () { return _lastSPerImg; } },
@@ -3337,7 +3335,7 @@
             // ---- Inc-B: undo/redo state (read-only, for tests/harness) ----
             _undoStack:      { get: function () { return _undoStack; } },
             _redoStack:      { get: function () { return _redoStack; } },
-            _undoDepth:      { get: function () { return opts.undoDepth || DEFAULTS.undoDepth; } },
+            _undoDepth:      { get: function () { return _undoLimit(); } },
             // ---- Inc-7: polygon draft state (read-only except the harness-only _polyDraft setter,
             // precedent: _refTI / _maskDirty) ----
             _polyDraft:      { get: function () { return _polyDraft; }, set: function (v) { _polyDraft = v; } },
