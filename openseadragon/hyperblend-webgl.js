@@ -3280,8 +3280,18 @@
             var gl = this._gl;
             if (!gl || !this._picassoFBOsAllocated) return;
             if (w <= 0 || h <= 0) return;
+            var needOut2 = this._picassoN > 4 && (!this._picassoOut2 || this._picassoOut2.length < 2);
+            var needFloat2 = this._picassoN > 4 && this._picassoK > 1 && (!this._picassoFloat2 ||
+                    !this._picassoFloat2.A || !this._picassoFloat2.B ||
+                    this._picassoFloat2.A.length < 2 || this._picassoFloat2.B.length < 2);
+            if (!needOut2 && !needFloat2) return;
+            // This runs mid-draw, and _allocTexelFBO leaves each new texture bound on
+            // the active unit and FRAMEBUFFER at null: restore the caller's bindings
+            // on every exit below.
+            var prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
+            var prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
             // 2 uint8 output texels — required by any N>4 kernel run.
-            if (this._picassoN > 4 && (!this._picassoOut2 || this._picassoOut2.length < 2)) {
+            if (needOut2) {
                 var createdO = { textures: [], framebuffers: [] };
                 var out2 = [];
                 var outOk = true;
@@ -3294,14 +3304,14 @@
                     for (var oi2 = 0; oi2 < createdO.framebuffers.length; oi2++) gl.deleteFramebuffer(createdO.framebuffers[oi2]);
                     for (var ot2 = 0; ot2 < createdO.textures.length; ot2++) gl.deleteTexture(createdO.textures[ot2]);
                     $.console.error('[HyperBlendWebGLDrawer] PICASSO Out2 lazy alloc incomplete: 0x' + ot.status.toString(16) + ' — wide kernel will not run.');
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+                    gl.bindTexture(gl.TEXTURE_2D, prevTex);
                     return; // Float2 is only used alongside Out2; a later draw retries.
                 }
                 this._picassoOut2 = out2;
             }
             // 4 float ping-pong FBOs — read only by the wide kernel when K>1.
-            if (this._picassoN > 4 && this._picassoK > 1 && (!this._picassoFloat2 ||
-                    !this._picassoFloat2.A || !this._picassoFloat2.B ||
-                    this._picassoFloat2.A.length < 2 || this._picassoFloat2.B.length < 2)) {
+            if (needFloat2) {
                 var createdF = { textures: [], framebuffers: [] };
                 var f2 = { A: [], B: [] };
                 var floatOk = true;
@@ -3321,6 +3331,8 @@
                     this._picassoFloat2 = f2;
                 }
             }
+            gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+            gl.bindTexture(gl.TEXTURE_2D, prevTex);
         }
 
         // ---- Internal: resize PICASSO FBO textures to match canvas ----
