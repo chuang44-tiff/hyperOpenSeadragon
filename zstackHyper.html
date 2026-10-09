@@ -12,6 +12,58 @@
 	<link rel="stylesheet" href="openseadragon/static/css/NISTStyle.css">
 	<link rel="stylesheet" href="openseadragon/static/css/NISTPages.css">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<!-- Resource hints (first picture). Every image listed here is chrome the viewer only
+	     asks for once all parser-blocking JS has run: the OSD navigation-button PNGs under
+	     prefixUrl, the filter bundle's plus.png and the two jQuery UI CSS sprites. They
+	     weigh ~14 kB but cost ~35 round trips, and on a slow link they serialise across
+	     the six HTTP/1.1 sockets exactly where the first coarse tile would go. Hinting
+	     them in the head -- inside the first bytes of the download, long before the body's
+	     parser-blocking scripts are even reachable -- moves that latency ahead of the
+	     script phase, so the descriptors and first tiles get every socket as soon as the
+	     viewer constructs.
+	     Hrefs match the consuming tags/CSS byte for byte (same prefixUrl; plus.png comes
+	     from injected CSS so it resolves against the document, and the sprites resolve
+	     against their own stylesheet, which lands on the same URL), so every hint is a
+	     cache reuse, never a second fetch. onerror degrades a hint the page cannot use
+	     (file://, an older dataset-local openseadragon/ copy without the .min.js files) to a miss;
+	     Flask's /view route rewrites these hrefs exactly like the script srcs. -->
+	<link rel="preload" as="script" href="openseadragon/openseadragon-bin-6.0.2/openseadragon.min.js" onerror="this.remove()">
+	<link rel="preload" as="script" href="openseadragon/openseadragon-filtering-nistfuncs-12ch.min.js" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/images/plus.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/lib/images/ui-bg_flat_75_ffffff_40x100.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/lib/images/ui-icons_888888_256x240.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/zoomin_rest.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/zoomin_grouphover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/zoomin_hover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/zoomin_pressed.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/zoomout_rest.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/zoomout_grouphover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/zoomout_hover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/zoomout_pressed.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/home_rest.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/home_grouphover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/home_hover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/home_pressed.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/fullpage_rest.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/fullpage_grouphover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/fullpage_hover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/fullpage_pressed.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/rotateleft_rest.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/rotateleft_grouphover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/rotateleft_hover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/rotateleft_pressed.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/rotateright_rest.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/rotateright_grouphover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/rotateright_hover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/rotateright_pressed.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/previous_rest.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/previous_grouphover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/previous_hover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/previous_pressed.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/next_rest.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/next_grouphover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/next_hover.png" onerror="this.remove()">
+	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/next_pressed.png" onerror="this.remove()">
 </head>
 
 <body>
@@ -323,8 +375,12 @@
 	</section>
 
 	<hr>
-	<!-- Phase 1: Load OSD 6.0.2 -->
-	<script src="openseadragon/openseadragon-bin-6.0.2/openseadragon.js"></script>
+	<!-- Phase 1: Load OSD 6.0.2 (same 6.0.2 release, shipped minified build:
+	     identical git commit v6.0.2-0-7842cd92, ~976 KB fewer bytes on the
+	     first-paint critical path) -->
+	<script src="openseadragon/openseadragon-bin-6.0.2/openseadragon.min.js"></script>
+	<!-- An older openseadragon/ copy may lack the .min.js: fall back to the unminified build. -->
+	<script>window.OpenSeadragon || document.write('<script src="openseadragon/openseadragon-bin-6.0.2/openseadragon.js"><\/script>');</script>
 
 	<!-- Phase 2: Snapshot OSD 6.0.2 properties before the filter bundle's
 	     embedded OSD 2.1.0 clobbers them. The bundle's "||" guard only
@@ -347,7 +403,9 @@
 	</script>
 
 	<!-- Phase 3: Load filter bundle (OSD 2.1.0 clobbers, filter plugin adds Filters/FilterPlugin/setFilterOptions) -->
-	<script src="openseadragon/openseadragon-filtering-nistfuncs-12ch.js"></script>
+	<script src="openseadragon/openseadragon-filtering-nistfuncs-12ch.min.js"></script>
+	<!-- Same fallback for the filter bundle (it always defines OpenSeadragon.Filters). -->
+	<script>(window.OpenSeadragon && window.OpenSeadragon.Filters) || document.write('<script src="openseadragon/openseadragon-filtering-nistfuncs-12ch.js"><\/script>');</script>
 
 	<!-- Phase 4: Restore OSD 6.0.2 properties, keeping filter plugin additions -->
 	<script type="text/javascript">
@@ -804,6 +862,9 @@
 		var _stepZTimer = null;      // trailing-edge debounce timer for _stepZ
 		var _stepZPending = null;    // accumulated step target while debounce is pending
 		var _prefetchTimer = null;   // deferred z±1 prefetch timer (eviction stays synchronous)
+		var _zPrefetchDeferred = zLevelCount > 1; // startup z±1 prefetch moved to first z-slider intent
+		var _instantiating = {};     // zIdx -> {settled:n} while a descriptor-only (preload:false) add batch is in flight
+		var _zWarmTimer = null;      // startup network-idle warm-up poll (see _startZWarm)
 
 		// Every write to allLayers[z][l] goes through here. That slot is the ONLY handle by
 		// which a TiledImage can ever reach removeItem, so overwriting it orphans the previous
@@ -867,14 +928,13 @@
 							console.log("[hyperOSD] z=0 loaded (" + imagesPerZ + " layers). Lazy loading enabled for " + zLevelCount + " z-levels.");
 							_imagesLoaded = true;
 							if (_bundleReady) initBlendingLogic();
-							// Defer the z±1 prefetch (same 750 ms grace as commit-time) so
-							// z=0 tiles get exclusive loader/network priority at startup.
-							clearTimeout(_prefetchTimer);
-							_prefetchTimer = setTimeout(function () {
-								_prefetchTimer = null;
-								if (_pendingZIndex !== null || currentZIndex !== 0) return;
-								_prefetchAdjacent(0);
-							}, 750);
+							_startZWarm();
+							// Intent-driven z±1 prefetch (was a fixed 750 ms startup timer):
+							// hidden z-level sources must not compete with the z=0 load
+							// window (imageLoaderLimit) or with pan/zoom tile fetches —
+							// preload:true hidden layers keep fetching at every viewport.
+							// The first z-slider interaction (_fireZIntent) warms z±1; after
+							// any switch, _commitZSwitch's own 750 ms timer covers adjacency.
 						}
 					},
 					error: function (event) {
@@ -909,8 +969,10 @@
 			slide: function (event, ui) {
 				// Label-only during scrub — no z-switch work until release
 				zHandle.text(zLevelValues[ui.value] + "um");
+				_fireZIntent(); // warm-up only — starts the deferred z±1 prefetch
 			},
 			stop: function (event, ui) {
+				_fireZIntent();
 				switchZLevel(ui.value);
 			}
 		});
@@ -978,8 +1040,10 @@
 			if (ready) {
 				++_zSwitchGen;  // invalidate any in-flight loads
 				_commitZSwitch(newZIndex);
-			} else if (_prefetchStarted[newZIndex]) {
-				// Already being prefetched — just wait for it to finish
+			} else if (_prefetchStarted[newZIndex] || _instantiating[newZIndex]) {
+				// Full prefetch in flight, or a descriptor-only batch still settling —
+				// wait for its success callbacks to commit. A SETTLED instantiated row
+				// never reaches here: the `ready` check above takes the commit path.
 				var gen = ++_zSwitchGen;
 				_pendingZIndex = newZIndex;
 			} else {
@@ -993,6 +1057,9 @@
 		function _commitZSwitch(newZIndex) {
 			_pendingZIndex = null;
 			_stepZPending = null;
+			// O2: a descriptor-only (preload:false) pre-instantiated row needs its tile
+			// loading flipped on at commit — no-op for rows created with preload:true.
+			_resumeZRow(newZIndex);
 
 			// Hide old z-level layers
 			if (allLayers[currentZIndex]) {
@@ -1089,6 +1156,7 @@
 				}
 			}
 			delete _prefetchStarted[zIdx];
+			delete _instantiating[zIdx];
 		}
 
 		// Synchronous far-z eviction (race fix 2): kept out of the deferred prefetch so
@@ -1106,7 +1174,18 @@
 			[activeZ - 1, activeZ + 1].forEach(function (adjZ) {
 				if (adjZ < 0 || adjZ >= zLevelCount) return;
 				if (_prefetchStarted[adjZ]) return; // already in-flight
-				if (allLayers[adjZ] && allLayers[adjZ].filter(Boolean).length === imagesPerZ) return; // already loaded
+				if (_instantiating[adjZ]) {
+					// Descriptor-only batch mid-flight: claim the prefetch intent;
+					// _settleInstantiate resumes the row once its last slot lands.
+					_prefetchStarted[adjZ] = true;
+					return;
+				}
+				if (allLayers[adjZ] && allLayers[adjZ].filter(Boolean).length === imagesPerZ) {
+					// Fully loaded (resume is a no-op) or descriptor-only instantiated
+					// (resume = setPreload(true) → tiles start next frame).
+					_resumeZRow(adjZ);
+					return;
+				}
 				_prefetchStarted[adjZ] = true;
 				if (!allLayers[adjZ]) allLayers[adjZ] = new Array(imagesPerZ).fill(null);
 				var prefetchLoaded = 0;
@@ -1156,6 +1235,122 @@
 					})(_li);
 				}
 			});
+		}
+
+		// Switch/instantiate split: pre-build a z-row's TiledImages WITHOUT loading
+		// tiles — preload:false + opacity:0 makes OSD's getDrawArea() return false
+		// (openseadragon.js:29558, early-out :29893) so addTiledImage fetches each
+		// stitch.xml descriptor and constructs the TiledImage, yet downloads zero tile
+		// bytes. A later z-switch finds the row populated, resumes it via
+		// _resumeZRow() (setPreload(true), :29513) and commits at once — the descriptor
+		// round-trips and TiledImage construction no longer ride on the switch.
+		// Separate from _prefetchStarted on purpose: that flag promises commit-capable
+		// callbacks; a settled instantiated row has none, and switchZLevel's `ready`
+		// check runs BEFORE the flag checks, so a settled row commits instead of hanging.
+		function _instantiateZLevel(zIdx) {
+			if (_instantiating[zIdx] || _prefetchStarted[zIdx]) return;
+			if (allLayers[zIdx] && allLayers[zIdx].filter(Boolean).length === imagesPerZ) return; // already present
+			_instantiating[zIdx] = { settled: 0 };
+			if (!allLayers[zIdx]) allLayers[zIdx] = new Array(imagesPerZ).fill(null);
+			var startIdx = zIdx * imagesPerZ;
+			for (var _li = 0; _li < imagesPerZ; _li++) {
+				(function (layerIdx) {
+					viewer.addTiledImage({
+						tileSource: imageSources[startIdx + layerIdx],
+						opacity: 0,
+						preload: false,
+						success: function (event) {
+							_setLayerSlot(zIdx, layerIdx, event.item);
+							_settleInstantiate(zIdx);
+						},
+						error: function () {
+							console.error('[hyperOSD] Instantiate failed z=' + zIdx + ' layer ' + layerIdx);
+							_setLayerSlot(zIdx, layerIdx, null);
+							_settleInstantiate(zIdx);
+						}
+					});
+				})(_li);
+			}
+		}
+
+		function _settleInstantiate(zIdx) {
+			var st = _instantiating[zIdx];
+			if (!st) return; // evicted mid-flight — the slot write above kept the item tracked
+			st.settled++;
+			if (st.settled < imagesPerZ) return;
+			delete _instantiating[zIdx];
+			if (allLayers[zIdx] && allLayers[zIdx].filter(Boolean).length === imagesPerZ) {
+				if (_prefetchStarted[zIdx]) _resumeZRow(zIdx); // prefetch asked for tiles while in flight
+				if (_pendingZIndex === zIdx) _commitZSwitch(zIdx);
+			} else {
+				delete _prefetchStarted[zIdx]; // allow a later cold retry
+				if (_pendingZIndex === zIdx) {
+					_pendingZIndex = null;
+					console.warn('[hyperOSD] instantiate z=' + zIdx + ' partial — clearing pending');
+				}
+			}
+		}
+
+		// Flip a descriptor-only row back into a loading row. No-op for rows created
+		// with preload:true, so every pre-existing commit path is untouched.
+		function _resumeZRow(zIdx) {
+			var row = allLayers[zIdx];
+			if (!row) return;
+			for (var l = 0; l < imagesPerZ; l++) {
+				if (row[l] && row[l].getPreload() === false) row[l].setPreload(true);
+			}
+		}
+
+		// Deferred startup prefetch, intent edition: hidden z-level sources stay idle until
+		// the user first scrubs/clicks the z slider. Fires at most once; when a switch is
+		// already in flight the commit-time prefetch in _commitZSwitch covers adjacency,
+		// so skipping (and consuming the flag) loses nothing.
+		function _fireZIntent() {
+			if (!_zPrefetchDeferred) return;
+			_zPrefetchDeferred = false;
+			if (_pendingZIndex !== null) return;
+			_prefetchAdjacent(currentZIndex);
+		}
+
+		// Startup network-idle warm-up. Two phases, each gated on the visible row
+		// being fully loaded AND the shared tile loader being completely quiet
+		// (jobQueue empty, no job in progress) on two consecutive 500 ms polls:
+		//   phase 1: descriptor-only pre-instantiation of z±1 — descriptors are XHRs
+		//            (never touch imageLoader), a few hundred bytes each, zero tile
+		//            bytes, so the switch that follows pays neither descriptor
+		//            round-trips nor TiledImage construction;
+		//   phase 2: the normal z±1 prefetch — which now RESUMES those instantiated
+		//            rows instead of re-adding them, streaming neighbour tiles in the
+		//            quiet window so a switch finds them loaded.
+		// Any busy poll (tile loading, pan/zoom burst) or pending switch resets the
+		// streak, so warm-up never competes with the first-tile window, a zoom, or an
+		// in-flight load. Runs once; afterwards _commitZSwitch's 750 ms timer covers
+		// adjacency as before. Polled (not event-driven) to avoid new OSD hooks.
+		function _startZWarm() {
+			if (zLevelCount < 2 || _zWarmTimer) return;
+			var quiet = 0, phase = 1, ticks = 0;
+			_zWarmTimer = setInterval(function () {
+				if (++ticks > 240) { clearInterval(_zWarmTimer); _zWarmTimer = null; return; }
+				if (_pendingZIndex !== null) { quiet = 0; return; }
+				var row = allLayers[currentZIndex];
+				var ld = viewer.imageLoader;
+				var quietNow = !!(row && ld && ld.jobQueue.length === 0 && ld.jobsInProgress === 0) &&
+					row.filter(Boolean).length === imagesPerZ &&
+					row.every(function (it) { return it && it.getFullyLoaded(); });
+				if (!quietNow) { quiet = 0; return; }
+				if (++quiet < 2) return;
+				quiet = 0;
+				if (phase === 1) {
+					phase = 2;
+					[currentZIndex - 1, currentZIndex + 1].forEach(function (adjZ) {
+						if (adjZ >= 0 && adjZ < zLevelCount) _instantiateZLevel(adjZ);
+					});
+				} else {
+					clearInterval(_zWarmTimer);
+					_zWarmTimer = null;
+					_prefetchAdjacent(currentZIndex);
+				}
+			}, 500);
 		}
 
 		// Track current drawer mode so we only switch when needed
