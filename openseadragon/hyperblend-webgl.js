@@ -682,17 +682,20 @@
             this._guidedCoeffAttribs = {};
             this._guidedRecombineProgram = null;
             this._guidedRecombineAttribs = {};
-            // Named float-FBO pairs (each pair = 1 texture + 1 framebuffer; do NOT
-            // double-allocate). Ping1/Ping2 are separable-box scratch buffers.
-            this._guidedTex_sq = null;     this._guidedFBO_sq = null;     // I*I
-            this._guidedTex_meanI = null;  this._guidedFBO_meanI = null;  // box(I)
-            this._guidedTex_meanII = null; this._guidedFBO_meanII = null; // box(I*I)
-            this._guidedTex_a = null;      this._guidedFBO_a = null;      // coeff a
-            this._guidedTex_b = null;      this._guidedFBO_b = null;      // coeff b
-            this._guidedTex_meanA = null;  this._guidedFBO_meanA = null;  // box(a)
-            this._guidedTex_meanB = null;  this._guidedFBO_meanB = null;  // box(b)
-            this._guidedTex_ping1 = null;  this._guidedFBO_ping1 = null;  // box H scratch
-            this._guidedTex_ping2 = null;  this._guidedFBO_ping2 = null;  // box H scratch
+            // Float-FBO ROLE handles. The nine role names alias a four-pair pool
+            // (_guidedPairs) — see the liveness schedule in _createGuidedFBOs; the
+            // slot column there says which pool pair each role reads. Never allocate
+            // a role its own pair: that is what the pool exists to avoid.
+            this._guidedPairs = null;                                      // the 4 live pairs
+            this._guidedTex_sq = null;     this._guidedFBO_sq = null;     // I*I          slot 0
+            this._guidedTex_meanI = null;  this._guidedFBO_meanI = null;  // box(I)       slot 2
+            this._guidedTex_meanII = null; this._guidedFBO_meanII = null; // box(I*I)     slot 3
+            this._guidedTex_a = null;      this._guidedFBO_a = null;      // coeff a      slot 0
+            this._guidedTex_b = null;      this._guidedFBO_b = null;      // coeff b      slot 3
+            this._guidedTex_meanA = null;  this._guidedFBO_meanA = null;  // box(a)       slot 0
+            this._guidedTex_meanB = null;  this._guidedFBO_meanB = null;  // box(b)       slot 3
+            this._guidedTex_ping1 = null;  this._guidedFBO_ping1 = null;  // box H scratch slot 1
+            this._guidedTex_ping2 = null;  this._guidedFBO_ping2 = null;  // box H scratch slot 1
             this._guidedFBOsAllocated = false;
             this._guidedFBOWidth = 0;
             this._guidedFBOHeight = 0;
@@ -833,6 +836,7 @@
                 self._guidedBoxProgram = null;
                 self._guidedCoeffProgram = null;
                 self._guidedRecombineProgram = null;
+                self._guidedPairs = null;
                 self._guidedTex_sq = null;     self._guidedFBO_sq = null;
                 self._guidedTex_meanI = null;  self._guidedFBO_meanI = null;
                 self._guidedTex_meanII = null; self._guidedFBO_meanII = null;
@@ -868,6 +872,8 @@
                 self._picassoTex_A = null;         // shared scalar (v5.2 2.1)
                 self._picassoTex_B = null;         // shared scalar (v5.2 2.1)
                 self._picassoTex_Out = [];
+                self._picassoOut2 = null;          // wide-path sets: died with the context;
+                self._picassoFloat2 = null;        // _ensureWidePicassoFBOs rebuilds on demand
                 self._picassoProgram = null;
                 self._picassoKernelCastProgram = null;  // fused program (v5.2 2.2)
                 self._picassoFBOWidth = 0;
@@ -1066,29 +1072,19 @@
                 // Denoise resources (FBO2 — shared denoise/Beer's intermediate)
                 if (this._fbo2Texture) gl.deleteTexture(this._fbo2Texture);
                 if (this._fbo2) gl.deleteFramebuffer(this._fbo2);
-                // Guided filter resources (3+1 programs + named float-FBO pairs)
+                // Guided filter resources (3+1 programs + the 4-pair float-FBO pool).
+                // Free the POOL, not the nine role handles — several roles share one
+                // pair, so the handles would double-delete.
                 if (this._guidedSquareProgram) gl.deleteProgram(this._guidedSquareProgram);
                 if (this._guidedBoxProgram) gl.deleteProgram(this._guidedBoxProgram);
                 if (this._guidedCoeffProgram) gl.deleteProgram(this._guidedCoeffProgram);
                 if (this._guidedRecombineProgram) gl.deleteProgram(this._guidedRecombineProgram);
-                if (this._guidedTex_sq) gl.deleteTexture(this._guidedTex_sq);
-                if (this._guidedFBO_sq) gl.deleteFramebuffer(this._guidedFBO_sq);
-                if (this._guidedTex_meanI) gl.deleteTexture(this._guidedTex_meanI);
-                if (this._guidedFBO_meanI) gl.deleteFramebuffer(this._guidedFBO_meanI);
-                if (this._guidedTex_meanII) gl.deleteTexture(this._guidedTex_meanII);
-                if (this._guidedFBO_meanII) gl.deleteFramebuffer(this._guidedFBO_meanII);
-                if (this._guidedTex_a) gl.deleteTexture(this._guidedTex_a);
-                if (this._guidedFBO_a) gl.deleteFramebuffer(this._guidedFBO_a);
-                if (this._guidedTex_b) gl.deleteTexture(this._guidedTex_b);
-                if (this._guidedFBO_b) gl.deleteFramebuffer(this._guidedFBO_b);
-                if (this._guidedTex_meanA) gl.deleteTexture(this._guidedTex_meanA);
-                if (this._guidedFBO_meanA) gl.deleteFramebuffer(this._guidedFBO_meanA);
-                if (this._guidedTex_meanB) gl.deleteTexture(this._guidedTex_meanB);
-                if (this._guidedFBO_meanB) gl.deleteFramebuffer(this._guidedFBO_meanB);
-                if (this._guidedTex_ping1) gl.deleteTexture(this._guidedTex_ping1);
-                if (this._guidedFBO_ping1) gl.deleteFramebuffer(this._guidedFBO_ping1);
-                if (this._guidedTex_ping2) gl.deleteTexture(this._guidedTex_ping2);
-                if (this._guidedFBO_ping2) gl.deleteFramebuffer(this._guidedFBO_ping2);
+                if (this._guidedPairs) {
+                    for (var gk = 0; gk < this._guidedPairs.length; gk++) {
+                        if (this._guidedPairs[gk].tex) gl.deleteTexture(this._guidedPairs[gk].tex);
+                        if (this._guidedPairs[gk].fbo) gl.deleteFramebuffer(this._guidedPairs[gk].fbo);
+                    }
+                }
                 // PICASSO resources (6 FBOs + 6 textures + 2 programs)
                 // v5.2 2.1: A/B are shared single scalars; Out stays per-layer.
                 if (this._picassoFBO_A) gl.deleteFramebuffer(this._picassoFBO_A);
@@ -1157,6 +1153,7 @@
             this._guidedBoxProgram = null;
             this._guidedCoeffProgram = null;
             this._guidedRecombineProgram = null;
+            this._guidedPairs = null;
             this._guidedTex_sq = null;     this._guidedFBO_sq = null;
             this._guidedTex_meanI = null;  this._guidedFBO_meanI = null;
             this._guidedTex_meanII = null; this._guidedFBO_meanII = null;
@@ -1504,6 +1501,18 @@
                 this._evictStaleTiles(viewportChanged);
             }
 
+            // ---- PICASSO stage teardown (O4) ----
+            // updatePicassoConfig is a frozen region, so the toggle-off free lives
+            // here: on the first frame after deactivation the float/uint8 targets
+            // are released (see _freePicassoFBOs). Runs AFTER this frame's raw
+            // layer-texture rebind (units 0..3 no longer reference the Out
+            // textures) and BEFORE _ensureGuidedReady below allocates the guided
+            // float FBOs, so a picasso→denoise handoff never holds both sets.
+            // Re-activation reallocs via updatePicassoConfig's existing lazy path.
+            if (!this._picassoActive && this._picassoFBOsAllocated) {
+                this._freePicassoFBOs();
+            }
+
             // ---- Linear pre-blend stage (v5.0 R1) ----
             // Lifts the matrix multiply that used to live inside Pass 1 into a
             // dedicated FBO write. Runs whenever Linear is enabled — the chain
@@ -1705,19 +1714,27 @@
 
                 var pp = this._postProcessUniforms;
                 var ppc = this._postProcessConfig;
-                gl.uniform1f(pp.u_k, ppc.k);
-                // 3.3: hoist the per-pixel exp(-u_k) / 1/(1-k1) out of the shader
-                var k1 = Math.exp(-ppc.k);
-                gl.uniform1f(pp.u_k1, k1);
-                gl.uniform1f(pp.u_k2, 1.0 / (1.0 - k1));
-                gl.uniform3f(pp.u_nucRGB, ppc.nucRGB[0], ppc.nucRGB[1], ppc.nucRGB[2]);
-                gl.uniform3f(pp.u_strRGB, ppc.strRGB[0], ppc.strRGB[1], ppc.strRGB[2]);
-                gl.uniform3f(pp.u_colRGB, ppc.colRGB[0], ppc.colRGB[1], ppc.colRGB[2]);
-                gl.uniform1f(pp.u_unmix, ppc.unmix);
-                gl.uniform1f(pp.u_nucGain, ppc.nucGain);
-                gl.uniform1f(pp.u_strGain, ppc.strGain);
-                gl.uniform1f(pp.u_colGain, ppc.colGain);
-                gl.uniform1f(pp.u_mode, ppc.mode);
+                // Mirror the shipped Pass-1 3.2 gate — re-upload the
+                // 12-uniform block only when the config changed (or the program
+                // was (re)created). useProgram, input binding and the quad draw
+                // below stay unconditional. Flag set in updatePostProcessConfig
+                // and on Beer's program (re)link in _initWebGL (init + restore).
+                if (this._beersUniformsDirty) {
+                    gl.uniform1f(pp.u_k, ppc.k);
+                    // 3.3: hoist the per-pixel exp(-u_k) / 1/(1-k1) out of the shader
+                    var k1 = Math.exp(-ppc.k);
+                    gl.uniform1f(pp.u_k1, k1);
+                    gl.uniform1f(pp.u_k2, 1.0 / (1.0 - k1));
+                    gl.uniform3f(pp.u_nucRGB, ppc.nucRGB[0], ppc.nucRGB[1], ppc.nucRGB[2]);
+                    gl.uniform3f(pp.u_strRGB, ppc.strRGB[0], ppc.strRGB[1], ppc.strRGB[2]);
+                    gl.uniform3f(pp.u_colRGB, ppc.colRGB[0], ppc.colRGB[1], ppc.colRGB[2]);
+                    gl.uniform1f(pp.u_unmix, ppc.unmix);
+                    gl.uniform1f(pp.u_nucGain, ppc.nucGain);
+                    gl.uniform1f(pp.u_strGain, ppc.strGain);
+                    gl.uniform1f(pp.u_colGain, ppc.colGain);
+                    gl.uniform1f(pp.u_mode, ppc.mode);
+                    this._beersUniformsDirty = false;
+                }
 
                 // Draw full-screen quad (Pass 2) — use FBO tex coords (no Y-flip)
                 var ppPos = this._postProcessAttribs.aPosition;
@@ -1730,6 +1747,36 @@
                 gl.vertexAttribPointer(ppTex, 2, gl.FLOAT, false, 0, 0);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
+
+            // ---- stage free-on-inactive (hooks in draw() stage-skip
+            // branches ONLY — updatePicassoConfig/updateUnmixConfig/setDenoiseConfig
+            // are untouched) ----
+            // (Linear and PICASSO are not handled here: _freeLinearFBOs/_freePicassoFBOs
+            // delete those stages' buffers outright on disengage.)
+            // A stage disengaged since the LAST draw releases its texture storage to
+            // 1x1 immediately: an off-window can be a single draw frame, so any
+            // N-frame delay would never fire (and true idle never calls draw() at
+            // all — a wall-clock timer is out of contract). Re-enable cost is one
+            // realloc through the existing lazy _ensure/_resize gates (advisory
+            // hitch). Width resets (in the free methods) unblock the resize
+            // early-return gates. _fbo stays bound-and-freeable unless Beer's OR
+            // denoise is still using it; _fbo2 unless BOTH are (the four-combo
+            // routing contract above).
+            if (!this._denoiseConfig.active && this._guidedFBOsAllocated && this._guidedFBOWidth > 1) {
+                this._freeGuidedStageStorage();
+            }
+            if (!postActive && !denoiseActive && this._fboWidth > 1) {
+                this._freeTexStorage1x1(gl, this._fboTexture, gl.RGBA, gl.UNSIGNED_BYTE);
+                this._fboWidth = 1;
+                this._fboHeight = 1;
+            }
+            if (!(postActive && denoiseActive) && this._fbo2Width > 1) {
+                this._freeTexStorage1x1(gl, this._fbo2Texture, gl.RGBA, gl.UNSIGNED_BYTE);
+                this._fbo2Width = 1;
+                this._fbo2Height = 1;
+            }
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, null);
 
             if (window.__hyperBenchEnabled && __bt0 !== 0) {
                 __bench.frameTimes[__bench.frameTimeIdx] = performance.now() - __bt0;
@@ -2098,6 +2145,9 @@
             if (config.nucRGB) pp.nucRGB = config.nucRGB.slice();
             if (config.strRGB) pp.strRGB = config.strRGB.slice();
             if (config.colRGB) pp.colRGB = config.colRGB.slice();
+            // Config merged — Pass-3 uniforms must be re-uploaded on
+            // the next draw. Mirrors the updateChannelConfig dirty set (:1834).
+            this._beersUniformsDirty = true;
             if (this.viewer) {
                 this.viewer.forceRedraw();
             }
@@ -2162,6 +2212,13 @@
                         this._unmixEnabled = false;
                         this._linearOutputReady = false;
                         this._texturesValid = false;
+                        // O4: free the stage's 2 canvas RGBA8 targets instead of
+                        // leaving them resident after a toggle-off. Re-enable
+                        // reallocs via the existing lazy path (enable branch calls
+                        // _ensureLinearResources → _resizeLinearFBOs), before any
+                        // bind or read. Nothing between here and then consumes
+                        // them: every consumer gates on _unmixEnabled/_linearOutputReady.
+                        this._freeLinearFBOs();
                     }
                 }
             }
@@ -2833,7 +2890,9 @@
                                 '] gpu=[' + Array.from(gpu8).join(',') + '] max|Δ|=' + maxD8);
                         }
                     } else {
-                        // ---- N≤4 path (UNCHANGED, verbatim — reads _picassoFBO_Out[li]). ----
+                        // ---- N≤4 path — reads _picassoFBO_Out[li]. Out is
+                        // sized to imagesPerZ, so skip layers beyond it (previously every
+                        // layer 0..3 always existed). ----
                         for (var li = 0; li < self._layerFBOs.length; li++) {
                             // v5.2 1.6: in Mode-3 chained PICASSO the kernel skips
                             // layers 1..3 (their _picassoFBO_Out are stale), so the
@@ -2842,6 +2901,7 @@
                             // harness runs this in Mode 2 where all layers are valid;
                             // this guard protects against accidental Mode-3 runs.)
                             if (self._chainAllowed() && li > 0) continue;
+                            if (li >= self._picassoFBO_Out.length) continue;
                             // Sample raw layer
                             gl.bindFramebuffer(gl.FRAMEBUFFER, self._layerFBOs[li]);
                             gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
@@ -3092,8 +3152,15 @@
             }
 
             // Per-layer uint8 Out FBOs (units 0..3 bound concurrently — must persist).
+            // Size to imagesPerZ (fallback 4) — only imagesPerZ layers
+            // are ever blit-seeded or kernel-written; the rebind (length-guarded)
+            // leaves units >= imagesPerZ on their cleared raw layer textures
+            // (zero-identical to never-written Out textures). Same typeof-guard
+            // idiom as _getActiveLayers.
             if (ok) {
-                for (var i = 0; i < 4; i++) {
+                var nOut = (typeof window.imagesPerZ !== 'undefined') ? window.imagesPerZ : 4;
+                nOut = Math.max(1, Math.min(4, nOut | 0));
+                for (var i = 0; i < nOut; i++) {
                     var o = makeFBO(gl.UNSIGNED_BYTE);
                     if (!o.ok) {
                         ok = false;
@@ -3107,13 +3174,18 @@
             }
 
             // --- N>4 (2-texel) extra FBOs: 2 uint8 output texels + (for K>1)
-            //     4 float ping-pong FBOs. Allocated unconditionally here (cheap:
-            //     2 uint8 + 4 float at canvas size); the K=1 path touches only
-            //     _picassoOut2. Float pair gated separately at draw if needed.
+            //     4 float ping-pong FBOs. Allocated ONLY when the current
+            //     config needs them: Out2 is read only by the N>4 wide kernel,
+            //     Float2 only by that kernel with K>1 — the K=1,N<=4 headline
+            //     path never touches either, and skipping them keeps six
+            //     canvas-size targets off the GPU (VRAM). A later engage of
+            //     N>4 / K>1 lazy-allocates the missing set via
+            //     _ensureWidePicassoFBOs (called by _ensurePicassoResources on
+            //     every PICASSO draw; updatePicassoConfig is a frozen region).
             //     Uses the _allocTexelFBO factory (PICASSO-internal; Linear stays frozen). ---
             this._picassoOut2 = null;
             this._picassoFloat2 = null;
-            if (ok) {
+            if (ok && this._picassoN > 4) {
                 this._picassoOut2 = [];
                 for (var oi = 0; oi < 2; oi++) {
                     var ot = this._allocTexelFBO(created, w, h, gl.UNSIGNED_BYTE, gl.NEAREST);
@@ -3121,7 +3193,7 @@
                     this._picassoOut2.push({ fbo: ot.fbo, tex: ot.tex });
                 }
             }
-            if (ok && this._picassoSupported !== false) {
+            if (ok && this._picassoSupported !== false && this._picassoN > 4 && this._picassoK > 1) {
                 this._picassoFloat2 = { A: [], B: [] };
                 var floatOk = true;
                 for (var fi2 = 0; fi2 < 2; fi2++) {
@@ -3190,6 +3262,79 @@
             return { tex: tex, fbo: fbo, ok: status === gl.FRAMEBUFFER_COMPLETE, status: status };
         }
 
+        // ---- Internal: lazy-allocate the N>4 wide-path FBO sets on demand ----
+        // _createPicassoFBOs only builds _picassoOut2 when _picassoN > 4 and
+        // _picassoFloat2 when _picassoN > 4 && _picassoK > 1 (the K=1,N<=4
+        // headline path never reads either). updatePicassoConfig is a frozen
+        // region, so the re-alloc hook lives here instead: _ensurePicassoResources
+        // runs on every PICASSO draw that can reach _runPicassoKernel, so any
+        // frame whose config first needs a missing wide set gets it allocated
+        // (at the just-resized FBO dims) before the kernel inspects it. Mirrors
+        // the first-activation lazy alloc in updatePicassoConfig. On failure the
+        // set stays null and partials are freed: every consumer
+        // (_runPicassoKernelWide, _rebindPicassoOutputs, readPicassoLayerFull,
+        // self-checks 3/5/7) is null-guarded and degrades to "kernel will not
+        // run" — the same policy _createPicassoFBOs applies to a float pair that
+        // fails to allocate. Failed sets are retried on a later draw.
+        _ensureWidePicassoFBOs(w, h) {
+            var gl = this._gl;
+            if (!gl || !this._picassoFBOsAllocated) return;
+            if (w <= 0 || h <= 0) return;
+            var needOut2 = this._picassoN > 4 && (!this._picassoOut2 || this._picassoOut2.length < 2);
+            var needFloat2 = this._picassoN > 4 && this._picassoK > 1 && (!this._picassoFloat2 ||
+                    !this._picassoFloat2.A || !this._picassoFloat2.B ||
+                    this._picassoFloat2.A.length < 2 || this._picassoFloat2.B.length < 2);
+            if (!needOut2 && !needFloat2) return;
+            // This runs mid-draw, and _allocTexelFBO leaves each new texture bound on
+            // the active unit and FRAMEBUFFER at null: restore the caller's bindings
+            // on every exit below.
+            var prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
+            var prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+            // 2 uint8 output texels — required by any N>4 kernel run.
+            if (needOut2) {
+                var createdO = { textures: [], framebuffers: [] };
+                var out2 = [];
+                var outOk = true;
+                for (var oi = 0; oi < 2; oi++) {
+                    var ot = this._allocTexelFBO(createdO, w, h, gl.UNSIGNED_BYTE, gl.NEAREST);
+                    if (!ot.ok) { outOk = false; break; }
+                    out2.push({ fbo: ot.fbo, tex: ot.tex });
+                }
+                if (!outOk) {
+                    for (var oi2 = 0; oi2 < createdO.framebuffers.length; oi2++) gl.deleteFramebuffer(createdO.framebuffers[oi2]);
+                    for (var ot2 = 0; ot2 < createdO.textures.length; ot2++) gl.deleteTexture(createdO.textures[ot2]);
+                    $.console.error('[HyperBlendWebGLDrawer] PICASSO Out2 lazy alloc incomplete: 0x' + ot.status.toString(16) + ' — wide kernel will not run.');
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+                    gl.bindTexture(gl.TEXTURE_2D, prevTex);
+                    return; // Float2 is only used alongside Out2; a later draw retries.
+                }
+                this._picassoOut2 = out2;
+            }
+            // 4 float ping-pong FBOs — read only by the wide kernel when K>1.
+            if (needFloat2) {
+                var createdF = { textures: [], framebuffers: [] };
+                var f2 = { A: [], B: [] };
+                var floatOk = true;
+                for (var fi2 = 0; fi2 < 2; fi2++) {
+                    var fa = this._allocTexelFBO(createdF, w, h, gl.FLOAT, gl.NEAREST);
+                    var fb = this._allocTexelFBO(createdF, w, h, gl.FLOAT, gl.NEAREST);
+                    if (!fa.ok || !fb.ok) { floatOk = false; break; }
+                    f2.A.push({ fbo: fa.fbo, tex: fa.tex });
+                    f2.B.push({ fbo: fb.fbo, tex: fb.tex });
+                }
+                if (!floatOk) {
+                    for (var fi3 = 0; fi3 < createdF.framebuffers.length; fi3++) gl.deleteFramebuffer(createdF.framebuffers[fi3]);
+                    for (var ti3 = 0; ti3 < createdF.textures.length; ti3++) gl.deleteTexture(createdF.textures[ti3]);
+                    // K=1,N>4 stays available (fused-cast path never reads _picassoFloat2).
+                    $.console.error('[HyperBlendWebGLDrawer] PICASSO Float2 lazy alloc incomplete — K>1,N>4 will not run.');
+                } else {
+                    this._picassoFloat2 = f2;
+                }
+            }
+            gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+            gl.bindTexture(gl.TEXTURE_2D, prevTex);
+        }
+
         // ---- Internal: resize PICASSO FBO textures to match canvas ----
         _resizePicassoFBOs(w, h) {
             if (w === this._picassoFBOWidth && h === this._picassoFBOHeight) return;
@@ -3237,6 +3382,63 @@
             gl.bindTexture(gl.TEXTURE_2D, null);
             this._picassoFBOWidth = w;
             this._picassoFBOHeight = h;
+        }
+
+        // ---- Internal: free PICASSO stage targets when the stage is off (O4) ----
+        // draw() calls this on the first frame after deactivation (updatePicassoConfig
+        // is a frozen region, so the free cannot live there). Releases the 2 shared
+        // float ping-pong + 4 per-layer uint8 Out (+ the N>4 Out2/Float2 extras,
+        // ~120 B/px total) that would otherwise stay resident for the session and
+        // inflate the peak of every later stage (e.g. guided's 9 float FBOs).
+        // Programs, matrices and the capability probe stay; re-activation reallocs
+        // through updatePicassoConfig's existing lazy alloc path (want && !wasActive
+        // → _createPicassoFBOs when !_picassoFBOsAllocated) or _ensurePicassoResources
+        // in draw — both run before any bind/read of these handles. Safe to call
+        // with everything already null (double-free and context-loss idempotent).
+        _freePicassoFBOs() {
+            var gl = this._gl;
+            if (gl) {
+                if (this._picassoFBO_A) gl.deleteFramebuffer(this._picassoFBO_A);
+                if (this._picassoTex_A) gl.deleteTexture(this._picassoTex_A);
+                if (this._picassoFBO_B) gl.deleteFramebuffer(this._picassoFBO_B);
+                if (this._picassoTex_B) gl.deleteTexture(this._picassoTex_B);
+                for (var i = 0; i < this._picassoFBO_Out.length; i++) {
+                    if (this._picassoFBO_Out[i]) gl.deleteFramebuffer(this._picassoFBO_Out[i]);
+                    if (this._picassoTex_Out[i]) gl.deleteTexture(this._picassoTex_Out[i]);
+                }
+                if (this._picassoOut2) {
+                    for (var oi = 0; oi < this._picassoOut2.length; oi++) {
+                        if (this._picassoOut2[oi]) {
+                            if (this._picassoOut2[oi].fbo) gl.deleteFramebuffer(this._picassoOut2[oi].fbo);
+                            if (this._picassoOut2[oi].tex) gl.deleteTexture(this._picassoOut2[oi].tex);
+                        }
+                    }
+                }
+                if (this._picassoFloat2) {
+                    var sides = [this._picassoFloat2.A, this._picassoFloat2.B];
+                    for (var si = 0; si < sides.length; si++) {
+                        var side = sides[si] || [];
+                        for (var ei = 0; ei < side.length; ei++) {
+                            if (side[ei]) {
+                                if (side[ei].fbo) gl.deleteFramebuffer(side[ei].fbo);
+                                if (side[ei].tex) gl.deleteTexture(side[ei].tex);
+                            }
+                        }
+                    }
+                }
+            }
+            this._picassoFBO_A = null;
+            this._picassoFBO_B = null;
+            this._picassoFBO_Out = [];
+            this._picassoTex_A = null;
+            this._picassoTex_B = null;
+            this._picassoTex_Out = [];
+            this._picassoOut2 = null;
+            this._picassoFloat2 = null;
+            this._picassoFBOsAllocated = false;
+            this._picassoFBOWidth = 0;
+            this._picassoFBOHeight = 0;
+            this._picassoOutputReady = false;
         }
 
         // ---- Internal: run K iterations of max(0, P^(k) @ x) per active layer ----
@@ -3677,7 +3879,10 @@
                 this._initLinearProgramB();
                 if (!this._linearProgramB) return false;
             }
-            if (!this._linearFBOs[0] || w !== this._linearFBOWidth_pre || h !== this._linearFBOHeight_pre) {
+            // Grow when index 1 is needed (M>4) but not yet allocated
+            // — _resizeLinearFBOs now leaves index 1 null for M<=4.
+            if (!this._linearFBOs[0] || w !== this._linearFBOWidth_pre || h !== this._linearFBOHeight_pre
+                || (this._numOutputs > 4 && !this._linearFBOs[1])) {
                 this._resizeLinearFBOs(w, h);
             }
             return !!this._linearFBOs[0];
@@ -3709,6 +3914,9 @@
             } else {
                 this._resizePicassoFBOs(w, h);
             }
+            // Wide-path (N>4 / K>1) FBO sets are allocated lazily — no-op when
+            // _createPicassoFBOs already built them (or they are not needed).
+            this._ensureWidePicassoFBOs(w, h);
             return !!this._picassoFBOsAllocated;
         }
 
@@ -3793,6 +4001,13 @@
             var gl = this._gl;
             if (!gl) return;
             if (w <= 0 || h <= 0) return;
+            // This can run INSIDE draw() (via _ensureLinearResources in _runLinearPass,
+            // e.g. the first M>4 Apply grows index 1, or a canvas resize) after the
+            // raw layer textures were bound to units 0..3. bindTexture below acts on
+            // whatever unit is active, so restore that unit's binding on exit -- a
+            // bare bindTexture(null) unbinds a Linear input for this frame and the
+            // stale result is then reused by fast-path frames.
+            var prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
 
             // v5.0 R1 / MRA fix #4: ensure the uint8 abundance handoff to
             // PICASSO is NOT alpha-premultiplied. The Linear FBO is rendered
@@ -3802,7 +4017,30 @@
             // texture directly.
             gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
 
+            // FBO[1]/Texture[1] hold outputs 4..7 (variant B, Pass B).
+            // When M<=4 Pass B is skipped and NO consumer reads index 1 (the
+            // fast-path rebind is gated on _numOutputs>4), so don't allocate it.
+            // A later matrix load with M>4 grows index 1 via _ensureLinearResources
+            // / _runLinearPass's before-Pass-B check.
             for (var i = 0; i < 2; i++) {
+                if (i === 1 && this._numOutputs <= 4) {
+                    // A stale index 1 from a previous
+                    // M>4 excursion is neither the new size nor size-trackable
+                    // (width_pre belongs to index 0) — DELETE it so the
+                    // existence-based grow checks stay correct and the VRAM is
+                    // reclaimed. All consumers/destroy/restore are null-safe;
+                    // M>4 re-grow recreates it at the CURRENT size via
+                    // _ensureLinearResources / the Pass-B defensive grow.
+                    if (this._linearFBOs[1]) {
+                        gl.deleteFramebuffer(this._linearFBOs[1]);
+                        this._linearFBOs[1] = null;
+                    }
+                    if (this._linearFBOTextures[1]) {
+                        gl.deleteTexture(this._linearFBOTextures[1]);
+                        this._linearFBOTextures[1] = null;
+                    }
+                    continue;
+                }
                 if (!this._linearFBOTextures[i]) {
                     this._linearFBOTextures[i] = gl.createTexture();
                 }
@@ -3824,9 +4062,30 @@
                 }
             }
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-            gl.bindTexture(gl.TEXTURE_2D, null);
+            gl.bindTexture(gl.TEXTURE_2D, prevTex);
             this._linearFBOWidth_pre = w;
             this._linearFBOHeight_pre = h;
+        }
+
+        // ---- Internal: free Linear stage FBOs on deactivate (O4) ----
+        // Programs, matrix upload flags and the capability state stay (releasing
+        // them would force a recompile/re-upload on re-engage; they are a few KB).
+        // _ensureLinearResources lazy-recreates the targets on the next enable
+        // (_resizeLinearFBOs creates missing handles), so no freed handle is ever
+        // bound or read. destroy()'s null-guards cover the freed state.
+        _freeLinearFBOs() {
+            var gl = this._gl;
+            if (gl) {
+                for (var i = 0; i < 2; i++) {
+                    if (this._linearFBOs[i]) gl.deleteFramebuffer(this._linearFBOs[i]);
+                    if (this._linearFBOTextures[i]) gl.deleteTexture(this._linearFBOTextures[i]);
+                }
+            }
+            this._linearFBOs = [null, null];
+            this._linearFBOTextures = [null, null];
+            this._linearFBOWidth_pre = 0;
+            this._linearFBOHeight_pre = 0;
+            this._linearOutputReady = false;
         }
 
         // ---- Internal: run the Linear pre-blend matrix multiply ----
@@ -3884,6 +4143,12 @@
             // Pass B: outputs 4..7 → _linearFBOs[1] (skip when M ≤ 4 to save
             // a draw call; the texture exists but doesn't need refreshing
             // because no consumer reads from it when numOutputs ≤ 4).
+            // Defensive grow: _resizeLinearFBOs only allocates index 1
+            // when M>4, so if a matrix raised M>4 without a size change, grow it
+            // here before consuming it. No-op once _ensureLinearResources grew it.
+            if (this._numOutputs > 4 && !this._linearFBOs[1]) {
+                this._resizeLinearFBOs(w, h);
+            }
             if (this._numOutputs > 4 && this._linearFBOs[1] && this._linearProgramB) {
                 gl.useProgram(this._linearProgramB);
                 // Per-program attrib re-bind against variant B's locations.
@@ -3926,12 +4191,16 @@
             // Get a WebGL context on a hidden off-screen canvas.
             // We render to this, then draw the result to the visible canvas.
             // Actually, we can get WebGL directly on the main canvas.
-            var gl = this.canvas.getContext('webgl2', { premultipliedAlpha: false });
+            // depth:false — the drawer never enables DEPTH_TEST or SCISSOR (zero
+            // sites), so the default depth attachment on the canvas backbuffer is
+            // dead framebuffer memory/bandwidth. stencil already defaults to false
+            // and alpha is left at its default true (channel 4/8/12/16 data).
+            var gl = this.canvas.getContext('webgl2', { premultipliedAlpha: false, depth: false });
             if (!gl) {
-                gl = this.canvas.getContext('webgl', { premultipliedAlpha: false });
+                gl = this.canvas.getContext('webgl', { premultipliedAlpha: false, depth: false });
             }
             if (!gl) {
-                gl = this.canvas.getContext('experimental-webgl', { premultipliedAlpha: false });
+                gl = this.canvas.getContext('experimental-webgl', { premultipliedAlpha: false, depth: false });
             }
             if (!gl) {
                 $.console.error('[HyperBlendWebGLDrawer] Could not create WebGL context.');
@@ -4117,6 +4386,10 @@
                     };
                     gl.useProgram(beersProgram);
                     gl.uniform1i(this._postProcessUniforms.uHyperBlendOutput, 4);
+                    // Fresh program => its uniform store is empty;
+                    // force a re-upload on the next Pass-3 draw (covers init and
+                    // context-restore relink, mirroring _channelUniformsDirty).
+                    this._beersUniformsDirty = true;
                 } else {
                     $.console.error('[HyperBlendWebGLDrawer] Beer\'s law program link failed:',
                         gl.getProgramInfoLog(beersProgram));
@@ -4227,9 +4500,13 @@
             if (width === this._fboWidth && height === this._fboHeight) return;
             var gl = this._gl;
             if (!gl || !this._fboTexture) return;
+            var prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
             gl.bindTexture(gl.TEXTURE_2D, this._fboTexture);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-            gl.bindTexture(gl.TEXTURE_2D, null);
+            // Restore the caller's TEXTURE_2D binding on the ACTIVE unit, never bindTexture(null):
+            // this runs inside draw() after the layer textures are bound to units 0-3 (the
+            // dfea0a6 class: a null here unbinds a layer input for that frame).
+            gl.bindTexture(gl.TEXTURE_2D, prevTex);
             this._fboWidth = width;
             this._fboHeight = height;
         }
@@ -4241,11 +4518,43 @@
             if (width === this._fbo2Width && height === this._fbo2Height) return;
             var gl = this._gl;
             if (!gl || !this._fbo2Texture) return;
+            var prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
             gl.bindTexture(gl.TEXTURE_2D, this._fbo2Texture);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-            gl.bindTexture(gl.TEXTURE_2D, null);
+            // Restore the caller's TEXTURE_2D binding on the ACTIVE unit, never bindTexture(null):
+            // this runs inside draw() after the layer textures are bound to units 0-3 (the
+            // dfea0a6 class: a null here unbinds a layer input for that frame).
+            gl.bindTexture(gl.TEXTURE_2D, prevTex);
             this._fbo2Width = width;
             this._fbo2Height = height;
+        }
+
+        // ---- free a texture's storage to 1x1 (handle + FBO binding kept) ----
+        // texImage2D to 1x1 releases the VRAM while the owning FBO stays FRAMEBUFFER_COMPLETE
+        // against the 1x1 attachment — no dangling handle for destroy()/restore.
+        // The caller MUST reset its stage width/height fields: every _resize* helper
+        // early-returns when (w,h) match those fields, so a stale full-size record
+        // would block the next frame from re-growing (the :4227-class hazard).
+        _freeTexStorage1x1(gl, tex, internalFmt, type) {
+            if (!gl || !tex) return;
+            var prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.texImage2D(gl.TEXTURE_2D, 0, internalFmt, 1, 1, 0, gl.RGBA, type, null);
+            gl.bindTexture(gl.TEXTURE_2D, prevTex === tex ? null : prevTex);
+        }
+
+        // ---- guided stage free (7 unique pairs; meanA/meanB are
+        // aliases of meanII/sq — same objects, already freed via the unique names) ----
+        _freeGuidedStageStorage() {
+            var gl = this._gl;
+            if (!gl) return;
+            var fmt = this._picassoFloatInternalFmt || gl.RGBA;
+            var names = ['sq', 'meanI', 'meanII', 'a', 'b', 'ping1', 'ping2'];
+            for (var i = 0; i < names.length; i++) {
+                this._freeTexStorage1x1(gl, this['_guidedTex_' + names[i]], fmt, gl.FLOAT);
+            }
+            this._guidedFBOWidth = 1;
+            this._guidedFBOHeight = 1;
         }
 
         // ---- Lazy denoise-program linker (CRASH FIX: never compiled at init) ----
@@ -4376,6 +4685,34 @@
         // MUST NOT write any _picasso* state/handle. Reuses _picassoFloatInternalFmt
         // + _picassoIsWebGL2 READ-ONLY. NEAREST + CLAMP_TO_EDGE matches the numpy
         // CLAMP_TO_EDGE oracle for deterministic GPU≈oracle parity.
+        //
+        // FOUR-SLOT POOL, NINE ROLE HANDLES — the nine targets the guided pass
+        // sequence names are never more than four live at once, so a role shares a
+        // slot with earlier roles whose LAST reads are behind it:
+        //   slot 0: sq   -> a    -> meanA (sq dies as the pass-3 box-H source; a is
+        //           written pass 4 and dies as the pass-6 box-H source; meanA is
+        //           written pass 6 after that last read)
+        //   slot 1: box-H scratch for ALL FOUR box passes — H then V is strictly
+        //           sequential, so the scratch is dead the moment its own V pass reads
+        //           it: ping1 and ping2 are ONE buffer, never two simultaneously live
+        //   slot 2: meanI (live from pass 2-V to its last read at pass 5)
+        //   slot 3: meanII -> b -> meanB (meanII dies at pass 4 where coeff-a reads it;
+        //           b is written pass 5 and dies as the pass-7 box-H source; meanB is
+        //           written pass 7 after that last read)
+        // This is the minimal map: an exhaustive search over every assignment of the
+        // nine frozen role handles to three or fewer slots (liveness + feedback under
+        // the frozen call order) finds NO valid 3-slot map — meanI [written pass 2-V,
+        // read through pass 5] and coeff-a [written pass 4, read at pass 6-H] each
+        // collide with every surviving candidate slot.
+        // No aliasing hazard: with this map each pass's render target is bound to NO
+        // sampler unit its program samples (box/square: unit 5; coeff: units 6+7) at
+        // its own draw call, and no box pass ever sees srcTex === pingTex — so nothing
+        // samples a texture it is rendering into. Stale bindings on units the program
+        // does not sample are inert (WebGL feedback detection follows the program's
+        // sampler set; the same aliasing class as the accepted pass-3 meanII write).
+        // COUPLING: the pass order this schedule derives from is the FROZEN
+        // _runGuidedFilter(...) orchestrator, so it cannot drift silently; re-baselining
+        // that region means re-deriving this map.
         _createGuidedFBOs(w, h) {
             var gl = this._gl;
             if (!gl) { this._guidedSupported = false; return; }
@@ -4389,6 +4726,9 @@
             var created = { textures: [], framebuffers: [] };
             var ok = true;
             var self = this;
+            // Called from draw() (via _ensureGuidedReady): keep the caller's TEXTURE_2D
+            // binding on the active unit (see _resizeFBO).
+            var prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
 
             function makeFloatFBO() {
                 var internalFmt = self._picassoFloatInternalFmt;  // RGBA32F (WebGL2) or RGBA (WebGL1+float ext)
@@ -4409,21 +4749,20 @@
                 return { tex: tex, fbo: fbo, ok: status === gl.FRAMEBUFFER_COMPLETE, status: status };
             }
 
-            // Allocate the 9 named float-FBO pairs.
-            var pairs = [
-                'sq', 'meanI', 'meanII', 'a', 'b', 'meanA', 'meanB', 'ping1', 'ping2'
-            ];
-            var made = {};
-            for (var pi = 0; pi < pairs.length; pi++) {
+            // Allocate the four-slot float-FBO pool (see the schedule above).
+            var slotCount = 4;
+            var pool = [];
+            for (var si = 0; si < slotCount; si++) {
                 var f = makeFloatFBO();
                 if (!f.ok) {
                     ok = false;
-                    $.console.error('[HyperBlendWebGLDrawer] Guided float FBO incomplete (' +
-                        pairs[pi] + '): 0x' + f.status.toString(16));
+                    $.console.error('[HyperBlendWebGLDrawer] Guided float FBO incomplete (slot ' +
+                        si + '): 0x' + f.status.toString(16));
                     break;
                 }
-                made[pairs[pi]] = f;
+                pool.push(f);
             }
+            gl.bindTexture(gl.TEXTURE_2D, prevTex);
 
             if (!ok) {
                 // Free everything created so far. ISOLATION: set ONLY _guidedSupported.
@@ -4438,15 +4777,17 @@
                 return;
             }
 
-            this._guidedTex_sq = made.sq.tex;        this._guidedFBO_sq = made.sq.fbo;
-            this._guidedTex_meanI = made.meanI.tex;  this._guidedFBO_meanI = made.meanI.fbo;
-            this._guidedTex_meanII = made.meanII.tex;this._guidedFBO_meanII = made.meanII.fbo;
-            this._guidedTex_a = made.a.tex;          this._guidedFBO_a = made.a.fbo;
-            this._guidedTex_b = made.b.tex;          this._guidedFBO_b = made.b.fbo;
-            this._guidedTex_meanA = made.meanA.tex;  this._guidedFBO_meanA = made.meanA.fbo;
-            this._guidedTex_meanB = made.meanB.tex;  this._guidedFBO_meanB = made.meanB.fbo;
-            this._guidedTex_ping1 = made.ping1.tex;  this._guidedFBO_ping1 = made.ping1.fbo;
-            this._guidedTex_ping2 = made.ping2.tex;  this._guidedFBO_ping2 = made.ping2.fbo;
+            // Role handles → pool slots (the aliases are load-bearing; see above).
+            this._guidedPairs = pool;
+            this._guidedTex_sq = pool[0].tex;      this._guidedFBO_sq = pool[0].fbo;
+            this._guidedTex_a = pool[0].tex;       this._guidedFBO_a = pool[0].fbo;
+            this._guidedTex_meanA = pool[0].tex;   this._guidedFBO_meanA = pool[0].fbo;
+            this._guidedTex_ping1 = pool[1].tex;   this._guidedFBO_ping1 = pool[1].fbo;
+            this._guidedTex_ping2 = pool[1].tex;   this._guidedFBO_ping2 = pool[1].fbo;
+            this._guidedTex_meanI = pool[2].tex;   this._guidedFBO_meanI = pool[2].fbo;
+            this._guidedTex_meanII = pool[3].tex;  this._guidedFBO_meanII = pool[3].fbo;
+            this._guidedTex_b = pool[3].tex;       this._guidedFBO_b = pool[3].fbo;
+            this._guidedTex_meanB = pool[3].tex;   this._guidedFBO_meanB = pool[3].fbo;
             this._guidedFBOsAllocated = true;
             this._guidedFBOWidth = w;
             this._guidedFBOHeight = h;
@@ -4465,23 +4806,18 @@
             var gl = this._gl;
             if (!gl || !this._guidedFBOsAllocated) return;
             var floatFmt = this._picassoFloatInternalFmt;
-            // Paired (tex, fbo) targets so we can rebind + validate each one.
-            var pairs = [
-                [this._guidedTex_sq, this._guidedFBO_sq],
-                [this._guidedTex_meanI, this._guidedFBO_meanI],
-                [this._guidedTex_meanII, this._guidedFBO_meanII],
-                [this._guidedTex_a, this._guidedFBO_a],
-                [this._guidedTex_b, this._guidedFBO_b],
-                [this._guidedTex_meanA, this._guidedFBO_meanA],
-                [this._guidedTex_meanB, this._guidedFBO_meanB],
-                [this._guidedTex_ping1, this._guidedFBO_ping1],
-                [this._guidedTex_ping2, this._guidedFBO_ping2]
-            ];
+            // The live pool pairs (tex, fbo) — role handles alias these four, so the
+            // pool is the only thing that must be resized/validated (see the slot
+            // schedule in _createGuidedFBOs).
+            var pairs = this._guidedPairs || [];
+            var prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);  // restored below (see _resizeFBO)
             gl.getError(); // clear any pre-existing error so our check is meaningful
-            var ok = true;
+            // An empty pool with the allocated flag set is inconsistent state — treat
+            // it as a failed resize (honest degradation) rather than a silent no-op.
+            var ok = pairs.length > 0;
             for (var i = 0; i < pairs.length; i++) {
-                var tex = pairs[i][0];
-                var fbo = pairs[i][1];
+                var tex = pairs[i].tex;
+                var fbo = pairs[i].fbo;
                 if (!tex || !fbo) { ok = false; break; }
                 gl.bindTexture(gl.TEXTURE_2D, tex);
                 gl.texImage2D(gl.TEXTURE_2D, 0, floatFmt, w, h, 0, gl.RGBA, gl.FLOAT, null);
@@ -4492,7 +4828,7 @@
                     break;
                 }
             }
-            gl.bindTexture(gl.TEXTURE_2D, null);
+            gl.bindTexture(gl.TEXTURE_2D, prevTex);
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
             if (!ok) {
                 // ISOLATION: set ONLY guided state. Do NOT record the new size so a
@@ -4520,6 +4856,10 @@
         //   6. box(a):    meanA   = boxV(boxH(a))             [ping1=H, meanA=V]
         //   7. box(b):    meanB   = boxV(boxH(b))             [ping2=H, meanB=V]
         //   8. recombine: q       = meanA*I + meanB           [in@5,meanA@6,meanB@7 → outputFBO]
+        // BUFFERS: the nine role names alias FOUR canvas-size float pairs — the four
+        // box passes share one scratch pair (H→V is strictly sequential, so ping1 and
+        // ping2 are the same pair) and the rest reuse dead roles. See the liveness
+        // schedule in _createGuidedFBOs; changing this DRAW ORDER means re-deriving it.
         // F2 UNIT MAP: box.uBoxInput=5; coeff uMeanI=6,uMeanII/uA=7; recombine
         // uInput=5,uMeanA=6,uMeanB=7. NEVER bind a sampler unit > 7.
         _runGuidedFilter(inputTex, outputFBO, w, h, opts) {

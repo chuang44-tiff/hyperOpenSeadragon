@@ -75,6 +75,9 @@ EXCLUDE_FOLDERS = {"openseadragon", "raw_data", ".git", "__pycache__"}
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_OSD_DIR = os.path.normpath(os.path.join(_SCRIPT_DIR, "..", "openseadragon"))
 
+# The viewers load openseadragon.min.js and openseadragon-filtering-nistfuncs-12ch.min.js
+# when present and fall back to the unminified files below, so an older openseadragon/
+# copy without the .min.js files still opens (the .min.js are optional, not required).
 REQUIRED_OSD_FILES = [
     "openseadragon-bin-6.0.2/openseadragon.js",
     "hyperblend-webgl.js",
