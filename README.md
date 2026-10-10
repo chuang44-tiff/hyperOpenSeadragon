@@ -20,6 +20,10 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
 
+## New in v3.5.2
+
+- **Annotation survives a narrow window** — with annotation on, shrinking the browser window until the side panel covered the whole viewer froze the image and the drawn shapes until the page was reloaded. The viewer now keeps drawing and the shapes reappear when the window is widened again. See [Annotation](#annotation) below.
+
 ## New in v3.5.1
 
 - **Faster first view, less GPU memory** — the viewer now loads minified copies of the OpenSeadragon and filter scripts (falling back to the full files if a minified copy is missing) and waits until the visible view has finished loading before fetching the neighbouring z-levels. On a slow 5 Mbit/s link the first tile appears about 40% sooner (8.3 s to 4.8 s on the 12-channel demo) and the view is sharp about a third sooner; peak GPU memory drops by 28% (12 channels) to 53% (16 channels). Rendering is pixel-identical to v3.5. The trade-off: on a slow link, switching z-level within roughly the first 20 seconds after the page loads can take a few seconds longer, because the neighbouring z-levels have not been fetched yet. It also fixes a stale image on the first Linear Unmixing Apply with more than 4 outputs and when re-enabling Denoise or H&E. To get the faster scripts in an existing dataset folder, copy the updated `openseadragon/` folder into it. See [Getting Started](#getting-started) below.

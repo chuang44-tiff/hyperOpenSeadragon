@@ -260,6 +260,10 @@
                 _view.width = Math.round(w * DPR);
                 _view.height = Math.round(h * DPR);
             }
+            // A zero-area overlay has nothing to draw, and drawImage() from the equally 0-sized
+            // _scratch throws InvalidStateError. This runs inside OSD's update-viewport event, so
+            // a throw here would stop OSD from scheduling its next frame.
+            if (!_view.width || !_view.height) { return; }
             var P = OpenSeadragon.Point;
             var o = _refTI.imageToViewerElementCoordinates(new P(0, 0));
             var ex = _refTI.imageToViewerElementCoordinates(new P(1, 0));
