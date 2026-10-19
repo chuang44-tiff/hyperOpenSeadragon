@@ -5,3 +5,5 @@ __pycache__/
 .claude/
 deepzoom_output/
 deepzoom_RGBA/
+# The committed synthetic demo dataset is the one tile tree that is tracked.
+!demo_data/deepzoom_RGBA/

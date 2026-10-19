@@ -5,6 +5,7 @@ dependencies:
   - python=3.11
   - pyvips
   - pyyaml
+  - numpy
   - pip
   - pip:
     - flask>=2.0.0

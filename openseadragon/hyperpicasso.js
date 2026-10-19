@@ -1,12 +1,12 @@
 // hyperpicasso.js — in-browser mosaic-PICASSO unmixing-matrix generator.
-//
-// Clean-room JS port of hyperpicasso/hyperpicasso/optimizer.py (NON-CLIPPING form).
+// Method: mosaic-PICASSO (Cang, Liu & Xing, Bioinformatics 40(1):btad784, 2024), built on PICASSO (Seo et al., Nat. Commun. 13:2475, 2022).
+// Independent reimplementation (no upstream source copied); JS port of hyperpicasso/hyperpicasso/optimizer.py (NON-CLIPPING form).
 // PURE module: no DOM / OpenSeadragon / network — so it drops into a Web Worker
 // unchanged. The browser already has the FOV as typed arrays (readChannelRegion /
 // __hpExtract); this replaces the Flask /picasso/generate round-trip.
 //
-// Parity is A/B-validated against the Python reference (tests/test_hyperpicasso_parity.mjs
-// vs tests/fixtures/hyperpicasso_parity_A.json). The Python optimizer is retained as
+// Parity is A/B-validated against the Python reference implementation (hyperpicasso)
+// on fixed fixtures. The Python optimizer is retained as
 // the parity oracle while this is hardened.
 //
 // Contract:

@@ -726,7 +726,7 @@ li {
 }
 .pp-btn-apply:hover { background: #2d6030; }
 
-/* Engaged state — Apply button after successful engagement (Phase 2 amendment).
+/* Engaged state — Apply button after successful engagement.
    Darker green + inset shadow signals "pressed-in / active". Clicking again
    disengages, so hover still highlights. */
 .pp-btn.pp-btn-apply.engaged {
@@ -1047,9 +1047,9 @@ li {
     position: relative;
 }
 
-/* v5.0 Change 1: Linear panel disabled while PICASSO is engaged.
- * Drawer flag (_picassoActive) is the sole source of truth — Apply/Clear
- * handlers on the PICASSO side toggle this class. */
+/* Linear panel disabled while PICASSO is engaged.
+ * Drawer flag (_picassoActive) is the sole source of truth — the PICASSO
+ * Apply/disengage handlers toggle this class. */
 .cs-panel-disabled {
     opacity: 0.65;
     pointer-events: none;
