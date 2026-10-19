@@ -1,5 +1,7 @@
 # hyperOpenSeadragon — Multi-Channel Fluorescence & Hyperspectral Image Viewer
 
+[![Tests](https://github.com/chuang44-tiff/hyperOpenSeadragon/actions/workflows/tests.yml/badge.svg)](https://github.com/chuang44-tiff/hyperOpenSeadragon/actions/workflows/tests.yml)
+
 ![hyperOpenSeadragon Logo](image.png)
 
 hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and hyperspectral microscopy images. It lets you blend up to 16 channels in real time, assign custom colors to each channel, and adjust gain — all from a single web page with no software to install.
@@ -19,6 +21,10 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 - **Multi-class annotation** — Draw pixel-accurate masks over the image with a polygon or brush tool, and export them as label images for training or downstream analysis.
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
+
+## New in v3.6
+
+- **Try it with no data of your own** — the repository now ships a small synthetic demo dataset (`demo_data/`: 16 channels, two z-levels, 8.8 MB), and `zstackHyper.html` opens it as shipped. Its unmixing matrix, `demo_data/unmix_matrix.txt`, can be loaded from the Linear Unmixing panel. `make_demo_data.py` regenerates it. A test suite (`tests/`) now covers the viewer pages, the tile generator, the demo dataset and a headless-browser check of the viewer, and runs on every push and pull request; run it with `python -m unittest discover -s tests -t .` (see [tests/README.md](tests/README.md)). See [Getting Started](#getting-started) below.
 
 ## New in v3.5.2
 
@@ -49,7 +55,7 @@ conda env create -f environment.yaml
 conda activate hyperOSD
 
 # Or with pip:
-pip install flask "pyvips[binary]" pyyaml
+pip install flask "pyvips[binary]" pyyaml numpy
 ```
 
 ### 2. Generate tiles with the web app
@@ -114,7 +120,7 @@ var imageSources = [
 
 ### 5. Open in a browser
 
-Open the viewer HTML in Chrome, Firefox, or Edge. Viewing works straight from your local file system — no server required. The sole file:// exception is PICASSO's **Generate from current view**, which needs the page served over `http://` (from disk it reports "in-browser optimizer unavailable — serve over http://").
+Open the viewer HTML in Chrome, Firefox, or Edge. To try the viewer before generating your own tiles, open `zstackHyper.html` as shipped: it loads the demo dataset in `demo_data/`. Viewing works straight from your local file system — no server required. The sole file:// exception is PICASSO's **Generate from current view**, which needs the page served over `http://` (from disk it reports "in-browser optimizer unavailable — serve over http://").
 
 ## Viewer Controls
 
