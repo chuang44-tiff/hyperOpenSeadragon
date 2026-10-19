@@ -59,9 +59,9 @@ def _level_image(source_dir, level, size):
 
 
 def _check_against_render(testcase, root, size, tolerant=False):
-    """Finest level (every tile) of every source vs the numpy render; a coarse level
-    must keep every non-empty channel non-empty (packed channels must not go black
-    on zoom-out).
+    """Finest level (every tile) of every source vs the numpy render; level finest-2 vs
+    a 4x4 box mean of the render; a coarse level must keep every non-empty channel
+    non-empty (packed channels must not go black on zoom-out).
 
     tolerant=False: exact. tolerant=True: |diff| <= 1 everywhere and at most 0.1 % of
     the pixels of a source differ at all (cross-platform float rounding)."""
@@ -82,6 +82,15 @@ def _check_against_render(testcase, root, size, tolerant=False):
                 testcase.assertLessEqual(frac, 0.001, "%.4f%% of pixels differ, %s" % (frac * 100, label))
             else:
                 testcase.assertTrue(np.array_equal(img, want), "pixel mismatch " + label)
+            # One coarser level, pixel for pixel: libvips halves each level with a rounded
+            # 2x2 mean, so level finest-2 is a 4x4 box mean of the render within ~1 LSB
+            # (measured <= 1.0). A tile shifted by one pixel or the wrong z plane differs by
+            # 4 or more. The last partial row/column depends on edge handling and is skipped.
+            m = size // 4
+            mid = _level_image(sdir, finest - 2, size)[:m, :m].astype(np.float64)
+            box = want[:m * 4, :m * 4].astype(np.float64).reshape(m, 4, m, 4, 4).mean(axis=(1, 3))
+            testcase.assertLessEqual(float(np.abs(mid - box).max()), 2.0,
+                                     "level %d differs from a 4x4 mean of the render, %s" % (finest - 2, label))
             small = _level_image(sdir, coarse, size)
             for i in range(4):
                 if want[..., i].max() > 0:

@@ -27,7 +27,7 @@ or all at once: `python -m unittest discover -s tests -t .`
 |---|---|---|
 | `test_static_hosts` | both viewer HTML pages: every referenced file exists, script load order, annotation blocks identical, dataset configuration, no private paths in published files | stdlib |
 | `test_dzi_pipeline` | 8-bit conversion, channel packing (4/5/6 channels), coarse pyramid levels keep sparse channels, descriptor layout, matrix validation, generated viewer configuration, path containment | pyvips, numpy, flask |
-| `test_demo_data` | `make_demo_data.py` output and the committed `demo_data/` match a numpy render | pyvips, numpy |
+| `test_demo_data` | `make_demo_data.py` output and the committed `demo_data/` match a numpy render: the finest level pixel for pixel, a mid level against a 4x4 box mean, every tile present | pyvips, numpy |
 | `test_viewer_smoke` | headless Chromium (software WebGL): the HyperBlend drawer starts, 16 channels listed, demo data renders, z-level switch, Linear Unmixing on the demo matrix | playwright |
 
 ## Missing dependencies

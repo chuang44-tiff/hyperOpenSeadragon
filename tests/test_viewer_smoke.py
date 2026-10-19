@@ -69,22 +69,19 @@ class ViewerSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _layout.require_deps(_SKIP)
-        cls._server_cm = _layout.static_server()
-        cls.base = cls._server_cm.__enter__()
-        cls._pw = sync_playwright().start()
+        # Class cleanups run (in reverse) even when a later step here raises, so the server
+        # and Playwright are always released.
+        server = _layout.static_server()
+        cls.base = server.__enter__()
+        cls.addClassCleanup(server.__exit__, None, None, None)
+        pw = sync_playwright().start()
+        cls.addClassCleanup(pw.stop)
         try:
-            cls.browser = cls._pw.chromium.launch(args=CHROMIUM_ARGS)
+            cls.browser = pw.chromium.launch(args=CHROMIUM_ARGS)
         except Exception as exc:
-            cls._server_cm.__exit__(None, None, None)
-            cls._pw.stop()
             _layout.require_deps("Chromium could not be launched (%s); run: python -m playwright install chromium" % exc)
             raise
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.browser.close()
-        cls._pw.stop()
-        cls._server_cm.__exit__(None, None, None)
+        cls.addClassCleanup(cls.browser.close)
 
     def setUp(self):
         self.page = self.browser.new_page(viewport={"width": 1400, "height": 900})
@@ -111,6 +108,20 @@ class ViewerSmokeTests(unittest.TestCase):
         self.assertIsNotNone(sig, "canvas stayed black")
         return sig
 
+    def _settled_signature(self):
+        """A non-black frame that no longer changes: two samples 0.5 s apart agree, so
+        coarse-to-fine refinement has finished."""
+        state = {"prev": self._wait_for_nonblack()}
+
+        def check():
+            sig = self._signature()
+            same = max(sig) > 30 and sig == state["prev"]
+            state["prev"] = sig
+            return sig if same else None
+        sig = _poll(check, interval_s=0.5)
+        self.assertIsNotNone(sig, "frame never settled")
+        return sig
+
     def test_drawer_channels_and_first_frame(self):
         self.assertEqual(
             self.page.evaluate("() => $('#csDropdownMenu .cs-dropdown-item').not('.cs-all-toggle').length"), 16)
@@ -119,28 +130,18 @@ class ViewerSmokeTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_z_switch_changes_the_image(self):
-        z0 = self._wait_for_nonblack()
+        z0 = self._settled_signature()
         handle = self.page.locator("#custom-zhandle")
         handle.wait_for(state="attached")
         handle.focus()
+        # The real user path, with no fallback: if the slider stops reacting to the
+        # keyboard, this fails.
         self.page.keyboard.press("ArrowRight")
-        try:
-            self.page.wait_for_function("() => window.currentZIndex === 1", timeout=8000)
-        except Exception:
-            # Keyboard focus is the preferred path; fall back to the slider's own `stop` callback.
-            self.page.evaluate("""() => {
-                const s = window.$('#zlevel'); const stop = s.slider('option', 'stop');
-                if (stop) stop.call(s, null, { value: 1 });
-            }""")
-            self.page.wait_for_function("() => window.currentZIndex === 1")
+        self.page.wait_for_function("() => window.currentZIndex === 1", timeout=8000)
         self.page.wait_for_function(ALL_LOADED_JS, arg=1)
-
-        def changed():
-            sig = self._signature()
-            diff = max(abs(a - b) for a, b in zip(sig, z0))
-            return (sig, diff) if diff > 20 and max(sig) > 30 else None
-        res = _poll(changed)
-        self.assertIsNotNone(res, "frame at z=3 um never differed from z=0 (or stayed black)")
+        z1 = self._settled_signature()
+        diff = max(abs(a - b) for a, b in zip(z1, z0))
+        self.assertGreater(diff, 20, "settled frame at z=3 um does not differ from z=0")
         self.assertEqual(self.errors, [])
 
     def test_linear_unmixing_separates_the_four_blobs(self):

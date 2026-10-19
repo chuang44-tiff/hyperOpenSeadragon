@@ -2,4 +2,5 @@
 # numpy is needed by the demo-data and DZI pipeline tests; playwright by the viewer smoke test
 # (after installing: python -m playwright install chromium).
 numpy
-playwright
+# Pinned: the smoke test's pixel thresholds depend on the Chromium build Playwright ships.
+playwright==1.64.0
