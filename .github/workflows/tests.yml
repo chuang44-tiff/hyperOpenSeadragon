@@ -25,15 +25,15 @@ jobs:
       # A missing dependency is a failure in CI, not a skip.
       HYPEROSD_REQUIRE_ALL: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up the conda environment (environment.yaml)
-        uses: conda-incubator/setup-miniconda@v3
+        uses: conda-incubator/setup-miniconda@v4
         with:
           miniforge-version: latest
           environment-file: environment.yaml
           activate-environment: hyperOSD
-          auto-activate-base: false
+          auto-activate: false
 
       - name: Install test dependencies
         run: |
