@@ -1,0 +1,5 @@
+# Test-only dependencies. pyvips, pyyaml, flask and pip come from environment.yaml.
+# numpy is needed by the demo-data and DZI pipeline tests; playwright by the viewer smoke test
+# (after installing: python -m playwright install chromium).
+numpy
+playwright

@@ -10,7 +10,6 @@
 	<meta charset="UTF-8">
 	<title>hyperOSD Multi-Channel Blending</title>
 	<link rel="stylesheet" href="openseadragon/static/css/NISTStyle.css">
-	<link rel="stylesheet" href="openseadragon/static/css/NISTPages.css">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<!-- Resource hints (first picture). Every image listed here is chrome the viewer only
 	     asks for once all parser-blocking JS has run: the OSD navigation-button PNGs under
@@ -510,20 +509,10 @@
 		var channelsPerImage = 4;        // 3 = RGB (alpha slots locked), 4 = RGBA (all channels active)
 		var defaultChannels = [1, 2, 3, 4]; // 1-based channel numbers to enable on startup (matches Nch labels; [] for none)
 		var imageSources = [             // DZI tile source paths (grouped by z-level)
-			// Synthetic 16ch test dataset (4 spectral components, peaks at ch2/6/12/15)
-			"test_synthetic/deepzoom_RGBA/0.0um/1/stitch.xml",
-			"test_synthetic/deepzoom_RGBA/0.0um/2/stitch.xml",
-			"test_synthetic/deepzoom_RGBA/0.0um/3/stitch.xml",
-			"test_synthetic/deepzoom_RGBA/0.0um/4/stitch.xml",
-			// // RGBA 16ch (real data)
-			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/1/stitch.xml",
-			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/2/stitch.xml",
-			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/3/stitch.xml",
-			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/0.0um/4/stitch.xml",
-			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/1/stitch.xml",
-			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/2/stitch.xml",
-			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/3/stitch.xml",
-			// "hyperBlend_SampleData/deepzoom_RGBA_16CH/4.0um/4/stitch.xml",
+			"deepzoom_RGBA/0.0um/1/stitch.xml",
+			"deepzoom_RGBA/0.0um/2/stitch.xml",
+			"deepzoom_RGBA/0.0um/3/stitch.xml",
+			"deepzoom_RGBA/0.0um/4/stitch.xml",
 		];
 		// ----- Linear Unmixing default matrix -----
 		// Path is relative to this HTML file. If missing or NaN, a zero-filled table is shown.
@@ -724,7 +713,7 @@
 			});
 		}
 		$(document).on('click', '#hpDepRetry', function () { _hpHealthCheck(); });
-		// On-load dep-checklist probe — UNCONDITIONAL (spec Feature 2: probe on page
+		// On-load dep-checklist probe — UNCONDITIONAL (probe on page
 		// load). When served by hyperpicasso-app the same-origin /health resolves and
 		// the checklist auto-renders. Under a bare static fixture (no Flask /health
 		// route) the same-origin /health returns 404 → _hpHealthCheck's existing
@@ -792,7 +781,7 @@
 			console.log('[hpExtract] ' + W + 'x' + H + ', ' + enabledIdx.length +
 				' enabled, channels=[' + enabledIdx.join(',') + ']');
 		}
-		// NOTE: #hpExtractBtn click handler (Phase 3) is bound inside
+		// NOTE: #hpExtractBtn click handler is bound inside
 		// initBlendingLogic, where _setPicassoCurrentMp/_markPicassoDirty are in
 		// scope. _hpExtractFOV (above) is reachable from there via outer closure.
 
@@ -1870,7 +1859,7 @@
 
 		// PICASSO engagement UI setters — hoisted to script top level so the
 		// _autoSwitchDrawer canvas branch (also top-level) can call them. Both are
-		// pure jQuery/DOM with no closure captures. Phase 2.2: checkbox is purely
+		// pure jQuery/DOM with no closure captures. The checkbox is purely
 		// panel-visibility; engagement lives in Apply label, .engaged class, Reload
 		// lock, and the ENGAGED badge.
 		function _updatePicassoEngagedBadge(on) {
@@ -1883,7 +1872,7 @@
 			var $apply = $('#picassoApply');
 			$apply.text(on ? 'ENGAGED ✓' : 'Apply');
 			$apply.toggleClass('engaged', !!on);
-			// Reload is locked while engaged (§8.7).
+			// Reload is locked while engaged.
 			$('#picassoReload').prop('disabled', !!on);
 			_updatePicassoEngagedBadge(!!on);
 		}
@@ -1919,7 +1908,7 @@
 				console.log("[hyperOSD] Switching to canvas drawer for unsupported filter combo");
 				// PICASSO is a WebGL-only stage; disable before the drawer swap so
 				// its uniform state and the toggle reflect the legacy CPU path.
-				// Guard on drawer engagement (source of truth post-Phase 2.2) — not the
+				// Guard on drawer engagement (source of truth) — not the
 				// checkbox, which is panel-visibility only and may be checked without
 				// PICASSO being engaged.
 				if (viewer.drawer && viewer.drawer._picassoActive === true) {
@@ -1928,7 +1917,7 @@
 						try { viewer.drawer.updatePicassoConfig({ active: false }); } catch (e) { }
 					}
 					// Drive the engagement UI down first, then explicitly uncheck the
-					// toggle (§8.4 invariant: hiding the panel must not leave the
+					// toggle (invariant: hiding the panel must not leave the
 					// checkbox visually checked). .prop('checked', false) does not fire
 					// change events, so the toggle handler is not re-entered.
 					_setPicassoEngagedUI(false);
@@ -2066,7 +2055,7 @@
 
 			// Denoise strength slider (→ ε). Request path (c). SLIDER EVENT CONTRACT: 'input'
 			// updates the readout span AND re-applies ε via setDenoiseConfig + forceRedraw on
-			// every move (uniform-only fast path, no full re-composite — acceptable per spec).
+			// every move (uniform-only fast path, no full re-composite — acceptable).
 			$('#denoiseStrength').off('input.hyperblend').on('input.hyperblend', function () {
 				var strength = parseInt(this.value, 10);
 				if (isNaN(strength)) { strength = 50; }
@@ -2250,7 +2239,7 @@
 			var _datasetRoot = '';
 			if (imageSources && imageSources.length > 0) {
 				// Strip filename and path segments to get dataset root
-				// e.g. "test_synthetic/deepzoom_RGBA/0.0um/1/stitch.xml" → "test_synthetic/"
+				// e.g. "mydata/deepzoom_RGBA/0.0um/1/stitch.xml" → "mydata/"
 				var _srcParts = imageSources[0].split('/');
 				// Find the deepzoom_RGBA segment and take everything before it
 				var _dzIdx = -1;
@@ -2345,13 +2334,13 @@
 							$('#unmixDimDisplay').text(window._unmixOutputCount);
 
 							if (_unmixCurrentData.length === 0) {
-								// Last row removed — disengage the filter (per §8.3 the
+								// Last row removed — disengage the filter (the
 								// panel stays open + checkbox stays as the user left it)
 								// and immediately seed a fresh M=1 zero row so the panel
 								// stays usable: the user can edit and re-Apply without
 								// having to Reload from disk. _setLinearEngagedUI(false)
 								// inside _disengageLinear() handles badge/label/.engaged
-								// class/Zero unlock; it does NOT touch the toggle (§8.4).
+								// class/Zero unlock; it does NOT touch the toggle.
 								window._unmixOutputCount = 1;
 								$('#unmixDimDisplay').text(1);
 								$('#unmixOutputCount').val(1);
@@ -2490,16 +2479,16 @@
 				$b.toggleClass('on', !!on).toggleClass('off', !on);
 			}
 
-			// ---- Engagement UI state setters (Phase 2 amendment) ----
+			// ---- Engagement UI state setters ----
 			// Single source of truth for Apply-button label, .engaged CSS class,
 			// Zero-button lock, and ENGAGED badge. Called from Apply success
-			// (on=true) and _disengage*() (on=false). Per §8.4 the setter does
+			// (on=true) and _disengage*() (on=false). The setter does
 			// NOT touch the toggle checkbox — the cascade case in the Linear
 			// toggle handler relies on .prop('checked', false) not firing change
 			// events (no suppress flag needed).
 
 			function _setLinearEngagedUI(on) {
-				// Phase 2.2 amendment: checkbox is purely panel-visibility now.
+				// The checkbox is purely panel-visibility now.
 				// Engagement state lives in: Apply label, .engaged class, ENGAGED
 				// badge, and Zero lock. Do NOT touch the toggle checkbox here —
 				// disengaging via Apply leaves the panel (and its checkbox) alone.
@@ -2507,7 +2496,7 @@
 				$apply.text(on ? 'ENGAGED ✓' : 'Apply');
 				$apply.toggleClass('engaged', !!on);
 				// Inputs that would create matrix/drawer incoherence while engaged
-				// are locked: Zero (§8.2), output-count (§8.6), Reload (§8.7).
+				// are locked: Zero, output-count, Reload.
 				$('#unmixZero').prop('disabled', !!on);
 				$('#unmixOutputCount').prop('disabled', !!on);
 				$('#unmixReload').prop('disabled', !!on);
@@ -2543,7 +2532,7 @@
 				}
 				$('#unmixStatus').text('Effect cleared — matrix preserved').css('color', '#a09d95');
 				$('#unmixPinvTag').hide();
-				// Phase 2.1 amendment: disengage path resets engagement UI (badge,
+				// Disengage path resets engagement UI (badge,
 				// Apply label, .engaged class, toggle checkbox sync, Zero lock) but
 				// LEAVES THE PANEL OPEN so the user can tweak numbers and re-Apply.
 				// Only the toggle-uncheck path hides the panel (user gesture = "close").
@@ -2563,13 +2552,13 @@
 				}
 				$('#unmixPanel').removeClass('cs-panel-disabled');
 				$('#picassoStatus').text('Effect cleared — matrix preserved').css('color', '#a09d95');
-				// Phase 2.1 amendment: panel stays open after disengage so the user
+				// Panel stays open after disengage so the user
 				// can adjust K, tweak the matrix, and re-Apply. Only the toggle-uncheck
 				// path hides the panel.
 				_setPicassoEngagedUI(false);
 			}
 
-			// ---- Toggle handler (Phase 2.2) ----
+			// ---- Toggle handler ----
 			// Toggle is panel-visibility only. Engagement is owned by Apply.
 			//   • Check → show panel.
 			//   • Uncheck → if PICASSO is engaged, cascade-close it (Linear is
@@ -2605,18 +2594,18 @@
 				_spUpdateComponentDropdown();
 			});
 
-			// ---- Apply handler (Phase 2 amendment §8.1: click-to-engage toggle) ----
+			// ---- Apply handler (click-to-engage toggle) ----
 			$('#unmixApply').on('click', function () {
 				var $status = $('#unmixStatus');
 				// Click while ENGAGED → disengage (read drawer, not a stale JS flag).
 				// _disengageLinear() routes UI through _setLinearEngagedUI(false): badge,
-				// Apply label, .engaged class, Zero unlock. Per §8.3 the panel stays
-				// open; per §8.4 the toggle checkbox is not touched.
+				// Apply label, .engaged class, Zero unlock. The panel stays open and
+				// the toggle checkbox is not touched.
 				if (viewer.drawer && viewer.drawer._unmixEnabled === true) {
 					_disengageLinear();
 					return;
 				}
-				// v5.0 Q5 block-on-conflict (locked, symmetric): refuse Linear Apply
+				// Block-on-conflict (symmetric): refuse Linear Apply
 				// while PICASSO is engaged. PICASSO depends on Linear's pseudoinverse
 				// and output count; mutating Linear underneath PICASSO would silently
 				// break the chain. User must uncheck the PICASSO toggle first.
@@ -2692,7 +2681,7 @@
 					}
 				});
 
-				// v5.0 Q5 block-on-conflict: the top-of-handler guard above already
+				// Block-on-conflict: the top-of-handler guard above already
 				// refuses Linear Apply while PICASSO is active. When PICASSO is
 				// inactive there is nothing to demote, so the prior unconditional
 				// updatePicassoConfig({active:false}) call has been removed.
@@ -2708,9 +2697,8 @@
 				// Maintain legacy global for any external reader (not authoritative;
 				// drawer._unmixEnabled is the source of truth).
 				window._unmixingActive = true;
-				// Phase 2 amendment §8.1: consolidated UI setter handles badge, Apply
-				// label "ENGAGED ✓", .engaged class, and Zero button lock. Per §8.4 it
-				// does NOT touch the toggle checkbox. Also ensure the panel is visible —
+				// Consolidated UI setter handles badge, Apply label "ENGAGED ✓",
+				// .engaged class, and Zero button lock. It does NOT touch the toggle checkbox. Also ensure the panel is visible —
 				// mental model is "engaged = panel open + filter on".
 				_setLinearEngagedUI(true);
 				$('#unmixPanel').show();
@@ -2728,17 +2716,17 @@
 				_initUnmixPanel();
 			});
 
-			// Linear Clear button removed in v5.1 Save/Toggle Redesign — the toggle
+			// Linear Clear button removed — the toggle
 			// is now the sole disengage path (cascades through PICASSO if engaged).
-			// _disengageLinear() (defined above) contains the original Clear body.
+			// _disengageLinear() (defined above) does the disengage.
 
 			// ---- Zero handler — panel-only matrix zeroing (does NOT disengage) ----
-			// v5.0 Change 2: complement to the new Clear semantics. Zero blanks every
-			// cell in #unmixMatrixTable and marks the panel dirty, but never calls
-			// updateUnmixConfig() — drawer state is owned by Apply/Clear alone.
+			// Zero blanks every cell in #unmixMatrixTable and marks the panel dirty,
+			// but never calls updateUnmixConfig() — drawer state is owned by Apply
+			// and the Linear toggle alone.
 			$('#unmixZero').on('click', function () {
-				// Q5 block-on-conflict guard (defense in depth — the CSS class added
-				// by Change 1 already blocks pointer-events, but the handler must
+				// Block-on-conflict guard (defense in depth — the CSS class added
+				// when PICASSO engages already blocks pointer-events, but the handler must
 				// not assume the visual layer is intact).
 				if (viewer.drawer && viewer.drawer._picassoActive === true) {
 					$('#unmixStatus').text('Uncheck PICASSO first to edit the Linear matrix.').css('color', '#c45050');
@@ -2782,7 +2770,7 @@
 			// If the user wants the picker file again, they must re-open it via Load .txt.
 			// Parser is duplicated from _initUnmixPanel rather than reusing parseMpFile()
 			// — that parser is PICASSO-only (square N×N + header gate) and would reject
-			// rectangular Linear matrices outright. See picasso-math.md §3.
+			// rectangular Linear matrices outright.
 			document.getElementById('unmixLoadFile').addEventListener('change', function (ev) {
 				var f = ev.target.files && ev.target.files[0];
 				if (!f) return;
@@ -2851,8 +2839,7 @@
 					});
 			}
 			// ---- Save handler (Linear) — File System Access API with download fallback ----
-			// Restored in v5.1 (originally committed in a88331a, removed during the
-			// deploy-branch transition). State: _unmixFileHandle persists across saves
+			// State: _unmixFileHandle persists across saves
 			// once the user picks a location; _unmixSavePending guards concurrent writes
 			// (independent from PICASSO's _picassoSavePending so a Linear save in flight
 			// does not silently no-op a PICASSO save click, and vice versa).
@@ -2931,9 +2918,10 @@
 			var _picassoIsDirty = false;
 			var _picassoLoadedOnce = false;
 
-			// Verbatim port of the parseMpFile function from demo/picasso-osd-demo.html.
+			// Port of the PICASSO parseMpFile matrix parser.
 			// Enforces square N×N×K shape — rectangular matrices fail the per-row
-			// column-count check before the N gate (forbidden move #1 unreachable).
+			// column-count check before the N gate, so a rectangular matrix is never
+			// accepted as PICASSO.
 			function parseMpFile(text) {
 				var lines = text.split(/\r?\n/);
 				if (lines.length < 1) throw new Error('empty file');
@@ -3183,7 +3171,7 @@
 					});
 			}
 
-			// ---- PICASSO Toggle handler (v5.1 + Phase 2 amendment) ----
+			// ---- PICASSO Toggle handler ----
 			// Toggle mirrors engagement: check → show panel; uncheck → disengage
 			// drawer (which hides the panel itself). Disengage does NOT cascade to
 			// Linear (Linear can stand alone). Linear's toggle DOES cascade to
@@ -3197,7 +3185,7 @@
 				}
 			});
 
-			// ---- Apply (Phase 2 amendment §8.1: click-to-engage toggle) ----
+			// ---- Apply (click-to-engage toggle) ----
 			$('#picassoApply').on('click', function () {
 				var $status = $('#picassoStatus');
 				// Click while ENGAGED → disengage (drawer is source of truth).
@@ -3231,9 +3219,9 @@
 					$status.text('PICASSO drawer API unavailable on this drawer').css('color', '#c45050');
 					return;
 				}
-				// v5.0 dimension guard (master plan §5.2 R2): if Linear is engaged,
+				// Dimension guard: if Linear is engaged,
 				// PICASSO Apply must verify N === Linear's numOutputs to enter Mode 3.
-				// Phase 5 hard-gate is N=4; the drawer enforces this in updatePicassoConfig.
+				// The chain hard-gate is N=4; the drawer enforces this in updatePicassoConfig.
 				// Parse N from the PICASSO matrix file (_picassoCurrentMp.N — already
 				// loaded above). Cross-check vs. drawer._numOutputs (truth source).
 				// Standalone Mode 2 (Linear off): no chain, proceed unchanged.
@@ -3249,24 +3237,24 @@
 					var slicedP = _picassoCurrentMp.P.slice(0, 1);
 					viewer.drawer.updatePicassoConfig({ matrices: slicedP, N: N, K: 1, active: true });
 					window._picassoMatricesUploaded = true;
-					// v5.0 Change 1: Linear panel is greyed out (no pointer events,
+					// Linear panel is greyed out (no pointer events,
 					// "Locked — PICASSO is engaged" banner via ::before) while PICASSO
 					// is active. Drawer._picassoActive is the source of truth; the CSS
-					// class is the visual reflection. The Q5 block-on-conflict guards
+					// class is the visual reflection. The block-on-conflict guards
 					// in Linear Apply/Clear remain as belt-and-suspenders.
 					$('#unmixPanel').addClass('cs-panel-disabled');
 					$status.text(N + '×' + N + ' applied ✓').css('color', '#3d7c3f');
 					_picassoIsDirty = false;
 					$('#picassoDirtyTag').removeClass('visible');
 					$('#picassoLoadedTag').show();
-					// Phase 2 amendment §8.1: consolidated UI setter handles badge,
+					// Consolidated UI setter handles badge,
 					// Apply label "ENGAGED ✓", .engaged class, toggle checkbox sync.
 					_setPicassoEngagedUI(true);
 					$('#picassoPanel').show();
-					// v5.0 Mode 3 chain status: if the chain is engaged, append a
+					// Mode 3 chain status: if the chain is engaged, append a
 					// pointer to #unmixStatus so the user sees the link from Linear
 					// side too. _chainAllowed() is the drawer's authoritative
-					// predicate (R1 exposed it; checks dims + flags + matrix).
+					// predicate (checks dims + flags + matrix).
 					if (viewer.drawer._chainAllowed && viewer.drawer._chainAllowed()) {
 						var prev = $('#unmixStatus').text();
 						// Avoid duplicate suffix on repeat Apply.
@@ -3279,7 +3267,7 @@
 				}
 			});
 
-			// PICASSO Clear button removed in v5.1 Save/Toggle Redesign — the toggle
+			// PICASSO Clear button removed — the toggle
 			// is now the sole disengage path. _disengagePicasso() (defined above)
 			// contains the original Clear body.
 
@@ -3402,13 +3390,13 @@
 				}
 			});
 
-			// ---- Phase 3: Extract FOV -> localhost optimizer -> fill PICASSO table ----
+			// ---- Extract FOV -> localhost optimizer -> fill PICASSO table ----
 			// Bound here (inside initBlendingLogic) so _setPicassoCurrentMp/
 			// _markPicassoDirty are in scope. _hpExtractFOV is reachable via the
 			// outer closure. Route is AUTO-DERIVED from the authoritative drawer
 			// unmix state (viewer.drawer._unmixEnabled) — there is no route toggle UI.
 			function _hpGenerate(route) {
-				// Same-origin base (spec AUDIT-FIX B-origin / both-files parity token).
+				// Same-origin base (both-files parity token).
 				var HP_SERVER = (window.__HP_SERVER_OVERRIDE || (location.protocol.indexOf('http') === 0 ? location.origin : 'http://127.0.0.1:8765'));
 				// In-browser Web Worker is the DEFAULT optimizer path (Flask server is the
 				// fallback). Module workers need an http(s) origin; file:// → false → the
@@ -4069,7 +4057,7 @@
 				$('#csControlsZone').find('.cs-channel-control').remove();
 				$('#csEmptyMsg').show();
 				// Re-sync from NIST checkboxes
-				// BUG FIX v4.0 2026-05-19: skip the All-Toggle — its click handler
+				// Skip the All-Toggle — its click handler
 				// inverts every channel when all were on, blowing away _nistEn state.
 				$('#csDropdownMenu .cs-dropdown-item').not('.cs-all-toggle').each(function () {
 					var $item = $(this);
@@ -4086,7 +4074,7 @@
 			if ($('#reinhardToggle').is(':checked') && viewer.drawer && viewer.drawer.setToneMappingMode) {
 				viewer.drawer.setToneMappingMode('reinhard');
 			}
-			// BLOCKER FIX (findings #2/#3/#5/#13): resolve guided readiness BEFORE any
+			// Resolve guided readiness BEFORE any
 			// routing OR UI-labeling decision. The constructor seeds _guidedSupported=false
 			// and it is otherwise only resolved inside _ensureGuidedReady, which draw()
 			// calls solely when guided is ALREADY active. If the resync setDenoiseConfig
@@ -4298,15 +4286,15 @@
 		function sanitizeLabel(s) {
 			s = (s == null ? '' : String(s));
 			s = s.trim();
-			s = s.replace(/[\/\\:*?"<>|\x00-\x1f\x7f]/g, '');   // + Windows-reserved chars (Inc-14)
+			s = s.replace(/[\/\\:*?"<>|\x00-\x1f\x7f]/g, '');   // + Windows-reserved chars
 			s = s.replace(/\s+/g, '_');
-			s = s.replace(/^\.+/, '');                          // no leading dot (Inc-14)
+			s = s.replace(/^\.+/, '');                          // no leading dot
 			s = s.trim();
 			if (s === '') { s = 'mask'; }
 			return s;
 		}
 
-		// Inc-14: the annotator blob-download helper — the object-URL anchor pattern hoisted out of
+		// The annotator blob-download helper — the object-URL anchor pattern hoisted out of
 		// the old inline Save so the per-class PNG loop and the manifest share one writer. PARALLEL
 		// to the unmix `_downloadFallback` (which wraps text/plain and cannot carry a PNG).
 		function _annDownloadBlob(blob, filename) {
@@ -4385,7 +4373,7 @@
 				$('#osdAnnStatus').text('Nothing painted yet.');
 				return;
 			}
-			// Save (Inc-14) = one-click timestamped bundle: ONE binary mask PNG per non-empty class
+			// Save = one-click timestamped bundle: ONE binary mask PNG per non-empty class
 			// (at the Downscale radio's resolution) + a version 3 classes.json manifest listing EVERY class — an empty class is
 			// listed with NO "mask" key and produces NO PNG. Files download SEQUENTIALLY, manifest LAST.
 			var ts = new Date().toISOString().slice(0, 23).replace(/[:.]/g, '').replace('T', '-');
@@ -4431,7 +4419,7 @@
 		});
 
 		$('#osdAnnLoadBtn').on('click', function () { $('#osdAnnStatus').text('Load: select ALL mask PNGs + the classes.json together.'); $('#osdAnnLoadFile').val('').trigger('click'); });
-		// Inc-14 (A20): the v3 manifest lane. A mask File is mapped to its class by the manifest's
+		// The v3 manifest lane. A mask File is mapped to its class by the manifest's
 		// `mask` field ONLY — never by parsing the filename. A listed mask that is absent from the
 		// selection is an ATOMIC refusal: nothing is loaded and no state changes.
 		function _annLoadV3(j, pngFiles, jsonName) {
@@ -4489,7 +4477,7 @@
 				img.onload = function () {
 					if (!window.annotator || window.annotator._destroyed) { URL.revokeObjectURL(url); return; }
 					var cls = Array.isArray(j) ? j : (j && Array.isArray(j.classes) ? j.classes : null);
-					// Inc-17 (D1/D2): no v3 classes.json ⇒ every loaded class is traced into editable polygons
+					// No v3 classes.json ⇒ every loaded class is traced into editable polygons
 					// (pixels REPLACED, holes kept); a non-v3 json's `polygons` array is NOT honoured. The module
 					// flushes history itself; its onHistory status write lands BEFORE the Loaded write below.
 					var ok = window.annotator.loadLabel(img, cls);

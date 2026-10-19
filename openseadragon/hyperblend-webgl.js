@@ -22,7 +22,7 @@
     'use strict';
 
     // =========================================================================
-    //  BENCH COUNTERS (v5.3 Cycle 1, v5.2 Item 0)
+    //  BENCH COUNTERS
     //  Flag-gated instrumentation. Incremented ONLY when window.__hyperBenchEnabled
     //  is truthy — a single property read on `window` guards every increment site,
     //  so the drawer is byte-identical in behavior and allocation-free when off.
@@ -48,7 +48,7 @@
         },
         snapshot: function () {
             // Returns { counters: {...12 keys...}, frameTimes: {n, p50, p95, max} }
-            // (the contract consumed by demo/headless_bench_frametime.py).
+            // (the contract consumed by the headless frame-time bench).
             // Copy frameTimes out of the ring buffer (valid samples only), then
             // sort a copy for percentile stats.
             var n = __bench.frameTimeCount;
@@ -127,7 +127,7 @@
         '    // FBO compositing with UNPACK_PREMULTIPLY_ALPHA_WEBGL=false preserves',
         '    // all 4 RGBA channels — no unpremultiply needed.',
         '    //',
-        '    // v5.0 R1: the Linear matrix multiply is no longer inlined here.',
+        '    // The Linear matrix multiply is not inlined here.',
         '    // The drawer is responsible for binding the right textures to',
         '    // units 0..3 BEFORE this shader runs:',
         '    //   Mode 0 (no unmix, no PICASSO): raw layer FBOs',
@@ -383,7 +383,7 @@
     var SUPPORTED_FORMATS = ['context2d', 'image'];
 
     // -----------------------------------------------------------------------
-    // Linear pre-blend pass (NEW — v5.0 R1; specialized v5.2 1.10).
+    // Linear pre-blend pass.
     // Lifts the 16-input × ≤8-output pseudoinverse multiply out of
     // FRAGMENT_SHADER_SRC so PICASSO can consume Linear's abundance output
     // (Mode 3 — Linear→PICASSO chain).
@@ -398,7 +398,7 @@
     //     (variant B program, lazily compiled on first M > 4 use)
     // The matrix layout in uUnmixMatrix is unchanged (row-major 16×8 stored
     // as a flat 128-float array): for input i, output j, the coefficient is at
-    // uUnmixMatrix[i * 8 + j]. v5.2 1.10 specializes the output column base
+    // uUnmixMatrix[i * 8 + j]. The shader specializes the output column base
     // (0 or 4) into the compiled shader instead of a uOutputOffset uniform +
     // local-array indexing + 8-way selection chains. This halves the per-
     // fragment ALU (only 4 of the 8 MAD rows are emitted per variant) and
@@ -410,9 +410,9 @@
     // per-component clamp(x, 0.0, 1.0). Variant A reproduces former outs[0..3];
     // variant B reproduces former outs[4..7].
     //
-    // Uint8 quantization on the output FBO is part of the math contract
-    // (MRA fix #3 in v5.0 master plan §7.1 R-2): Mode 3 must hand
-    // PICASSO the same precision profile Mode 2 sees from raw layer FBOs.
+    // Uint8 quantization on the output FBO is part of the math contract:
+    // Mode 3 must hand PICASSO the same precision profile Mode 2 sees from
+    // raw layer FBOs.
     // -----------------------------------------------------------------------
     // Build a specialized Linear pre-blend fragment shader for output columns
     // [outputBase, outputBase+3]. outputBase is baked in at build time (0 for
@@ -506,8 +506,8 @@
         return lines.join('\n');
     }
 
-    // PICASSO kernel: vec4 y = uP * x; clamp at ≥0. Port of FS_PICASSO from
-    // demo/picasso-osd-demo.html L353–359. precision highp is required —
+    // PICASSO kernel: vec4 y = uP * x; clamp at ≥0.
+    // precision highp is required —
     // mediump would saturate the [0..255]-range float ping-pong.
     var PICASSO_FRAGMENT_SHADER_SRC = [
         'precision highp float;',
@@ -521,7 +521,7 @@
         '}'
     ].join('\n');
 
-    // PICASSO fused kernel+cast (v5.2 2.2): applies the final kernel matrix AND
+    // PICASSO fused kernel+cast: applies the final kernel matrix AND
     // the uint8 cast in one pass. Used for the K-1 iteration (and the sole pass
     // when K=1), eliminating the dedicated cast pass. precision highp is required
     // — mediump would saturate the [0..255]-range float ping-pong. Carries BOTH
@@ -653,7 +653,7 @@
 
             // Runtime denoise state — standalone Pass 2 (Option B).
             // threshold stored NORMALIZED 0..1 (display 0..255 divided by 255).
-            // F5: default filter is 'guided' (shipped flagship); denoise is OFF by
+            // Default filter is 'guided' (shipped flagship); denoise is OFF by
             // default (active:false). strength is the 0..100 slider value (→ ε).
             this._denoiseConfig = { active: false, filter: 'guided', threshold: 8 / 255, strength: 50 };
             // epsilon derived from strength via _strengthToEpsilon (see setDenoiseConfig);
@@ -665,7 +665,7 @@
             this._fbo2Height = 0;
             this._filterRegistry = {};          // name -> { program, uniforms, attribs }
 
-            // ---- Guided Filter v2 state (F1/F2/F4 — lazy link, units 5/6/7) ----
+            // ---- Guided Filter v2 state (lazy link, units 5/6/7) ----
             // _guidedProgramsLinked is set true at the 4-program link-success site
             // (LAZILY, on first denoise activation). _guidedSupported is resolved by
             // _ensureGuidedReady (the single resolve point) BEFORE the draw()
@@ -715,7 +715,7 @@
             this._unmixMatrixDirty = true;
             this._numOutputs = 0;
 
-            // Linear pre-blend FBO stage (v5.0 R1).
+            // Linear pre-blend FBO stage.
             // Two RGBA8 FBOs cover the full M ∈ [2,8] range — each holds 4
             // outputs, so M ≤ 4 uses only [0], 5 ≤ M ≤ 8 uses both. They are
             // lazy-allocated on the first updateUnmixConfig({active:true}) so
@@ -724,7 +724,7 @@
             // texture binding + PICASSO source-tex switch); it is set inside
             // _runLinearPass and cleared whenever Linear is disabled or the
             // matrix is invalidated.
-            // Two specialized programs (v5.2 1.10): variant A writes outputs
+            // Two specialized programs: variant A writes outputs
             // 0..3, variant B writes outputs 4..7. B is compiled lazily on the
             // first M > 4 use. Per-program uniform/attrib caches + matrixUploaded
             // flags (WebGL2-footgun: uniform/attrib state is per-program).
@@ -746,7 +746,7 @@
             // Ping-pong A/B are now SHARED single scalars (one float fboA + one float fboB),
             // reused per layer because the kernel processes layers strictly sequentially.
             // Out stays PER-LAYER (4 uint8 textures) — units 0..3 need 4 distinct,
-            // concurrently-bound textures.  (v5.2 2.1)
+            // concurrently-bound textures.
             // Square N×N matrix stacked K times; never rectangular Cout×Cin.
             this._picassoSupported = null;          // null until first probe
             this._picassoActive = false;
@@ -761,17 +761,17 @@
             this._picassoK = 0;
             this._picassoN = 0;
             this._picassoFBOsAllocated = false;
-            this._picassoOutputReady = false;      // cached Out textures valid across fast-path frames (v5.2 1.5)
-            this._picassoFBO_A = null;             // shared float ping-pong A (v5.2 2.1)
-            this._picassoFBO_B = null;             // shared float ping-pong B (v5.2 2.1)
+            this._picassoOutputReady = false;      // cached Out textures valid across fast-path frames
+            this._picassoFBO_A = null;             // shared float ping-pong A
+            this._picassoFBO_B = null;             // shared float ping-pong B
             this._picassoFBO_Out = [];             // per-layer uint8 output (units 0..3)
-            this._picassoTex_A = null;             // shared float ping-pong A texture (v5.2 2.1)
-            this._picassoTex_B = null;             // shared float ping-pong B texture (v5.2 2.1)
+            this._picassoTex_A = null;             // shared float ping-pong A texture
+            this._picassoTex_B = null;             // shared float ping-pong B texture
             this._picassoTex_Out = [];             // per-layer uint8 output textures
             this._picassoFBOWidth = 0;
             this._picassoFBOHeight = 0;
             this._picassoProgram = null;
-            this._picassoKernelCastProgram = null;  // fused kernel+cast (v5.2 2.2)
+            this._picassoKernelCastProgram = null;  // fused kernel+cast
             this._picassoUniforms = {};
             this._picassoKernelCastUniforms = {};
             this._picassoAttribs = {};
@@ -828,7 +828,7 @@
                 self._fbo2Height = 0;
                 // Guided filter resources are bound to the lost context too. Programs
                 // re-link in _initWebGL below; the float FBOs re-alloc lazily via
-                // _ensureGuidedReady. F4 note: the float-format fields are re-probed
+                // _ensureGuidedReady. Note: the float-format fields are re-probed
                 // lazily in the guided resolve path because _picassoSupported is reset
                 // to null at the PICASSO block below — _ensureGuidedReady re-runs
                 // _probePicassoExtensions() before reading _picassoFloatInternalFmt.
@@ -865,17 +865,17 @@
                 // PICASSO resources are bound to the lost context — drop and
                 // let updatePicassoConfig lazy-realloc on next activation.
                 self._picassoFBOsAllocated = false;
-                self._picassoOutputReady = false;  // v5.2 1.5: Out textures nulled below
-                self._picassoFBO_A = null;         // shared scalar (v5.2 2.1)
-                self._picassoFBO_B = null;         // shared scalar (v5.2 2.1)
+                self._picassoOutputReady = false;  // Out textures nulled below
+                self._picassoFBO_A = null;         // shared scalar
+                self._picassoFBO_B = null;         // shared scalar
                 self._picassoFBO_Out = [];
-                self._picassoTex_A = null;         // shared scalar (v5.2 2.1)
-                self._picassoTex_B = null;         // shared scalar (v5.2 2.1)
+                self._picassoTex_A = null;         // shared scalar
+                self._picassoTex_B = null;         // shared scalar
                 self._picassoTex_Out = [];
                 self._picassoOut2 = null;          // wide-path sets: died with the context;
                 self._picassoFloat2 = null;        // _ensureWidePicassoFBOs rebuilds on demand
                 self._picassoProgram = null;
-                self._picassoKernelCastProgram = null;  // fused program (v5.2 2.2)
+                self._picassoKernelCastProgram = null;  // fused program
                 self._picassoFBOWidth = 0;
                 self._picassoFBOHeight = 0;
                 // The lost context invalidated the float-FBO extension objects
@@ -1086,7 +1086,7 @@
                     }
                 }
                 // PICASSO resources (6 FBOs + 6 textures + 2 programs)
-                // v5.2 2.1: A/B are shared single scalars; Out stays per-layer.
+                // A/B are shared single scalars; Out stays per-layer.
                 if (this._picassoFBO_A) gl.deleteFramebuffer(this._picassoFBO_A);
                 if (this._picassoTex_A) gl.deleteTexture(this._picassoTex_A);
                 if (this._picassoFBO_B) gl.deleteFramebuffer(this._picassoFBO_B);
@@ -1121,7 +1121,7 @@
                 // Block-pass programs (plain + fused-cast); freed alongside the N≤4 programs.
                 if (this._picassoBlockPlain && this._picassoBlockPlain.program) gl.deleteProgram(this._picassoBlockPlain.program);
                 if (this._picassoBlockFused && this._picassoBlockFused.program) gl.deleteProgram(this._picassoBlockFused.program);
-                // Linear pre-blend resources (v5.0 R1)
+                // Linear pre-blend resources
                 for (var lpi = 0; lpi < this._linearFBOs.length; lpi++) {
                     if (this._linearFBOs[lpi]) gl.deleteFramebuffer(this._linearFBOs[lpi]);
                     if (this._linearFBOTextures[lpi]) gl.deleteTexture(this._linearFBOTextures[lpi]);
@@ -1131,11 +1131,11 @@
             }
             this._layerFBOs = [];
             this._layerFBOTextures = [];
-            this._picassoFBO_A = null;  // shared scalar (v5.2 2.1)
-            this._picassoFBO_B = null;  // shared scalar (v5.2 2.1)
+            this._picassoFBO_A = null;  // shared scalar
+            this._picassoFBO_B = null;  // shared scalar
             this._picassoFBO_Out = [];
-            this._picassoTex_A = null;  // shared scalar (v5.2 2.1)
-            this._picassoTex_B = null;  // shared scalar (v5.2 2.1)
+            this._picassoTex_A = null;  // shared scalar
+            this._picassoTex_B = null;  // shared scalar
             this._picassoTex_Out = [];
             this._picassoOut2 = null;
             this._picassoFloat2 = null;
@@ -1513,7 +1513,7 @@
                 this._freePicassoFBOs();
             }
 
-            // ---- Linear pre-blend stage (v5.0 R1) ----
+            // ---- Linear pre-blend stage ----
             // Lifts the matrix multiply that used to live inside Pass 1 into a
             // dedicated FBO write. Runs whenever Linear is enabled — the chain
             // discriminator (_chainAllowed) only affects what consumes the
@@ -1536,17 +1536,17 @@
             // per-layer uint8 RGBA FBO into a recovered uint8 RGBA texture, then
             // rebinds those textures to units 0..3 so the HyperBlend shader sees
             // them as if they were the raw layer FBOs.
-            // v5.0 R3: gate updated to allow Mode 3. PICASSO runs in Mode 2
+            // The gate allows Mode 3. PICASSO runs in Mode 2
             // (Linear off) AND in Mode 3 (chain allowed — Linear's abundance
             // FBO feeds PICASSO's initial blit via the source-tex switch
-            // wired in R1 inside _runPicassoKernel). When Linear is on but
+            // wired inside _runPicassoKernel). When Linear is on but
             // the chain dim contract fails, the throw in updatePicassoConfig
             // refused activation upstream — _picassoActive would be false here.
             if (this._picassoActive && this._picassoMatricesUploaded && (!this._unmixEnabled || this._chainAllowed())) {
                 // Lazy-(re)create PICASSO programs/FBOs — covers context-restore,
                 // where the restore handler dropped them and set _picassoSupported
                 // back to null so the ensure helper re-probes the float extensions.
-                // v5.2 1.5: cache the kernel output across fast-path frames.
+                // Cache the kernel output across fast-path frames.
                 // Recompute only when the FBO contents changed (needsComposite)
                 // or the cached Out textures are not yet valid; otherwise just
                 // rebind the cached Out textures over the raw layer textures the
@@ -1569,7 +1569,7 @@
                     // Fast path: kernel output still valid on the GPU — rebind the
                     // cached Out textures (the fast-path raw-texture rebind above
                     // clobbered units 0..3 and must be overridden).
-                    // v5.2 1.6: derive `chained` with the SAME expression the
+                    // Derive `chained` with the SAME expression the
                     // kernel uses (_chainAllowed() && _linearOutputReady) so the
                     // cached rebind matches the mode the kernel last ran in.
                     // _linearOutputReady is already settled above (the Linear
@@ -1582,14 +1582,14 @@
                 }
             }
 
-            // ---- Mode 1 texture binding swap (v5.0 R1) ----
+            // ---- Mode 1 texture binding swap ----
             // PICASSO already rebinds units 0..3 to its output textures inside
             // _runPicassoKernel (Mode 2). For Mode 1 (Linear only), swap unit 0
             // (and unit 1 when M > 4) to point at the Linear pre-blend FBO
             // textures. Units beyond the active output count stay bound to the
             // raw layer FBOs from earlier — the HTML guarantees channels at
             // those indices are disabled, so their contents don't reach the
-            // tone-mapped sum. Mode 3 path is unreachable in R1 (L1325 throw).
+            // tone-mapped sum. Mode 3 (Linear->PICASSO) is excluded by the `!this._picassoActive` test below; the PICASSO path handles it.
             if (this._linearOutputReady && !this._picassoActive) {
                 if (this._linearFBOTextures[0]) {
                     gl.activeTexture(gl.TEXTURE0);
@@ -1603,7 +1603,7 @@
 
             // ---- Determine if post-processing is active ----
             var postActive = this._postProcessConfig.active && this._postProcessProgram;
-            // F1/F3: resolve guided reachability BEFORE the routing predicate (single
+            // Resolve guided reachability BEFORE the routing predicate (single
             // resolve point) so a guided no-op can NEVER be discovered later inside the
             // orchestrator — if guided can't run, denoiseActive is false and Pass 1
             // routes straight to canvas (no black canvas, Beer's reads a valid _fbo).
@@ -1614,7 +1614,7 @@
                 this._ensureGuidedReady(canvasW, canvasH);
             }
             // Guided-only predicate: gates on _guidedSupported (graceful no-op if the
-            // guided programs failed to link or float FBOs are unavailable, F9).
+            // guided programs failed to link or float FBOs are unavailable).
             var denoiseActive = this._denoiseConfig.active &&
                 dFilter === 'guided' &&
                 this._filterRegistry.guided &&
@@ -1662,7 +1662,7 @@
                 if (window.__hyperBenchEnabled) __bench.uniformUploadBlocks++;
             }
 
-            // v5.0 R1: Linear pre-blend output (when enabled) is now consumed
+            // Linear pre-blend output (when enabled) is now consumed
             // via the unit 0..1 texture bindings prepared earlier in draw().
             // No uUnmixEnabled / uUnmixMatrix uniforms remain on this program.
 
@@ -1821,10 +1821,10 @@
                 // lock is instead applied reactively at the uniform build in draw(),
                 // gated on _unmixEnabled (see eArr fill).
             }
-            // v5.0 R1 channel-config invariant (master plan §5.1 Evaluator
-            // fix #3, option b): when Linear unmixing is engaged, channels
-            // 4..15 MUST be disabled. The HTML guarantees this via
-            // _pushUnmixChannelConfig at zstackHyper.html:2787-2798; the
+            // Channel-config invariant: when Linear unmixing is engaged, channels
+            // 4..15 MUST be disabled.
+            // The HTML guarantees this via
+            // _pushUnmixChannelConfig in the viewer host; the
             // assert below catches any future caller that bypasses that
             // path. Non-throwing (console.assert) so production users see
             // no visible disruption — the only consequence of a violated
@@ -2157,8 +2157,8 @@
          * Update linear unmixing configuration.
          * @param {Object} config - { active: bool, matrix: Float32Array(128), numOutputs: int }
          *
-         * v5.0 R1: flag-clear ordering on `active:false` matches master plan
-         * §3.4 — flip _unmixEnabled FIRST so a racing draw observes the chain
+         * Flag-clear ordering on `active:false`:
+         * flip _unmixEnabled FIRST so a racing draw observes the chain
          * gate going false BEFORE _texturesValid invalidates and BEFORE the
          * pre-blend FBO is dereferenced. Matrix is held intact across a
          * disable so a later re-enable can skip the upload until the user
@@ -2166,10 +2166,10 @@
          */
         updateUnmixConfig(config) {
             if (!config) return;
-            // Forbidden-direction guard (v5.0 R3): PICASSO → Linear is the
-            // illegal cross-feed (doc/picasso-math.md §4 forbidden move #5).
+            // Forbidden-direction guard: PICASSO → Linear is the
+            // illegal cross-feed (PICASSO output must never feed Linear).
             // Engaging Linear while PICASSO is already active would invert the
-            // chain direction. The HTML Q5 block-on-conflict guard makes this
+            // chain direction. The HTML block-on-conflict guard makes this
             // path unreachable in normal use, but the drawer-side throw is
             // defense-in-depth against any future HTML regression that
             // desyncs from drawer state. Symmetric with the Mode 3 throw in
@@ -2194,7 +2194,7 @@
                         this._unmixEnabled = true;
                         this._texturesValid = false;
                     } else {
-                        // Disable path — ordering per master plan §3.4 to
+                        // Disable path — ordering chosen to
                         // avoid a torn read where downstream callers see
                         // chainAllowed=true with stale Linear textures.
                         // ORDER (load-bearing):
@@ -2202,10 +2202,10 @@
                         //   2. mark Linear output unready    (cached FBO no longer valid)
                         //   3. invalidate composite cache    (next draw rebinds raw layer FBOs)
                         // _unmixMatrix and _numOutputs are intentionally LEFT
-                        // INTACT (matching pre-R1 behavior) so a follow-up
+                        // INTACT (matching earlier behavior) so a follow-up
                         // updateUnmixConfig({active:true}) without a matrix
                         // re-engages Linear with the previous pseudoinverse —
-                        // the HTML demote-then-re-Apply flow in v4.0 depends
+                        // the HTML demote-then-re-Apply flow in the viewer depends
                         // on this. _chainAllowed() therefore relies on
                         // _unmixEnabled (not _unmixMatrix or _numOutputs) as
                         // the definitive on/off signal.
@@ -2232,7 +2232,7 @@
             }
             if (typeof config.numOutputs !== 'undefined') {
                 this._numOutputs = config.numOutputs;
-                // v5.2 1.5: numOutputs is the one config path that does NOT set
+                // numOutputs is the one config path that does NOT set
                 // _texturesValid=false but can flip _chainAllowed() (which compares
                 // _numOutputs === _picassoN). Clear the cache so the next eligible
                 // draw re-runs the kernel under the new chain semantics.
@@ -2252,7 +2252,7 @@
         //  updatePicassoConfig — enable/disable + upload K square N×N matrices.
         //  getPicassoConfig    — read current PICASSO state (test introspection).
         //  readPicassoLayerFull — full-FBO RGBA readback (used by headless test).
-        //  runPicassoSelfChecks — eight runtime invariants from the spec.
+        //  runPicassoSelfChecks — eight runtime invariants.
         // =====================================================================
 
         /**
@@ -2316,9 +2316,9 @@
 
                 // Stash matrices as native N×N (so the CPU reference kernel and
                 // self-check 7 stay correct), and pre-compute the padded/transposed/
-                // scaled 4×4 GL uniforms. Phase 1 trick: bake the [0..1]→[0..255]
+                // scaled 4×4 GL uniforms. Trick: bake the [0..1]→[0..255]
                 // scale into iter-0's matrix so the first FS pass converts the
-                // uint8-sampled source in one step. See picasso-osd-demo.html L546–552.
+                // uint8-sampled source in one step.
                 this._picassoMatrices = [];
                 this._picassoTransposed = [];     // N≤4: Array of Float32Array(16)
                 this._picassoTransposed8 = [];    // N>4 : Array of {AA,AB,BA,BB}
@@ -2339,7 +2339,7 @@
                 // Stale output: matrices changed, recompose downstream.
                 if (this._picassoActive) {
                     this._texturesValid = false;
-                    this._picassoOutputReady = false;  // v5.2 1.5: cached Out is stale
+                    this._picassoOutputReady = false;  // cached Out is stale
                 }
             }
 
@@ -2353,10 +2353,10 @@
                 // Mode 3 chain (Linear → PICASSO) is now legal IFF the dimension
                 // contract holds: Linear output count must equal PICASSO N. The
                 // forbidden direction (PICASSO → Linear) is blocked symmetrically
-                // in updateUnmixConfig and at self-check 6. Per doc/picasso-math.md
-                // §4 the equality is design, not coincidence. Uses this._picassoN
-                // (not the literal 4) so the message stays accurate if Phase 6+
-                // generalises N. The N=4 hard-gate stays intact above where
+                // in updateUnmixConfig and at self-check 6. The equality is by
+                // design, not coincidence. Uses this._picassoN
+                // (not the literal 4) so the message stays accurate if a later
+                // version generalises N. The N=4 hard-gate stays intact above where
                 // derivedN is rejected on upload. Placed AFTER matrices upload
                 // (which sets _picassoN from derivedN) so first-time Mode 3
                 // engages cleanly when matrices + active arrive in one call.
@@ -2366,7 +2366,7 @@
                     }
                     // Dims match — proceed to engage. The chain will route
                     // Linear output to PICASSO input via _runPicassoKernel's
-                    // source-tex switch (already wired in R1) on the next draw.
+                    // source-tex switch on the next draw.
                 }
                 if (want && !wasActive) {
                     // Lazy alloc on first activation. Programs link once;
@@ -2384,7 +2384,7 @@
                     // when entering PICASSO the units 0..3 must hold output textures;
                     // when leaving they must hold the raw layer FBO textures.
                     this._texturesValid = false;
-                    this._picassoOutputReady = false;  // v5.2 1.5: re-run kernel on re-engage
+                    this._picassoOutputReady = false;  // re-run kernel on re-engage
                     // The draw() locked-channel mask depends on _picassoActive (RGB mode:
                     // ch0..7 are PICASSO outputs, unlocked at ~L1414). Force a uniform
                     // rebuild so an engage/disengage re-evaluates it even when no channel
@@ -2403,11 +2403,11 @@
          * Test-only: get current PICASSO config snapshot.
          * @returns {{active, K, N, matrices, supported, chainAllowed, mode}}
          *
-         * v5.0 R1 additions (live as of R3):
+         * Mode 3 additions:
          *   - chainAllowed: result of _chainAllowed() — Mode 3 readiness gate.
          *   - mode: 'mode-0' | 'mode-1' | 'mode-2' | 'mode-3' — convenience
-         *           label for the headless tests (matches master plan §3.3).
-         * R3 lifted the mutex throw, so 'mode-3' now actually engages on
+         *           label for the headless tests.
+         * The mutex throw is lifted, so 'mode-3' now actually engages on
          * draw() when chainAllowed is true.
          */
         getPicassoConfig() {
@@ -2447,7 +2447,7 @@
          * Per-pixel readPixels at 2048² would take >10 minutes — this path is the
          * only way the integration test can dump the recovered image at scale.
          *
-         * STALENESS (v5.2 1.6): in Mode-3 chained PICASSO the kernel skips layers
+         * STALENESS: in Mode-3 chained PICASSO the kernel skips layers
          * 1..3, so _picassoFBO_Out[1..3] are stale. Only layerIdx 0 reflects the
          * current frame under chained Mode 3; Mode 2 keeps all 4 outputs current.
          * @param {number} layerIdx 0..3 (only 0 is current in Mode-3 chained)
@@ -2477,7 +2477,7 @@
         }
 
         /**
-         * Eight self-checks (spec §9.1). Mirrors Phase 2's runtime invariant set.
+         * Eight runtime self-checks.
          * Caller is expected to have already drawn at least one PICASSO frame.
          * @returns {{passed: boolean, checks: Array<{name, result, detail}>}}
          */
@@ -2550,7 +2550,7 @@
                     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 } else {
                     // ---- N≤4 path (UNCHANGED, verbatim) ----
-                    // v5.2 2.1: A/B are shared single scalars — check individually.
+                    // A/B are shared single scalars — check individually.
                     function checkOne(label, fbo) {
                         if (!fbo) {
                             ok = false;
@@ -2625,7 +2625,7 @@
             })(this);
 
             // [5] Ping-pong direction correctness — simulated traversal mirroring
-            // the v5.2 2.2 FUSED _runPicassoKernel sequence: iter-0 samples the raw
+            // the FUSED _runPicassoKernel sequence: iter-0 samples the raw
             // source into FBO A; mid iters (1..K-2) ping-pong A<->B; the final iter
             // (K-1) is the fused kernel+cast pass writing into _picassoFBO_Out[li].
             // dst must never equal src on any iter, and the final dst must be the
@@ -2669,7 +2669,7 @@
                 var violations = 0;
                 var finalErrors = 0;
                 var trace = [];
-                // v5.2 2.1: A/B are shared scalars; Out is per-layer.
+                // A/B are shared scalars; Out is per-layer.
                 for (var li = 0; li < self._picassoFBO_Out.length; li++) {
                     if (!self._picassoFBO_A || !self._picassoFBO_B) continue;
                     // iter-0 source is the raw layer FBO texture (chained-mode select
@@ -2709,11 +2709,11 @@
             })(this);
 
             // [6] No PICASSO→Linear cross-feed; Linear→PICASSO chain requires N match.
-            // Two-part check (v5.0 R3):
+            // Two-part check:
             //   (a) Direction: if both Linear and PICASSO are engaged
             //       simultaneously, the dimension contract must hold
             //       (_numOutputs === _picassoN). This is the only legal
-            //       Mode 3 state. Per doc/picasso-math.md §4, PICASSO →
+            //       Mode 3 state. PICASSO →
             //       Linear is the forbidden direction; the dim-mismatch
             //       case can only happen via a drawer-side throw bypass
             //       and is reported as a self-check failure.
@@ -2734,7 +2734,7 @@
                 // FBO-aliasing sub-assert: every Linear FBO/texture must be
                 // distinct from every PICASSO FBO/texture across all layers.
                 // Null entries are skipped — un-allocated slots cannot alias.
-                // v5.2 2.1: A/B are shared single scalars — compare directly;
+                // A/B are shared single scalars — compare directly;
                 // Out stays a per-layer array.
                 var aliasViolation = null;
                 var lFBOs = self._linearFBOs || [];
@@ -2894,7 +2894,7 @@
                         // sized to imagesPerZ, so skip layers beyond it (previously every
                         // layer 0..3 always existed). ----
                         for (var li = 0; li < self._layerFBOs.length; li++) {
-                            // v5.2 1.6: in Mode-3 chained PICASSO the kernel skips
+                            // In Mode-3 chained PICASSO the kernel skips
                             // layers 1..3 (their _picassoFBO_Out are stale), so the
                             // CPU/GPU round-trip is only meaningful for layer 0.
                             // Skip li>0 when chained to keep the check honest. (The
@@ -3030,7 +3030,7 @@
                 gl.deleteShader(fs);
             }
 
-            // Fused kernel+cast program (v5.2 2.2): final-iteration matrix + uint8
+            // Fused kernel+cast program: final-iteration matrix + uint8
             // cast in one pass. For K=1 this single program replaces blit+kernel+cast.
             var vs3 = this._compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC);
             var fs3 = this._compileShader(gl, gl.FRAGMENT_SHADER, PICASSO_KERNEL_CAST_FRAGMENT_SHADER_SRC);
@@ -3097,10 +3097,10 @@
         }
 
         // ---- Internal: allocate PICASSO FBOs (2 shared float A/B + 4 uint8 Out = 6 FBOs) ----
-        // v5.2 2.1: A/B are shared single scalars (the kernel processes layers
+        // A/B are shared single scalars (the kernel processes layers
         // sequentially, rewriting A/B each layer); Out stays per-layer (units 0..3).
-        // Mirrors Phase 2 createFBO at picasso-osd-demo.html L516–531 with the
-        // completeness probe per FBO. On ANY failure free everything and set
+        // Each FBO gets a
+        // completeness probe. On ANY failure free everything and set
         // _picassoSupported=false so the gate in updatePicassoConfig skips PICASSO.
         _createPicassoFBOs(w, h) {
             var gl = this._gl;
@@ -3137,7 +3137,7 @@
             this._picassoTex_B = null;
             this._picassoTex_Out = [];
 
-            // v5.2 2.1: allocate the two SHARED float ping-pong FBOs once (not per layer).
+            // Allocate the two SHARED float ping-pong FBOs once (not per layer).
             var a = makeFBO(gl.FLOAT);
             var b = makeFBO(gl.FLOAT);
             if (!a.ok || !b.ok) {
@@ -3340,11 +3340,11 @@
             if (w === this._picassoFBOWidth && h === this._picassoFBOHeight) return;
             var gl = this._gl;
             if (!gl || !this._picassoFBOsAllocated) return;
-            // v5.2 1.5: a real resize re-allocates _picassoTex_Out storage below
+            // A real resize re-allocates _picassoTex_Out storage below
             // (texImage2D with null wipes content) — cached Out is now invalid.
             this._picassoOutputReady = false;
             var floatFmt = this._picassoFloatInternalFmt;
-            // v5.2 2.1: shared A/B resize once (scalar, null-guarded).
+            // Shared A/B resize once (scalar, null-guarded).
             if (this._picassoTex_A) {
                 gl.bindTexture(gl.TEXTURE_2D, this._picassoTex_A);
                 gl.texImage2D(gl.TEXTURE_2D, 0, floatFmt, w, h, 0, gl.RGBA, gl.FLOAT, null);
@@ -3442,17 +3442,17 @@
         }
 
         // ---- Internal: run K iterations of max(0, P^(k) @ x) per active layer ----
-        // Per-layer flow (v5.2 2.2, K+2→K passes): iteration 0 samples the raw
+        // Per-layer flow (K+2→K passes): iteration 0 samples the raw
         // source texture directly (blit folded in — its ×255 promotion is baked
         // into _picassoTransposed[0]); mid iterations ping-pong A↔B with
         // _picassoProgram; the FINAL iteration (k===K-1) uses the fused
         // _picassoKernelCastProgram (kernel matrix + clamp + uint8 cast) writing
         // straight into Out (uint8) → rebind Out to texture unit i. For K=1 the
-        // fused program is the sole pass. Ported from picasso-osd-demo.html
-        // L765–792 (_runPicassoKernel); split across layers per spec §1.3.
+        // fused program is the sole pass.
+        // The work is split across layers.
         _runPicassoKernel(activeLayers) {
             var gl = this._gl;
-            // v5.2 1.5: return false on every early-return so draw() does NOT
+            // Return false on every early-return so draw() does NOT
             // mark _picassoOutputReady when the body did not execute.
             if (!gl || !this._picassoFBOsAllocated || !this._picassoProgram || !this._picassoKernelCastProgram) return false;
             if (this._picassoN > 4) {
@@ -3466,7 +3466,7 @@
             var h = this._picassoFBOHeight;
             var aPosKernel = this._picassoAttribs.aPosition;
             var aTexKernel = this._picassoAttribs.aTexCoord;
-            // v5.2 2.2: fused kernel+cast attribs (blit attribs retired — the blit
+            // Fused kernel+cast attribs (blit attribs retired — the blit
             // pass is folded into iteration 0; the dedicated cast pass into K-1).
             var aPosKC = this._picassoKernelCastAttribs.aPosition;
             var aTexKC = this._picassoKernelCastAttribs.aTexCoord;
@@ -3475,28 +3475,26 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, this._posBuffer);
             // (per-program attribute setup happens below — locations differ per program)
 
-            // v5.0 R1: Mode 3 source-tex selection. When the Linear→PICASSO
+            // Mode 3 source-tex selection. When the Linear→PICASSO
             // chain is allowed (see _chainAllowed), the initial blit feeds
             // PICASSO from the Linear pre-blend FBO instead of the raw layer
-            // FBO. Phase 5 hard-gates N=4, which also implies the Linear
+            // FBO. The chain hard-gates N=4, which also implies the Linear
             // pre-blend wrote into _linearFBOTextures[0] (channels 0..3);
             // layers 1..3 fall through to their raw FBO inputs and the
             // resulting PICASSO outputs feed the disabled ch4..15 channels in
             // Pass 1, which are masked off via uChannelEnabled (HTML guarantee
             // + console.assert in updateChannelConfig).
-            // R3 lifted the mutex throw and rewrote the draw() PICASSO gate
-            // to permit chained execution, so this branch is now reachable
-            // whenever Mode 3 is engaged (Linear apply + dim-matching PICASSO
-            // apply). The wiring itself was authored in R1; only the upstream
-            // gates changed.
+            // The draw() PICASSO gate permits chained execution, so this branch
+            // is reachable whenever Mode 3 is engaged (Linear apply +
+            // dim-matching PICASSO apply).
             var chained = this._chainAllowed() && this._linearOutputReady;
 
             for (var li = 0; li < activeLayers.length; li++) {
-                // v5.2 2.1: Out is the per-layer array (length 4); A/B are shared scalars.
+                // Out is the per-layer array (length 4); A/B are shared scalars.
                 if (!activeLayers[li] || li >= this._picassoFBO_Out.length ||
                     !this._picassoFBO_A || !this._picassoFBO_B) continue;
                 if (!this._layerFBOTextures[li]) continue;
-                // v5.2 1.6: skip provably-inert layers 1..3 in Mode-3 chained
+                // Skip provably-inert layers 1..3 in Mode-3 chained
                 // PICASSO. Only layer 0's output (ch0..3) feeds enabled HyperBlend
                 // channels — the N=4 hard gate (_chainAllowed) guarantees layers
                 // 1..3 produce ch4..15, all disabled via uChannelEnabled. Skipping
@@ -3505,19 +3503,18 @@
                 // Mode 3 with _linearOutputReady false) still runs all 4 layers.
                 if (chained && li > 0) continue;
 
-                // v5.2 2.2: blit + cast are fused into the kernel iterations.
+                // Blit + cast are fused into the kernel iterations.
                 // Iteration 0 samples the raw source texture directly (the old
                 // dedicated no-scale blit is gone — its ×255 promotion was always
                 // baked into _picassoTransposed[0] via transposeAndScale(ms[0],255)).
                 // The final iteration (k===K-1) uses the fused kernel+cast program,
                 // writing the uint8 result straight into _picassoFBO_Out[li].
                 //
-                // Phase 5 N=4 hard-gate: chained PICASSO reads from
+                // N=4 hard-gate: chained PICASSO reads from
                 // _linearFBOTextures[0] for layer 0 only. Layers 1..3 still
                 // sample their raw FBO inputs (their PICASSO outputs land in
                 // ch4..15 which Pass 1 has disabled). When chained === false
-                // (Mode 2 standalone) all 4 layers come from raw FBOs —
-                // identical to pre-R1 behaviour.
+                // (Mode 2 standalone) all 4 layers come from raw FBOs.
                 var initialSrcTex;
                 if (chained && li === 0 && this._linearFBOTextures[0]) {
                     initialSrcTex = this._linearFBOTextures[0];
@@ -3526,7 +3523,7 @@
                 }
 
                 // Ping-pong bookkeeping for the float A/B passes (iters 0..K-2).
-                // v5.2 2.1: A/B are shared scalars (only one layer is in flight at a time).
+                // A/B are shared scalars (only one layer is in flight at a time).
                 // iter-0 writes into FBO A sampling initialSrcTex; subsequent mid
                 // iters alternate A<->B sampling the previous dst. The final fused
                 // iter writes into Out[li] sampling whatever the prior pass produced
@@ -3590,7 +3587,7 @@
 
             // Rebind PICASSO output textures to units 0..3 in place of the raw
             // layer FBOs (extracted so cached fast-path frames can reuse it).
-            // v5.2 1.6: pass the SAME `chained` boolean computed above so the
+            // Pass the SAME `chained` boolean computed above so the
             // rebind restriction stays in lockstep with the loop skip.
             this._rebindPicassoOutputs(activeLayers, chained);
             return true;
@@ -3689,14 +3686,14 @@
         }
 
         // ---- Internal: rebind cached PICASSO Out textures to units 0..3 ----
-        // Extracted from _runPicassoKernel (v5.2 1.5). On cached fast-path frames
+        // Extracted from _runPicassoKernel. On cached fast-path frames
         // the kernel is skipped but the fast path rebinds the RAW layer FBO
         // textures to units 0..3 — those must be overridden by the cached PICASSO
         // output textures, so this runs at the same draw() slot as the kernel.
         // Absent layers keep their cleared raw FBO texture bound from the earlier
         // composite path (no rebind here). Same guards as the kernel's loop.
         //
-        // v5.2 1.6: when `chained` (Mode-3 chained PICASSO), only unit 0 is
+        // When `chained` (Mode-3 chained PICASSO), only unit 0 is
         // rebound to _picassoTex_Out[0]. Unit-0 rebind is MANDATORY — the kernel
         // (and this rebind on cached frames) clobbers TEXTURE0. Units 1..3 are
         // deliberately LEFT bound to the RAW layer FBO textures that both the
@@ -3722,7 +3719,7 @@
             // ---- N≤4 path (UNCHANGED) ----
             for (var bi = 0; bi < activeLayers.length; bi++) {
                 if (!activeLayers[bi] || bi >= this._picassoTex_Out.length) continue;
-                // v5.2 1.6: in chained Mode 3 only unit 0 is meaningful; units
+                // In chained Mode 3 only unit 0 is meaningful; units
                 // 1..3 keep the raw layer FBO textures bound earlier this frame.
                 if (chained && bi > 0) break;
                 if (!this._picassoTex_Out[bi]) continue;
@@ -3762,7 +3759,7 @@
         // channels (guaranteed by _numOutputs===_picassoN), so their inert value
         // never reaches the tone-mapped sum. Returns {AA, AB, BA, BB}, each
         // Float32Array(16) col-major. N=8 has no identity pad. Clean-room: standard
-        // block partition of an 8×8 — derived from picasso-algorithm-spec.md only.
+        // block partition of an 8×8 — derived from the algorithm alone.
         _picassoPadTransposeAndScale8(rowMajor, N, scale) {
             // 1. Build logical 8×8 row-major.
             var M8 = new Float32Array(64);
@@ -3792,7 +3789,7 @@
         }
 
         // ---- Internal: CPU reference kernel (used by self-check 7) ----
-        // Port of runPicassoKernelCPU at picasso-osd-demo.html L328–347.
+        // CPU port of the PICASSO kernel.
         _picassoCPUKernel(pixel, mpInfo) {
             var N = mpInfo.N, K = mpInfo.K, P = mpInfo.P;
             var v = new Float32Array(N), w = new Float32Array(N);
@@ -3817,7 +3814,7 @@
         }
 
         // =====================================================================
-        //  LINEAR PRE-BLEND STAGE (v5.0 R1)
+        //  LINEAR PRE-BLEND STAGE
         //  _chainAllowed         — Mode 3 dim-contract predicate (used by
         //                          _runPicassoKernel for source-tex selection).
         //  _ensureLinearResources — lazy-allocates programs + FBOs.
@@ -3830,20 +3827,20 @@
         // =====================================================================
 
         /**
-         * Mode 3 chain-allowed predicate (v5.0 master plan §3.2).
+         * Mode 3 chain-allowed predicate.
          * Returns true iff Linear→PICASSO chain may execute on the next draw.
          *
-         * Consumers in R1: _runPicassoKernel's initial source-tex switch.
-         * Consumers in R3+: throw text + self-check 6 rephrasing, HTML status
+         * Consumers: _runPicassoKernel's initial source-tex switch.
+         * Also: throw text + self-check 6 rephrasing, HTML status
          * branches. Document inline so a future reader can find the contract.
          *
          * PICASSO supports N in 2..8 (see updatePicassoConfig): N≤4 uses the
          * single-RGBA-texel kernel, N=5..8 the 2-RGBA-texel wide kernel. The
          * numOutputs === _picassoN equality holds for every N and is the Mode-3
-         * dimension contract. Per doc/picasso-math.md §4 the equality is design,
+         * dimension contract. The equality is design,
          * not coincidence.
          *
-         * v5.2 1.6 DEPENDENCY (N≤4 ONLY): the Mode-3 layer-skip optimization in
+         * DEPENDENCY (N≤4 ONLY): the Mode-3 layer-skip optimization in
          * _runPicassoKernel (skip li>0) and the unit-0-only rebind in
          * _rebindPicassoOutputs BOTH rely on the N≤4 implication that only layer
          * 0's PICASSO output (ch0..3) feeds enabled HyperBlend channels; layers
@@ -3854,7 +3851,7 @@
          * apply to the wide path and are not reached when _picassoN > 4.
          */
         _chainAllowed() {
-            // The plan (§3.2) phrases the matrix check as `_unmixMatrix != null`.
+            // A matrix check could be phrased as `_unmixMatrix != null`.
             // In this codebase _unmixMatrix is a pre-allocated Float32Array(128)
             // that is never reset to null; instead, disable paths zero it and
             // set _numOutputs to 0, so checking numOutputs > 0 is the practical
@@ -4009,7 +4006,7 @@
             // stale result is then reused by fast-path frames.
             var prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
 
-            // v5.0 R1 / MRA fix #4: ensure the uint8 abundance handoff to
+            // Ensure the uint8 abundance handoff to
             // PICASSO is NOT alpha-premultiplied. The Linear FBO is rendered
             // to (not uploaded from external pixel data), so this only
             // affects any subsequent texImage2D calls — keep the pack/unpack
@@ -4230,7 +4227,7 @@
             this._program = program;
 
             // Get uniform locations.
-            // v5.0 R1: uUnmixEnabled / uUnmixMatrix removed from this program;
+            // uUnmixEnabled / uUnmixMatrix removed from this program;
             // the Linear matrix multiply now lives in its own pre-blend pass
             // (see _runLinearPass + buildLinearPassFragmentSrc).
             this._uniformLocations = {
@@ -4505,7 +4502,7 @@
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
             // Restore the caller's TEXTURE_2D binding on the ACTIVE unit, never bindTexture(null):
             // this runs inside draw() after the layer textures are bound to units 0-3 (the
-            // dfea0a6 class: a null here unbinds a layer input for that frame).
+            // bug class: a null here unbinds a layer input for that frame).
             gl.bindTexture(gl.TEXTURE_2D, prevTex);
             this._fboWidth = width;
             this._fboHeight = height;
@@ -4523,7 +4520,7 @@
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
             // Restore the caller's TEXTURE_2D binding on the ACTIVE unit, never bindTexture(null):
             // this runs inside draw() after the layer textures are bound to units 0-3 (the
-            // dfea0a6 class: a null here unbinds a layer input for that frame).
+            // bug class: a null here unbinds a layer input for that frame).
             gl.bindTexture(gl.TEXTURE_2D, prevTex);
             this._fbo2Width = width;
             this._fbo2Height = height;
@@ -4648,13 +4645,13 @@
         _resolveGuidedSupport() {
             var gl = this._gl;
             if (!gl) { this._guidedSupported = false; return false; }
-            // F4: re-probe float capability after a context restore (which nulls
+            // Re-probe float capability after a context restore (which nulls
             // _picassoSupported). READ-ONLY reuse — _probePicassoExtensions writes
             // only _picasso* fields.
             if (this._picassoSupported === null) {
                 this._probePicassoExtensions();
             }
-            // F2 defensive pre-gate: WebGL1 guarantees only units 0-7; guided needs
+            // Defensive pre-gate: WebGL1 guarantees only units 0-7; guided needs
             // 5/6/7. Disable if the driver reports fewer than 8.
             // CAPABILITY ONLY: programs link lazily via _ensureGuidedPrograms(), so this
             // (called at init for the UI label) must NOT require _guidedProgramsLinked.
@@ -4717,7 +4714,7 @@
             var gl = this._gl;
             if (!gl) { this._guidedSupported = false; return; }
             if (w <= 0 || h <= 0) { this._guidedSupported = false; return; }
-            // F4: ensure float-format fields are fresh (context-restore nulls the probe).
+            // Ensure float-format fields are fresh (context-restore nulls the probe).
             if (this._picassoSupported === null) {
                 this._probePicassoExtensions();
             }
@@ -4795,7 +4792,7 @@
 
         // ---- Internal: resize guided float FBOs (clone of _resizePicassoFBOs) ----
         // ISOLATION: touches only guided state. Reuses _picassoFloatInternalFmt READ-ONLY.
-        // F3 honest degradation (findings 1/3): a resize allocation can fail (out of
+        // Honest degradation: a resize allocation can fail (out of
         // VRAM, driver float-FBO limits). After reallocating, REVALIDATE every
         // tex/FBO pair with checkFramebufferStatus + getError; on ANY failure set
         // _guidedSupported=false (so the next draw() routing predicate routes Pass 1
@@ -4860,13 +4857,13 @@
         // box passes share one scratch pair (H→V is strictly sequential, so ping1 and
         // ping2 are the same pair) and the rest reuse dead roles. See the liveness
         // schedule in _createGuidedFBOs; changing this DRAW ORDER means re-deriving it.
-        // F2 UNIT MAP: box.uBoxInput=5; coeff uMeanI=6,uMeanII/uA=7; recombine
+        // UNIT MAP: box.uBoxInput=5; coeff uMeanI=6,uMeanII/uA=7; recombine
         // uInput=5,uMeanA=6,uMeanB=7. NEVER bind a sampler unit > 7.
         _runGuidedFilter(inputTex, outputFBO, w, h, opts) {
             var gl = this._gl;
             if (!gl) return;
             // Defensive: if FBOs/programs are somehow not ready, blit pass-through
-            // (NEVER no-op) so canvas/Beer's input is never stale (F3).
+            // (NEVER no-op) so canvas/Beer's input is never stale.
             if (!this._guidedFBOsAllocated || !this._guidedProgramsLinked) {
                 this._runGuidedPassthrough(inputTex, outputFBO, w, h);
                 return;
@@ -4974,12 +4971,12 @@
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         }
 
-        // ---- Internal: guided pass-through (F3 — never leave canvas/_fbo2 stale/black) ----
+        // ---- Internal: guided pass-through (never leave canvas/_fbo2 stale/black) ----
         // If the guided chain cannot run at draw time (should not happen — the
         // _ensureGuidedReady gate makes denoiseActive false when guided can't run —
         // but defensive), copy inputTex → outputFBO so canvas/Beer's input is never
-        // stale. F3 (Codex/gate findings) requires this to be a TRUE inputTex→outputFBO
-        // pass-through and EXPLICITLY FORBIDS a black/no-op output: a black clear must
+        // stale. This must be a TRUE inputTex→outputFBO
+        // pass-through, never a black/no-op output: a black clear must
         // NEVER be the terminal state of this method.
         //
         // Identity copy = _blitProgram (BLIT_FRAGMENT_SRC: samples uTile@unit5 with
@@ -4988,7 +4985,7 @@
         // present whenever the drawer has rendered a single frame, so it links/exists
         // independently of the guided/median programs. Each program path draws a
         // full-screen quad that OVERWRITES every destination texel — NO gl.clear is
-        // issued anywhere in this method, because F3 explicitly forbids a black clear
+        // issued anywhere in this method, because this explicitly forbids a black clear
         // (it could become the terminal output if a draw ever failed). Fallback:
         // guided box program with step=0 (mean(I)==I identity) if _blitProgram is
         // somehow unavailable. If NEITHER program exists the WebGL context is unusable
@@ -5002,7 +4999,7 @@
                 this._blitAttribs.aPosition >= 0 && this._blitAttribs.aTexCoord >= 0) {
                 // Independently-available identity copy (uTile bound to unit 5).
                 // The full-screen quad overwrites every destination texel, so NO
-                // gl.clear is performed — F3 forbids a black clear here (it could
+                // gl.clear is performed — a black clear is forbidden here (it could
                 // become the terminal output if the draw ever failed).
                 gl.bindFramebuffer(gl.FRAMEBUFFER, outputFBO || null);
                 gl.viewport(0, 0, w, h);
@@ -5016,7 +5013,7 @@
                 this._guidedBoxAttribs.aPosition >= 0 && this._guidedBoxAttribs.aTexCoord >= 0) {
                 // Fallback: guided box with step=0 → all taps read vTexCoord → identity.
                 // Same as the _blitProgram path: the quad overwrites every texel, so
-                // NO gl.clear (F3 forbids a black terminal output).
+                // NO gl.clear (a black terminal output is forbidden).
                 gl.bindFramebuffer(gl.FRAMEBUFFER, outputFBO || null);
                 gl.viewport(0, 0, w, h);
                 gl.activeTexture(gl.TEXTURE5);
@@ -5028,7 +5025,7 @@
                 return true;
             }
             // No identity-copy program available — the context is unusable. Do NOT
-            // clear to black (F3 forbids a black terminal output); leave the existing
+            // clear to black (a black terminal output is forbidden); leave the existing
             // destination content untouched. Report failure so the caller can route
             // Pass 1 straight to the destination if it wishes.
             return false;
@@ -5088,7 +5085,7 @@
             }
 
             gl.useProgram(this._blitProgram);
-            // v5.2 2.2: PICASSO no longer touches _blitProgram (blit folded into the
+            // PICASSO no longer touches _blitProgram (blit folded into the
             // fused kernel pass), so the only uTile=0 writer is gone — uTile stays at
             // its link-time default of 5 (set once at program-link). The former
             // defensive reset here is now dead and removed.
