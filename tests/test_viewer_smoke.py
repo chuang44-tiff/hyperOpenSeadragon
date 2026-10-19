@@ -38,7 +38,7 @@ ALL_LOADED_JS = """(z) => {
     return !!row && row.length === 4 && row.every(it => it && it.getFullyLoaded());
 }"""
 
-# Mean colour of an 8x8 downsample of the current frame (a cheap image signature).
+# Mean colour of an 8x8 downsample of the current frame (a cheap image signature), RGBA.
 SIGNATURE_JS = """() => {
     const src = viewer.drawer.captureCanvas();
     const c = document.createElement('canvas'); c.width = 8; c.height = 8;
@@ -53,6 +53,11 @@ SAMPLE_JS = """(pts) => {
         return [d[0], d[1], d[2]];
     });
 }"""
+
+
+def _rgb_max(sig):
+    """Brightest colour value of a signature, ignoring alpha (always 255 on this canvas)."""
+    return max(v for i, v in enumerate(sig) if i % 4 != 3)
 
 
 def _poll(fn, timeout_s=60.0, interval_s=0.25):
@@ -103,7 +108,7 @@ class ViewerSmokeTests(unittest.TestCase):
     def _wait_for_nonblack(self):
         def check():
             sig = self._signature()
-            return sig if max(sig) > 30 else None
+            return sig if _rgb_max(sig) > 30 else None
         sig = _poll(check)
         self.assertIsNotNone(sig, "canvas stayed black")
         return sig
@@ -115,7 +120,7 @@ class ViewerSmokeTests(unittest.TestCase):
 
         def check():
             sig = self._signature()
-            same = max(sig) > 30 and sig == state["prev"]
+            same = _rgb_max(sig) > 30 and sig == state["prev"]
             state["prev"] = sig
             return sig if same else None
         sig = _poll(check, interval_s=0.5)

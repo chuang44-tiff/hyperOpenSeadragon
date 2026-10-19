@@ -3,7 +3,8 @@ demo_data/ it produced.
 
 Tile PNG bytes are never compared (libvips / zlib differ across platforms); the
 finest pyramid level is decoded (every tile) and compared pixel-for-pixel with a fresh numpy
-render from the script. A fresh regeneration on the same machine must match EXACTLY. The
+render from the script, and level finest-2 is compared with a 4x4 box mean of that render
+(|diff| <= 2; libvips's rounded 2x2 means stay within 1). A fresh regeneration on the same machine must match EXACTLY. The
 committed tiles were written on another platform (macOS arm64), where numpy's exp() and
 rounding may differ from Linux x86 by one least-significant bit, so the committed-vs-render
 comparison allows |diff| <= 1 on at most 0.1 % of the pixels of each tile source and fails
