@@ -692,8 +692,9 @@
 				if ($txt && $txt.length && typeof $txt.text === 'function') { $txt.text(workerOk ? 'Optimizer (in-browser) ready' : 'Optimizer (in-browser) unavailable — serve over http://'); }
 			}
 			// The optimizer server is opt-in. Probe /health only when it is opted into
-			// (__HP_SERVER_OVERRIDE) or the page was served by hyperpicasso-app
-			// (__HP_APP_SERVED); otherwise a plain static host would log a 404 on every load.
+			// (__HP_SERVER_OVERRIDE) or the page was served by the optional hyperpicasso-app
+			// optimizer server, a separate package that sets __HP_APP_SERVED in the HTML it
+			// serves; otherwise a plain static host would log a 404 on every load.
 			if (!(window.__HP_SERVER_OVERRIDE || window.__HP_APP_SERVED)) {
 				_renderNoServer();
 				return;
@@ -1706,6 +1707,10 @@
 			// 2) Install WebGL hooks BEFORE any channel changes fire
 			if (useWebGLBlend) {
 				_hookChannelUIForWebGL();
+			} else {
+				// H&E / Trichrome are GPU-only: without WebGL the toggles cannot work, so say so.
+				$('#heToggle, #trichromeToggle').prop('disabled', true)
+					.closest('.pp-toggle').attr('title', 'Requires WebGL, which this browser does not provide');
 			}
 
 			// 2b) Populate NIST DOM element cache (elements exist after filter init)
@@ -1772,10 +1777,10 @@
 			}
 
 			// Apply default post-processing toggles
-			if (defaultHE) {
+			if (defaultHE && useWebGLBlend) {
 				$('#heToggle').prop('checked', true).trigger('change');
 			}
-			if (defaultTrichrome && !defaultHE) {
+			if (defaultTrichrome && !defaultHE && useWebGLBlend) {
 				$('#trichromeToggle').prop('checked', true).trigger('change');
 			}
 			if (defaultUnmixing) {
@@ -1889,7 +1894,6 @@
 				config.filterType = 'he';
 				config.mode = 0.0;  // H&E: nuclei=B, stroma=G
 				config.colGain = 0.0;
-				config.unmix = 0.1;
 			} else if (filterName === 'MassonTrichrome') {
 				config.filterType = 'trichrome';
 				config.mode = 1.0;  // Trichrome: nuclei=G, stroma=R, collagen=B
@@ -4153,7 +4157,7 @@
 				Object.keys(cfg).forEach(function (key) {
 					var el = document.getElementById(pair[0] + key.charAt(0).toUpperCase() + key.slice(1));
 					var v = parseFloat(cfg[key]);
-					if (!el || el.tagName !== 'INPUT' || isNaN(v)) {
+					if (!el || el.type !== 'number' || isNaN(v)) {
 						console.warn('[hyperOSD] ignoring stain default ' + (pair[0] === 'he' ? 'defaultStainHE.' : 'defaultStainTrichrome.') + key);
 						return;
 					}
