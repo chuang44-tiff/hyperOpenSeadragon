@@ -10,7 +10,7 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 
 - **Real-time channel blending** — Toggle channels on/off, pick a color for each, and adjust gain to highlight structures of interest. Changes appear instantly.
 - **Z-stack navigation** — Switch between focal planes using a slider.
-- **H&E and Masson Trichrome rendering** — Apply virtual histology stains as post-processing on top of your fluorescence data [1].
+- **H&E and Masson Trichrome rendering** — Apply virtual histology stains as post-processing on top of your fluorescence data [1], with an editable colour for each stain.
 - **Tone mapping** — Choose between a knee-curve (preserves intensity ratios) or Reinhard (smooth compression for publication figures).
 - **Denoise** — Optional edge-preserving GPU denoise with a 0–100 strength slider. It is display-only: your tile data is never modified.
 - **Save snapshots** — Export the current view as a PNG with an optional scale bar.
@@ -21,6 +21,10 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 - **Multi-class annotation** — Draw pixel-accurate masks over the image with a polygon or brush tool, and export them as label images for training or downstream analysis.
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
+
+## New in v3.7
+
+- **Editable virtual stains** — H&E and Masson Trichrome now run entirely on the GPU and have their own controls under Post-Processing: k, the stain gains, unmix (H&E) and the hue, saturation and value of each stain, with a live colour swatch and a **Reset** button. Change a stain's colour to switch style or to suit your eye; H&E and Trichrome keep separate settings, and your edits stay when you turn a stain off and on again. The defaults render exactly as before. A dataset can ship its own stain style with `defaultStainHE` / `defaultStainTrichrome` in the DATASET CONFIGURATION block. The old CPU filter code is gone, so the filter script is smaller and stains switch on faster; page loads also no longer log a 404 from the optional PICASSO server check. To use this in an existing dataset folder, regenerate its viewer HTML and replace its `openseadragon/` folder together. See [Viewer Controls](#viewer-controls) below.
 
 ## New in v3.6
 
@@ -116,6 +120,7 @@ var imageSources = [
     "path/to/your/data/0.0um/2/stitch.xml",
     // ...
 ];
+var defaultStainHE = {};         // optional H&E style, e.g. {k: 3, nucH: 0.6} ({} = built-in)
 ```
 
 ### 5. Open in a browser
@@ -130,7 +135,7 @@ Open the viewer HTML in Chrome, Firefox, or Edge. To try the viewer before gener
 | H (hue) spinner | Set the display color for a channel |
 | G (gain) spinner | Adjust brightness of a channel |
 | Unmixing matrix | Load or edit a spectral unmixing matrix for linear unmixing |
-| H&E / Trichrome checkbox | Apply virtual histology staining |
+| H&E / Trichrome checkbox | Apply virtual histology staining; its panel sets k, the stain gains and each stain's colour, with **Reset** |
 | Reinhard checkbox | Switch to smooth tone mapping for figures |
 | Rotation slider | Rotate the image |
 | z level slider | Switch between focal planes |
