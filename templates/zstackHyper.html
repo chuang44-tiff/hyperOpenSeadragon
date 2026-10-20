@@ -1707,8 +1707,11 @@
 			// 2) Install WebGL hooks BEFORE any channel changes fire
 			if (useWebGLBlend) {
 				_hookChannelUIForWebGL();
-			} else {
-				// H&E / Trichrome are GPU-only: without WebGL the toggles cannot work, so say so.
+			}
+			// H&E / Trichrome are GPU-only. Decide on the drawer actually in use (OSD can still
+			// fall back to canvas after the support probe passed) and, without it, say so.
+			var gpuStains = !!(viewer.drawer && viewer.drawer.getType() === 'hyperblend-webgl');
+			if (!gpuStains) {
 				$('#heToggle, #trichromeToggle').prop('disabled', true)
 					.closest('.pp-toggle').attr('title', 'Requires WebGL, which this browser does not provide');
 			}
@@ -1777,10 +1780,10 @@
 			}
 
 			// Apply default post-processing toggles
-			if (defaultHE && useWebGLBlend) {
+			if (defaultHE && gpuStains) {
 				$('#heToggle').prop('checked', true).trigger('change');
 			}
-			if (defaultTrichrome && !defaultHE && useWebGLBlend) {
+			if (defaultTrichrome && !defaultHE && gpuStains) {
 				$('#trichromeToggle').prop('checked', true).trigger('change');
 			}
 			if (defaultUnmixing) {
