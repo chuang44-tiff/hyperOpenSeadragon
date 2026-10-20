@@ -13,22 +13,20 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<!-- Resource hints (first picture). Every image listed here is chrome the viewer only
 	     asks for once all parser-blocking JS has run: the OSD navigation-button PNGs under
-	     prefixUrl, the filter bundle's plus.png and the two jQuery UI CSS sprites. They
+	     prefixUrl and the two jQuery UI CSS sprites. They
 	     weigh ~14 kB but cost ~35 round trips, and on a slow link they serialise across
 	     the six HTTP/1.1 sockets exactly where the first coarse tile would go. Hinting
 	     them in the head -- inside the first bytes of the download, long before the body's
 	     parser-blocking scripts are even reachable -- moves that latency ahead of the
 	     script phase, so the descriptors and first tiles get every socket as soon as the
 	     viewer constructs.
-	     Hrefs match the consuming tags/CSS byte for byte (same prefixUrl; plus.png comes
-	     from injected CSS so it resolves against the document, and the sprites resolve
+	     Hrefs match the consuming tags/CSS byte for byte (same prefixUrl; the sprites resolve
 	     against their own stylesheet, which lands on the same URL), so every hint is a
 	     cache reuse, never a second fetch. onerror degrades a hint the page cannot use
 	     (file://, an older dataset-local openseadragon/ copy without the .min.js files) to a miss;
 	     Flask's /view route rewrites these hrefs exactly like the script srcs. -->
 	<link rel="preload" as="script" href="openseadragon/openseadragon-bin-6.0.2/openseadragon.min.js" onerror="this.remove()">
 	<link rel="preload" as="script" href="openseadragon/openseadragon-filtering-nistfuncs-12ch.min.js" onerror="this.remove()">
-	<link rel="preload" as="image" href="openseadragon/images/plus.png" onerror="this.remove()">
 	<link rel="preload" as="image" href="openseadragon/lib/images/ui-bg_flat_75_ffffff_40x100.png" onerror="this.remove()">
 	<link rel="preload" as="image" href="openseadragon/lib/images/ui-icons_888888_256x240.png" onerror="this.remove()">
 	<link rel="preload" as="image" href="openseadragon/openseadragon-bin-6.0.2/zoomin_rest.png" onerror="this.remove()">
@@ -163,6 +161,27 @@
 						<label class="pp-toggle"><input type="checkbox" id="heToggle"><span>H&amp;E</span></label>
 						<label class="pp-toggle"><input type="checkbox" id="trichromeToggle"><span>Masson
 								Trichrome</span></label>
+						<!-- STAIN-PANEL-START -->
+						<div id="heStainPanel" class="stain-panel" style="display:none">
+							<div class="stain-head"><span class="stain-title">H&amp;E stain</span><button id="heReset" class="pp-btn pp-btn-clear" type="button">Reset</button></div>
+							<div class="stain-row"><label for="heK">k</label><input type="number" id="heK" value="2.5" min="1" max="10" step="0.1"></div>
+							<div class="stain-row"><label for="heUnmix">Unmix</label><input type="number" id="heUnmix" value="0" min="0" max="1" step="0.1"></div>
+							<div class="stain-row"><label for="heNucGain">Nuclear gain</label><input type="number" id="heNucGain" value="1" min="0" max="5" step="0.1"></div>
+							<div class="stain-row"><label for="heStrGain">Stroma gain</label><input type="number" id="heStrGain" value="1" min="0" max="5" step="0.1"></div>
+							<div class="stain-row"><label for="heNucH">Hematoxylin HSV</label><input type="number" id="heNucH" value="0.65" min="0" max="1" step="0.01" aria-label="Hematoxylin hue"><input type="number" id="heNucS" value="0.65" min="0.5" max="1" step="0.01" aria-label="Hematoxylin saturation"><input type="number" id="heNucV" value="1" min="0.2" max="1" step="0.01" aria-label="Hematoxylin value"><span id="heNucSw" class="pp-swatch"></span></div>
+							<div class="stain-row"><label for="heStrH">Eosin HSV</label><input type="number" id="heStrH" value="0.9" min="0" max="1" step="0.01" aria-label="Eosin hue"><input type="number" id="heStrS" value="0.85" min="0" max="1" step="0.01" aria-label="Eosin saturation"><input type="number" id="heStrV" value="0.9" min="0.2" max="1" step="0.01" aria-label="Eosin value"><span id="heStrSw" class="pp-swatch"></span></div>
+						</div>
+						<div id="tcStainPanel" class="stain-panel" style="display:none">
+							<div class="stain-head"><span class="stain-title">Masson Trichrome stain</span><button id="tcReset" class="pp-btn pp-btn-clear" type="button">Reset</button></div>
+							<div class="stain-row"><label for="tcK">k</label><input type="number" id="tcK" value="2.5" min="1" max="10" step="0.1"></div>
+							<div class="stain-row"><label for="tcNucGain">Nuclear gain</label><input type="number" id="tcNucGain" value="1" min="0" max="5" step="0.1"></div>
+							<div class="stain-row"><label for="tcStrGain">Stroma gain</label><input type="number" id="tcStrGain" value="1" min="0" max="5" step="0.1"></div>
+							<div class="stain-row"><label for="tcColGain">Collagen gain</label><input type="number" id="tcColGain" value="1" min="0" max="5" step="0.1"></div>
+							<div class="stain-row"><label for="tcNucH">Hematoxylin HSV</label><input type="number" id="tcNucH" value="0.65" min="0" max="1" step="0.01" aria-label="Hematoxylin hue"><input type="number" id="tcNucS" value="0.65" min="0.5" max="1" step="0.01" aria-label="Hematoxylin saturation"><input type="number" id="tcNucV" value="1" min="0.2" max="1" step="0.01" aria-label="Hematoxylin value"><span id="tcNucSw" class="pp-swatch"></span></div>
+							<div class="stain-row"><label for="tcStrH">Stroma HSV</label><input type="number" id="tcStrH" value="0.9" min="0" max="1" step="0.01" aria-label="Stroma hue"><input type="number" id="tcStrS" value="0.85" min="0" max="1" step="0.01" aria-label="Stroma saturation"><input type="number" id="tcStrV" value="0.9" min="0.2" max="1" step="0.01" aria-label="Stroma value"><span id="tcStrSw" class="pp-swatch"></span></div>
+							<div class="stain-row"><label for="tcColH">Collagen HSV</label><input type="number" id="tcColH" value="0.51" min="0" max="1" step="0.01" aria-label="Collagen hue"><input type="number" id="tcColS" value="0.85" min="0" max="1" step="0.01" aria-label="Collagen saturation"><input type="number" id="tcColV" value="1" min="0.2" max="1" step="0.01" aria-label="Collagen value"><span id="tcColSw" class="pp-swatch"></span></div>
+						</div>
+						<!-- STAIN-PANEL-END -->
 						<label class="pp-toggle"><input type="checkbox" id="reinhardToggle"><span>Reinhard Tone
 								Mapping</span></label>
 						<label class="pp-toggle"><input type="checkbox" id="denoiseToggle" title="Display-only denoise — original tiles and pixel values are unchanged; do not quantify the on-screen image."><span>Denoise (Guided)</span></label>
@@ -307,10 +326,7 @@
 						</div>
 					</div>
 				</div>
-				<!-- H&E / Trichrome NIST spinner rows appear here -->
 				<ul id="selected"></ul>
-				<!-- Hidden: NIST bundle appends filter entries here; toggle via checkboxes above -->
-				<ul id="available" style="display:none;"></ul>
 				<!-- ANNOTATION-MARKUP-START -->
 				<div id="osdAnnSection">
 					<div class="cs-header"><span class="cs-indicator osd-ann-dot"></span><h3>Annotation</h3><span id="osdAnnStatus" aria-live="polite"></span></div>
@@ -380,7 +396,6 @@
 	     protects the top-level function, but its IIFEs still overwrite
 	     constructors (Viewer, Tile, TiledImage, etc.) on the same object. -->
 	<script type="text/javascript">
-		var imagePath = 'openseadragon/images';
 		window.__osd602 = { props: {}, viewerProto: {} };
 		(function () {
 			var osd = window.OpenSeadragon;
@@ -529,6 +544,13 @@
 		// ----- Post-processing filter defaults -----
 		var defaultHE = false;                    // true = enable H&E staining on startup
 		var defaultTrichrome = false;             // true = enable Masson Trichrome on startup (mutex with H&E)
+		// Stain style overrides ({} = built-in defaults). Each key sets that control's start
+		// value and what Reset returns to; values are clamped to the control's range.
+		// H&E keys: k, unmix, nucGain, strGain, nucH, nucS, nucV, strH, strS, strV
+		// Trichrome keys: k, nucGain, strGain, colGain, nucH, nucS, nucV, strH, strS, strV, colH, colS, colV
+		// e.g. var defaultStainHE = {k: 3, nucH: 0.6};
+		var defaultStainHE = {};
+		var defaultStainTrichrome = {};
 		var defaultReinhard = false;              // true = Reinhard tone mapping on startup (false = knee curve)
 
 		// ----- Channel customization -----
@@ -669,6 +691,14 @@
 				if ($dot && $dot.length && typeof $dot.removeClass === 'function') { $dot.removeClass('ok bad warn').addClass(workerOk ? 'ok' : 'warn'); }
 				if ($txt && $txt.length && typeof $txt.text === 'function') { $txt.text(workerOk ? 'Optimizer (in-browser) ready' : 'Optimizer (in-browser) unavailable — serve over http://'); }
 			}
+			// The optimizer server is opt-in. Probe /health only when it is opted into
+			// (__HP_SERVER_OVERRIDE) or the page was served by the optional hyperpicasso-app
+			// optimizer server, a separate package that sets __HP_APP_SERVED in the HTML it
+			// serves; otherwise a plain static host would log a 404 on every load.
+			if (!(window.__HP_SERVER_OVERRIDE || window.__HP_APP_SERVED)) {
+				_renderNoServer();
+				return;
+			}
 			$rows.html('<div class="hp-dep-line hp-dep-wait">… checking</div>');
 			fetch(_hpServerBase() + '/health', { method: 'GET' }).then(function (resp) {
 				if (!resp.ok) throw new Error('bad status');
@@ -695,14 +725,15 @@
 					}
 				}
 				$rows.html(html);
-			}).catch(function () {
-				// In-browser worker is the default no-server path: a failed /health probe
-				// is expected and must NOT show the red 'not reachable' banner. Show a
-				// benign no-server line instead. Only fall through to the honest red line
-				// when the worker is also unavailable (file:// / no Worker support).
-				// NOTE: this banner is informational, not a health guarantee — the worker
-				// module is validated lazily on first Extract→PICASSO, and _hpRunWorker
-				// falls back to the server on a worker load/error/timeout.
+			}).catch(_renderNoServer);
+			// In-browser worker is the default no-server path: no server (or a failed
+			// /health probe) must NOT show a red 'not reachable' banner. Show a benign
+			// no-server line instead; only fall through to the honest red line when the
+			// worker is also unavailable (file:// / no Worker support).
+			// NOTE: this banner is informational, not a health guarantee — the worker
+			// module is validated lazily on first Extract→PICASSO, and _hpRunWorker
+			// falls back to the server on a worker load/error/timeout.
+			function _renderNoServer() {
 				var workerOk = (typeof Worker !== 'undefined' && location.protocol.indexOf('http') === 0);
 				_setDepSummary(workerOk);
 				if (workerOk) {
@@ -710,22 +741,19 @@
 				} else {
 					$rows.html('<div class="hp-dep-line hp-dep-bad">✗ in-browser optimizer unavailable — serve over http:// (or opt into the server)</div>');
 				}
-			});
+			}
 		}
 		$(document).on('click', '#hpDepRetry', function () { _hpHealthCheck(); });
-		// On-load dep-checklist probe — UNCONDITIONAL (probe on page
-		// load). When served by hyperpicasso-app the same-origin /health resolves and
-		// the checklist auto-renders. Under a bare static fixture (no Flask /health
-		// route) the same-origin /health returns 404 → _hpHealthCheck's existing
-		// !resp.ok throw → .catch() → honest red 'not reachable' line. The strict
-		// no-404 smoke contract whitelists /health (see test_zstack_html_runtime).
+		// On-load dep checklist. Served by hyperpicasso-app (__HP_APP_SERVED) the
+		// same-origin /health resolves and the checklist auto-renders; on a plain static
+		// host no request is made and the in-browser optimizer line is shown.
 		$(window).on('load', function () {
 			_hpHealthCheck();
 		});
 		function _hpExtractFOV() {
 			// Step 1: drawer guard — canvas drawer has no FBOs to read.
 			if (!viewer || !viewer.drawer || viewer.drawer.getType() !== 'hyperblend-webgl') {
-				alert('Extract requires the WebGL drawer (disable H&E/Trichrome/canvas filters)');
+				alert('Extract requires WebGL, which this browser does not provide');
 				console.warn('[hpExtract] aborted: WebGL drawer required');
 				return;
 			}
@@ -1046,8 +1074,7 @@
 				viewer.forceRedraw();
 			}
 			// Only canvas mode needs the NIST CPU processor rebuilt on z-switch;
-			// under WebGL the drawer reads layers directly (gate consistent with
-			// the drawer-suppression in _autoSwitchDrawer / Cycle B).
+			// under WebGL the drawer reads layers directly.
 			if (currentDrawerMode === 'canvas' && typeof window.updateHyperFilters === 'function') {
 				window.updateHyperFilters();
 			}
@@ -1311,7 +1338,7 @@
 			}, 500);
 		}
 
-		// Track current drawer mode so we only switch when needed
+		// Drawer mode, fixed at construction (WebGL with H&E/Trichrome as GPU passes, or canvas)
 		var currentDrawerMode = useWebGLBlend ? 'webgl' : 'canvas';
 
 		/**
@@ -1681,6 +1708,13 @@
 			if (useWebGLBlend) {
 				_hookChannelUIForWebGL();
 			}
+			// H&E / Trichrome are GPU-only. Decide on the drawer actually in use (OSD can still
+			// fall back to canvas after the support probe passed) and, without it, say so.
+			var gpuStains = !!(viewer.drawer && viewer.drawer.getType() === 'hyperblend-webgl');
+			if (!gpuStains) {
+				$('#heToggle, #trichromeToggle').prop('disabled', true)
+					.closest('.pp-toggle').attr('title', 'Requires WebGL, which this browser does not provide');
+			}
 
 			// 2b) Populate NIST DOM element cache (elements exist after filter init)
 			_populateNistCache();
@@ -1746,10 +1780,10 @@
 			}
 
 			// Apply default post-processing toggles
-			if (defaultHE) {
+			if (defaultHE && gpuStains) {
 				$('#heToggle').prop('checked', true).trigger('change');
 			}
-			if (defaultTrichrome && !defaultHE) {
+			if (defaultTrichrome && !defaultHE && gpuStains) {
 				$('#trichromeToggle').prop('checked', true).trigger('change');
 			}
 			if (defaultUnmixing) {
@@ -1761,9 +1795,9 @@
 
 			// Unsuppress after a tick (so any queued setTimeout(_syncDrawerState, 0)
 			// from the setFilterOptions wrapper is still suppressed), then do one
-			// final config push + layer-visibility sync. defaultHE/Trichrome/Unmixing
-			// ran while suppressed, so NIST's internal instance.filters has not picked
-			// up the post-process processor — rebuild it once via updateHyperFilters().
+			// final config push + layer-visibility sync, rebuilding the bundle's
+			// HyperBlend processor once via updateHyperFilters(). defaultHE/Trichrome
+			// already engaged the drawer directly through their toggle handlers.
 			setTimeout(function () {
 				window.__hyperBlendSuppressUpdates = false;
 				if (typeof window.updateHyperFilters === 'function') {
@@ -1771,19 +1805,7 @@
 				}
 				_pushChannelConfigToDrawer();
 				_updateOSDLayerVisibility();
-				// defaultHE/Trichrome toggled while the filter-list MutationObserver was
-				// not yet installed (it is set up below at _observeFilterChanges()), so the
-				// startup #selected mutation was never observed and the drawer post-process
-				// never engaged. Drive the engage path explicitly here based on the current
-				// #selected list (the H&E/Trichrome <li> is already present).
-				if ((defaultHE || defaultTrichrome) && typeof _autoSwitchDrawer === 'function') {
-					_autoSwitchDrawer();
-				}
 			}, 0);
-
-			// 6) Monitor the selected-filters list for changes.
-			// When a filter is added/removed, check if we need to switch drawers.
-			_observeFilterChanges();
 		}
 
 		/**
@@ -1838,27 +1860,7 @@
 				(16 - visibleCount) + " hidden" + (alphaSlots.size > 0 ? " (" + alphaSlots.size + " alpha slots locked)" : ""));
 		}
 
-		/**
-		 * Watch #selected (the active filter list) for DOM mutations.
-		 * When filters change, auto-switch between WebGL (HyperBlend only)
-		 * and canvas (legacy filters: H&E, MassonTrichrome, etc.).
-		 */
-		function _observeFilterChanges() {
-			if (!useWebGLBlend) return;
-
-			var selectedList = document.getElementById('selected');
-			if (!selectedList) return;
-
-			// Only watch direct children (filter add/remove), NOT subtree
-			// (subtree:true fires on spinner DOM changes → excessive calls)
-			var observer = new MutationObserver(function () {
-				_autoSwitchDrawer();
-			});
-			observer.observe(selectedList, { childList: true });
-		}
-
-		// PICASSO engagement UI setters — hoisted to script top level so the
-		// _autoSwitchDrawer canvas branch (also top-level) can call them. Both are
+		// PICASSO engagement UI setters — defined at script top level. Both are
 		// pure jQuery/DOM with no closure captures. The checkbox is purely
 		// panel-visibility; engagement lives in Apply label, .engaged class, Reload
 		// lock, and the ENGAGED badge.
@@ -1875,81 +1877,6 @@
 			// Reload is locked while engaged.
 			$('#picassoReload').prop('disabled', !!on);
 			_updatePicassoEngagedBadge(!!on);
-		}
-
-		function _autoSwitchDrawer() {
-			var filterNames = [];
-			$('#selected li .filterLabel').each(function () {
-				filterNames.push($(this).text().trim());
-			});
-
-			// WebGL-compatible combinations:
-			// - HyperBlend only (no post-process)
-			// - HyperBlend + H&E (Beer's law 2-stain)
-			// - HyperBlend + MassonTrichrome (Beer's law 3-stain)
-			var hasHyperBlend = filterNames.indexOf('HyperBlend') !== -1;
-			var webglPostFilters = ['H&E', 'MassonTrichrome'];
-			var otherFilters = filterNames.filter(function (name) {
-				return name !== 'HyperBlend' && webglPostFilters.indexOf(name) === -1;
-			});
-			var needsWebGL = hasHyperBlend && otherFilters.length === 0;
-
-			if (needsWebGL && currentDrawerMode !== 'webgl') {
-				console.log("[hyperOSD] Switching to WebGL drawer");
-				var success = viewer.requestDrawer('hyperblend-webgl', { mainDrawer: true });
-				if (success) {
-					currentDrawerMode = 'webgl';
-					_hookChannelUIForWebGL();
-					// 1.1: re-register processors for the new drawer. Now WebGL, so the
-					// bundle's updateFilters passes processors:[] (skips CPU filter work).
-					if (window.updateHyperFilters) window.updateHyperFilters();
-				}
-			} else if (!needsWebGL && currentDrawerMode !== 'canvas') {
-				console.log("[hyperOSD] Switching to canvas drawer for unsupported filter combo");
-				// PICASSO is a WebGL-only stage; disable before the drawer swap so
-				// its uniform state and the toggle reflect the legacy CPU path.
-				// Guard on drawer engagement (source of truth) — not the
-				// checkbox, which is panel-visibility only and may be checked without
-				// PICASSO being engaged.
-				if (viewer.drawer && viewer.drawer._picassoActive === true) {
-					window._picassoActive = false;
-					if (viewer.drawer && viewer.drawer.updatePicassoConfig) {
-						try { viewer.drawer.updatePicassoConfig({ active: false }); } catch (e) { }
-					}
-					// Drive the engagement UI down first, then explicitly uncheck the
-					// toggle (invariant: hiding the panel must not leave the
-					// checkbox visually checked). .prop('checked', false) does not fire
-					// change events, so the toggle handler is not re-entered.
-					_setPicassoEngagedUI(false);
-					$('#picassoToggle').prop('checked', false);
-					$('#picassoPanel').hide();
-					$('#picassoStatus').text('PICASSO disabled — legacy filter active (CPU path)').css('color', '#b8922e');
-				}
-				// 1.12: tear down Linear engagement while the WebGL drawer is still
-				// live so updateUnmixConfig({active:false,...}) reaches it. Guard on the
-				// DRAWER flag (sole source of truth), not window._unmixingActive. Does
-				// NOT hide #unmixPanel (panel-stays-open by design).
-				if (viewer.drawer && viewer.drawer._unmixEnabled === true && window._hyperBlendDisengageLinear) window._hyperBlendDisengageLinear();
-				var canvasSuccess = viewer.requestDrawer('canvas', { mainDrawer: true });
-				currentDrawerMode = 'canvas';
-				// 1.1: re-register processors for the canvas drawer. Now canvas, so the
-				// bundle's updateFilters passes the real CPU filters (webgl flag false).
-				// Safe in canvas mode: the wrapped updateHyperFilters' _pushChannelConfigToDrawer
-				// early-returns via its drawer-type guard.
-				if (canvasSuccess !== false && window.updateHyperFilters) window.updateHyperFilters();
-			}
-
-			// Update post-process state based on stacked filters
-			if (currentDrawerMode === 'webgl') {
-				var postFilter = null;
-				for (var i = 0; i < webglPostFilters.length; i++) {
-					if (filterNames.indexOf(webglPostFilters[i]) !== -1) {
-						postFilter = webglPostFilters[i];
-						break;
-					}
-				}
-				_updatePostProcessState(postFilter);
-			}
 		}
 
 		/**
@@ -1970,7 +1897,6 @@
 				config.filterType = 'he';
 				config.mode = 0.0;  // H&E: nuclei=B, stroma=G
 				config.colGain = 0.0;
-				config.unmix = 0.1;
 			} else if (filterName === 'MassonTrichrome') {
 				config.filterType = 'trichrome';
 				config.mode = 1.0;  // Trichrome: nuclei=G, stroma=R, collagen=B
@@ -1996,6 +1922,10 @@
 		 * Instead, we wrap viewer.setFilterOptions() — the one external call that
 		 * the local updateFilters always makes. This catches ALL spinner changes
 		 * (arrows, Enter key, checkboxes) regardless of how they were triggered.
+		 *
+		 * It also binds the Post-Processing toggles and the native H&E / Trichrome stain
+		 * panels (#heStainPanel / #tcStainPanel), which push straight to the drawer.
+		 * Every binding is namespaced (.hyperblend / .stain) so re-hooking never doubles.
 		 */
 		function _hookChannelUIForWebGL() {
 			if (!_nistUpdateFilters) {
@@ -2069,56 +1999,43 @@
 				}
 			});
 
-			// H&E / Trichrome toggle checkboxes — programmatically click NIST +/- buttons
-			function _togglePostProcessFilter(filterName, enable) {
-				if (enable) {
-					// Click the NIST "+" button to add the filter (creates spinner DOM in #selected)
-					$('#available img.button').each(function () {
-						var $plus = $(this);
-						var liText = $plus.parent().text().trim();
-						if (liText === filterName) {
-							$plus.trigger('click');
-							// Hide minus button (removal handled via checkbox unchecking)
-							$('#selected li').each(function () {
-								var $li = $(this);
-								if ($li.find('.filterLabel').text().trim() === filterName) {
-									$li.find('img[id^="minus_"]').parent().hide();
-								}
-							});
-							return false; // break
-						}
-					});
-				} else {
-					// Find the filter in #selected by its .filterLabel and click its minus button
-					$('#selected li').each(function () {
-						var $li = $(this);
-						var label = $li.find('.filterLabel').text().trim();
-						if (label === filterName) {
-							$li.find('img[id^="minus_"]').trigger('click');
-							return false; // break
-						}
-					});
+			// H&E / Masson Trichrome toggles drive the drawer's Beer's-law pass directly.
+			// Mutually exclusive: checking one unchecks the other via .prop (no event, so the
+			// handler is not re-entered). Each mode shows only its own stain panel.
+			function _onStainToggle() {
+				if (this.checked) {
+					$(this.id === 'heToggle' ? '#trichromeToggle' : '#heToggle').prop('checked', false);
+				}
+				var he = $('#heToggle').is(':checked');
+				var tc = $('#trichromeToggle').is(':checked');
+				$('#heStainPanel').toggle(he);
+				$('#tcStainPanel').toggle(tc);
+				_updatePostProcessState(he ? 'H&E' : tc ? 'MassonTrichrome' : null);
+			}
+			$('#heToggle').off('change.hyperblend').on('change.hyperblend', _onStainToggle);
+			$('#trichromeToggle').off('change.hyperblend').on('change.hyperblend', _onStainToggle);
+
+			function _pushStainIfActive() {
+				if (viewer.drawer && viewer.drawer._postProcessConfig && viewer.drawer._postProcessConfig.active) {
+					_pushPostProcessConfigToDrawer();
 				}
 			}
 
-			$('#heToggle').off('change.hyperblend').on('change.hyperblend', function () {
-				var checked = $(this).is(':checked');
-				if (checked) {
-					// Mutual exclusion: uncheck Trichrome
-					$('#trichromeToggle').prop('checked', false);
-					_togglePostProcessFilter('MassonTrichrome', false);
-				}
-				_togglePostProcessFilter('H&E', checked);
+			// Stain inputs: 'input' re-renders live; 'change' also writes the clamped value back.
+			$('#heStainPanel, #tcStainPanel').off('.stain').on('input.stain change.stain', 'input', function (e) {
+				if (e.type === 'change') this.value = String(_ppNum(this.id));
+				_refreshStainSwatches();
+				_pushStainIfActive();
 			});
 
-			$('#trichromeToggle').off('change.hyperblend').on('change.hyperblend', function () {
-				var checked = $(this).is(':checked');
-				if (checked) {
-					// Mutual exclusion: uncheck H&E
-					$('#heToggle').prop('checked', false);
-					_togglePostProcessFilter('H&E', false);
-				}
-				_togglePostProcessFilter('MassonTrichrome', checked);
+			// Per-panel Reset: restores only that panel's inputs to their HTML defaults.
+			$('#heReset, #tcReset').off('.stain').on('click.stain', function () {
+				var he = this.id === 'heReset';
+				$(he ? '#heStainPanel' : '#tcStainPanel').find('input').each(function () {
+					this.value = this.defaultValue;
+				});
+				_refreshStainSwatches();
+				if ($(he ? '#heToggle' : '#trichromeToggle').is(':checked')) _pushStainIfActive();
 			});
 
 			// ---- Linear Unmixing UI ----
@@ -2504,9 +2421,8 @@
 			}
 
 			// _setPicassoEngagedUI / _updatePicassoEngagedBadge are defined at script
-			// top level (above _autoSwitchDrawer) — the canvas branch calls them from
-			// outside this closure. In-closure callers (_disengagePicasso, PICASSO
-			// Apply) resolve them via the scope chain.
+			// top level. In-closure callers (_disengagePicasso, PICASSO Apply) resolve
+			// them via the scope chain.
 
 			// ---- Disengage helpers (sole disengage code paths) ----
 			// _disengageLinear() — turn the Linear unmixing effect off, but preserve
@@ -2538,10 +2454,8 @@
 				// Only the toggle-uncheck path hides the panel (user gesture = "close").
 				_setLinearEngagedUI(false);
 			}
-			// Export for the top-level _autoSwitchDrawer canvas branch (1.12). The
-			// drawer-switch path lives outside this closure and must tear down Linear
-			// engagement before requestDrawer('canvas'). Intentionally reassigned on
-			// every hook generation — no run-once guard.
+			// Export the Linear disengage path for callers outside this closure.
+			// Intentionally reassigned on every hook generation — no run-once guard.
 			window._hyperBlendDisengageLinear = _disengageLinear;
 
 			// _disengagePicasso() — turn the PICASSO unmixing effect off, but preserve
@@ -4119,6 +4033,8 @@
 				}
 			}
 
+			_applyStainDefaults();
+			_refreshStainSwatches();
 			_pushChannelConfigToDrawer();
 		}
 
@@ -4189,8 +4105,9 @@
 		}
 
 		/**
-		 * Convert HSV to RGB using the same formula as the NIST filter bundle.
-		 * The bundle applies a 0.5 hue offset: h = (hue + 0.5) % 1
+		 * Convert a stain's HSV to its Beer's-law absorption RGB.
+		 * Applies a 0.5 hue offset, h = (hue + 0.5) % 1 (stains only; the channel
+		 * swatches use no offset).
 		 */
 		function _hsvToRgb(hue, sat, val) {
 			var h = (hue + 0.5) % 1;
@@ -4212,68 +4129,98 @@
 		}
 
 		/**
-		 * Read H&E/Trichrome slider values from the DOM and push to the WebGL drawer.
-		 * The NIST bundle creates spinners with IDs like "kSpinner-{idIncrement}",
-		 * "unMixSpinner-{idIncrement}", "nucGainSpinner-{idIncrement}", etc.
-		 * Each <span> contains an <input> whose .val() holds the current value.
-		 * Spectral absorption uses HSV spinners converted to RGB.
+		 * Read a stain-panel number input: NaN falls back to the HTML default
+		 * (el.defaultValue), then the value is clamped to the input's [min, max].
+		 */
+		function _ppNum(id) {
+			var el = document.getElementById(id);
+			var v = parseFloat(el.value);
+			if (isNaN(v)) v = parseFloat(el.defaultValue);
+			return Math.min(parseFloat(el.max), Math.max(parseFloat(el.min), v));
+		}
+
+		/**
+		 * Apply the DATASET CONFIGURATION stain overrides (defaultStainHE /
+		 * defaultStainTrichrome) once. Each key sets that input's value and its default,
+		 * so Reset returns to the configured style. Unknown keys and non-numbers are
+		 * skipped with a warning; viewers whose config predates these variables keep
+		 * the built-in defaults.
+		 */
+		var _stainDefaultsApplied = false;
+		function _applyStainDefaults() {
+			if (_stainDefaultsApplied) return;
+			_stainDefaultsApplied = true;
+			var sets = [
+				['he', typeof defaultStainHE === 'object' ? defaultStainHE : null],
+				['tc', typeof defaultStainTrichrome === 'object' ? defaultStainTrichrome : null]
+			];
+			sets.forEach(function (pair) {
+				var cfg = pair[1];
+				if (!cfg) return;
+				Object.keys(cfg).forEach(function (key) {
+					var el = document.getElementById(pair[0] + key.charAt(0).toUpperCase() + key.slice(1));
+					var v = parseFloat(cfg[key]);
+					if (!el || el.type !== 'number' || isNaN(v)) {
+						console.warn('[hyperOSD] ignoring stain default ' + (pair[0] === 'he' ? 'defaultStainHE.' : 'defaultStainTrichrome.') + key);
+						return;
+					}
+					v = Math.min(parseFloat(el.max), Math.max(parseFloat(el.min), v));
+					el.defaultValue = String(v);
+					el.value = String(v);
+				});
+			});
+		}
+
+		/**
+		 * Display-only swatch: the colour a full-strength stain transmits, using the
+		 * shader's normalised Beer's law (exp(-k*a) - exp(-k)) / (1 - exp(-k)).
+		 */
+		function _stainSwatchCss(rgb, k) {
+			var e = Math.exp(-k);
+			return 'rgb(' + rgb.map(function (a) {
+				return Math.round(255 * Math.max(0, (Math.exp(-k * a) - e) / (1 - e)));
+			}).join(',') + ')';
+		}
+
+		/** Repaint all five stain swatches, each from its own panel's HSV and k. */
+		function _refreshStainSwatches() {
+			[['he', ['Nuc', 'Str']], ['tc', ['Nuc', 'Str', 'Col']]].forEach(function (set) {
+				var p = set[0];
+				var k = _ppNum(p + 'K');
+				set[1].forEach(function (s) {
+					var rgb = _hsvToRgb(_ppNum(p + s + 'H'), _ppNum(p + s + 'S'), _ppNum(p + s + 'V'));
+					document.getElementById(p + s + 'Sw').style.background = _stainSwatchCss(rgb, k);
+				});
+			});
+		}
+
+		/**
+		 * Push the active stain mode's settings to the WebGL drawer. H&E reads only the
+		 * he* inputs and Trichrome only the tc* inputs, so the two modes never share
+		 * values. Mode gating is mandatory: the shader applies u_unmix in both modes, so
+		 * unmix comes only from H&E; colGain/colRGB come only from Trichrome (H&E keeps
+		 * the colGain 0 set by _updatePostProcessState). Neither mode on: nothing to push.
 		 */
 		function _pushPostProcessConfigToDrawer() {
 			if (!viewer || !viewer.drawer || viewer.drawer.getType() !== 'hyperblend-webgl') return;
 			if (!viewer.drawer.updatePostProcessConfig) return;
 
-			var config = {};
+			var p = $('#heToggle').is(':checked') ? 'he' : $('#trichromeToggle').is(':checked') ? 'tc' : null;
+			if (!p) return;
 
-			// Read k (absorption coefficient)
-			$('span[id^="kSpinner-"] input').each(function () {
-				var val = parseFloat($(this).val());
-				if (!isNaN(val)) config.k = val;
-			});
-			// Read unmix (spectral unmixing, H&E only)
-			$('span[id^="unMixSpinner-"] input').each(function () {
-				var val = parseFloat($(this).val());
-				if (!isNaN(val)) config.unmix = val;
-			});
-			// Read per-stain gains
-			$('span[id^="nucGainSpinner-"] input').each(function () {
-				var val = parseFloat($(this).val());
-				if (!isNaN(val)) config.nucGain = val;
-			});
-			$('span[id^="strGainSpinner-"] input').each(function () {
-				var val = parseFloat($(this).val());
-				if (!isNaN(val)) config.strGain = val;
-			});
-			$('span[id^="colGainSpinner-"] input').each(function () {
-				var val = parseFloat($(this).val());
-				if (!isNaN(val)) config.colGain = val;
-			});
-
-			// Read spectral absorption HSV spinners and convert to RGB
-			// (matches NIST bundle's (hue + 0.5) % 1 conversion)
-			var nH = null, nS = null, nV = null;
-			$('span[id^="nucHueSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) nH = v; });
-			$('span[id^="nucSatSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) nS = v; });
-			$('span[id^="nucValSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) nV = v; });
-			if (nH !== null && nS !== null && nV !== null) {
-				config.nucRGB = _hsvToRgb(nH, nS, nV);
+			var config = {
+				k: _ppNum(p + 'K'),
+				nucGain: _ppNum(p + 'NucGain'),
+				strGain: _ppNum(p + 'StrGain'),
+				nucRGB: _hsvToRgb(_ppNum(p + 'NucH'), _ppNum(p + 'NucS'), _ppNum(p + 'NucV')),
+				strRGB: _hsvToRgb(_ppNum(p + 'StrH'), _ppNum(p + 'StrS'), _ppNum(p + 'StrV'))
+			};
+			if (p === 'he') {
+				config.unmix = _ppNum('heUnmix');
+			} else {
+				config.colGain = _ppNum('tcColGain');
+				config.colRGB = _hsvToRgb(_ppNum('tcColH'), _ppNum('tcColS'), _ppNum('tcColV'));
 			}
-
-			var sH = null, sS = null, sV = null;
-			$('span[id^="strHueSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) sH = v; });
-			$('span[id^="strSatSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) sS = v; });
-			$('span[id^="strValSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) sV = v; });
-			if (sH !== null && sS !== null && sV !== null) {
-				config.strRGB = _hsvToRgb(sH, sS, sV);
-			}
-
-			var cH = null, cS = null, cV = null;
-			$('span[id^="colHueSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) cH = v; });
-			$('span[id^="colSatSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) cS = v; });
-			$('span[id^="colValSpinner-"] input').each(function () { var v = parseFloat($(this).val()); if (!isNaN(v)) cV = v; });
-			if (cH !== null && cS !== null && cV !== null) {
-				config.colRGB = _hsvToRgb(cH, cS, cV);
-			}
-
 			viewer.drawer.updatePostProcessConfig(config);
 		}
 

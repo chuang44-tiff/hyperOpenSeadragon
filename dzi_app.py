@@ -922,6 +922,8 @@ def _generate_viewer_html(root_path, dataset_name, z_levels, image_sources,
         f"\t\tvar defaultPicasso = false;\n"
         f"\t\tvar defaultHE = false;\n"
         f"\t\tvar defaultTrichrome = false;\n"
+        f"\t\tvar defaultStainHE = {{}};\n"
+        f"\t\tvar defaultStainTrichrome = {{}};\n"
         f"\t\tvar defaultReinhard = false;\n"
         f"\t\tvar defaultChannelHues = {{}};\n"
         f"\t\tvar animationTime = 0.7;\n"

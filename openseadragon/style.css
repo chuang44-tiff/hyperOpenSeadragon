@@ -45,15 +45,11 @@ software is used.
     margin-right: 10px;
 }
 
-#available {
-    list-style-type: none;
-}
-
 ul {
     padding: 0;
 }
 
-#available, #selected {
+#selected {
     border: 1px solid black;
     min-height: 25px;
 }
@@ -694,6 +690,59 @@ li {
     color: #3a3832;
 }
 
+/* Native H&E / Masson Trichrome stain panels (one per mode, shown by its toggle).
+   Indented under the toggles like the denoise rows. Label rules are scoped under
+   #filterWindow so they win over the later `#filterWindow label` rule. */
+.stain-panel {
+    padding: 2px 0 4px 23px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    color: #6a665c;
+}
+
+.stain-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 2px;
+}
+
+.stain-title {
+    font-size: 11px;
+    color: #3a3832;
+}
+
+.stain-row {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 1px 0;
+}
+
+#filterWindow .stain-row label {
+    flex: 0 0 104px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #6a665c;
+}
+
+.stain-row input[type="number"] {
+    width: 52px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 11px;
+    border: 1px solid #c8c5bc;
+    border-radius: 3px;
+}
+
+.pp-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 1px solid #8a8678;
+    border-radius: 2px;
+}
+
 .pp-select {
     font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
     font-size: 12px;
@@ -966,63 +1015,6 @@ li {
     font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
     font-size: 11px;
     color: #3a3832;
-}
-
-/* ── Style NIST H&E/Trichrome spinners to match instrument panel ── */
-#selected .filterLabel {
-    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 11px;
-    font-weight: 600;
-    color: #1a1917;
-    letter-spacing: 0.3px;
-}
-
-#selected .wdzt-cell-layout label {
-    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 10px;
-    font-weight: 600;
-    color: #908d85;
-    letter-spacing: 0.5px;
-}
-
-#selected .ui-spinner {
-    border: 1px solid #ccc9c0 !important;
-    border-radius: 3px !important;
-    box-shadow: inset 0 1px 2px rgba(0,0,0,0.08) !important;
-    height: 26px !important;
-    overflow: hidden !important;
-}
-
-#selected .ui-spinner input.ui-spinner-input {
-    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace !important;
-    font-size: 12px !important;
-    font-weight: 500 !important;
-    color: #1a1917 !important;
-    border: none !important;
-    padding: 2px 4px !important;
-    background: #fff !important;
-}
-
-#selected .ui-spinner .ui-spinner-button {
-    background: #d8d5cd !important;
-    border: none !important;
-    border-left: 1px solid #ccc9c0 !important;
-    width: 18px !important;
-}
-
-#selected .ui-spinner .ui-spinner-button:hover {
-    background: #c0bdb5 !important;
-}
-
-#selected .ui-spinner .ui-spinner-button .ui-icon {
-    background-color: transparent !important;
-}
-
-/* NIST checkbox styling */
-#selected input[type="checkbox"] {
-    accent-color: #3d7c3f;
-    width: 15px;
-    height: 15px;
 }
 
 /* Section headings in filterWindow */
