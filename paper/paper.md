@@ -20,7 +20,7 @@ affiliations:
   - name: Department of Biomedical Engineering, University of Rochester, Rochester, NY, United States
     index: 1
     ror: 022kthw22
-date: 2 November 2026  # TODO: set on submission
+date: 9 November 2026
 bibliography: paper.bib
 ---
 
