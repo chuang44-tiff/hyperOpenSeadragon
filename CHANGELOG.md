@@ -2,6 +2,11 @@
 
 All notable changes to hyperOpenSeadragon. Versions are tagged on GitHub.
 
+## v3.7.2 — 2026-11-09
+
+- README: PICASSO is no longer labelled beta.
+- JOSS paper: "N up to 8" replaces a symbol the JOSS PDF font cannot render. No code changes.
+
 ## v3.7.1 — 2026-11-09
 
 - `CITATION.cff`, `.zenodo.json`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `THIRD_PARTY_NOTICES.md`, this changelog, and the JOSS paper (`paper/`).
