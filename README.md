@@ -22,6 +22,10 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 
 ![Spectrum Inspector panel showing per-channel intensities at a clicked pixel](spectrumInspector.png)
 
+## New in v3.7.1
+
+- **Citation, contributing and the JOSS paper** — documentation only, no code changes. Cite hyperOpenSeadragon with [`CITATION.cff`](CITATION.cff) (GitHub's **Cite this repository** button reads it); the JOSS paper is in [`paper/`](paper/paper.md). Also new: [contributing guide](CONTRIBUTING.md), [code of conduct](CODE_OF_CONDUCT.md), [changelog](CHANGELOG.md) and [third-party notices](THIRD_PARTY_NOTICES.md) for the bundled libraries. See [References](#references) below.
+
 ## New in v3.7
 
 - **Editable virtual stains** — H&E and Masson Trichrome now run entirely on the GPU and have their own controls under Post-Processing: k, the stain gains, unmix (H&E) and the hue, saturation and value of each stain, with a live colour swatch and a **Reset** button. Change a stain's colour to switch style or to suit your eye; H&E and Trichrome keep separate settings, and your edits stay when you turn a stain off and on again. The defaults render exactly as before. A dataset can ship its own stain style with `defaultStainHE` / `defaultStainTrichrome` in the DATASET CONFIGURATION block. The old CPU filter code is gone, so the filter script is smaller and stains switch on faster; page loads also no longer log a 404 from the optional PICASSO server check. To use this in an existing dataset folder, regenerate its viewer HTML and replace its `openseadragon/` folder together. See [Viewer Controls](#viewer-controls) below.
@@ -46,7 +50,7 @@ hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and 
 
 hyperOpenSeadragon runs entirely in your web browser. It uses [OpenSeadragon](https://openseadragon.github.io/) for tiled image display and a custom WebGL renderer for GPU-accelerated channel blending. Your images are pre-processed into tiled pyramids (Deep Zoom Image format), so even very large whole-slide images load smoothly.
 
-**Demo link:** [https://imstore.circ.rochester.edu/hyperOSD/zstackHyper.html](https://imstore.circ.rochester.edu/hyperOSD/zstackHyper.html) - 12ch hyperspectral image of a mouse tendon from the hyperPICASSO unmixing paper [3].
+**Demo link:** [https://imstore.circ.rochester.edu/hyperOSD/zstackHyper.html](https://imstore.circ.rochester.edu/hyperOSD/zstackHyper.html) - 12-channel hyperspectral image of a mouse knee from the high-throughput hyperspectral imaging paper [4].
 The image was acquired using our custom high-speed silicon photomultiplier array [4].
 
 ## Getting Started
@@ -181,7 +185,7 @@ To generate a PICASSO matrix from your data, you can generate it directly in the
 ```
 
 - `N` — matrix size (2–8). When chaining with Linear Unmixing, `N` must equal Linear's output count `M`.
-- `K` — number of iteration blocks (1–10).
+- `K` — number of blocks in the file (1–10). The viewer uses the first block only; the panel shows a single N×N matrix.
 - Optional header keys: `gamma=…`, `source=…`, `kind=…`.
 
 **Load a matrix two ways:**
@@ -189,7 +193,7 @@ To generate a PICASSO matrix from your data, you can generate it directly in the
 1. **Auto-load on startup** — set `picassoMatrixFileName` in the DATASET CONFIGURATION block (path relative to the viewer HTML). Optionally set `defaultPicasso = true` to auto-Apply on page load.
 2. **Manual** — toggle the **PICASSO** checkbox in the Post-Processing section to open the panel, click **Load**, pick your `.txt` file, then click **Apply**.
 
-The iteration count is adjustable at runtime via the **K** spinner in the panel dim-bar (range 1–10; capped at the loaded file's K). The Apply button is an engagement toggle (same UX as Linear — label flips to **ENGAGED ✓**, a green **ENGAGED** badge appears in the panel header, click again to disengage). Reload is locked while engaged.
+The Apply button is an engagement toggle (same UX as Linear — label flips to **ENGAGED ✓**, a green **ENGAGED** badge appears in the panel header, click again to disengage). Reload is locked while engaged.
 
 **Chaining with Linear (Mode 3):** enable Linear first, set its output count `M` to match the PICASSO matrix's `N`, click Linear → Apply, then PICASSO → Apply. The Linear panel locks while PICASSO is engaged so the chain dimensions stay consistent.
 

@@ -1,0 +1,16 @@
+{
+  "title": "hyperOpenSeadragon: a browser-based viewer for multi-channel fluorescence and hyperspectral microscopy",
+  "upload_type": "software",
+  "description": "hyperOpenSeadragon is a browser-based viewer for multi-channel fluorescence and hyperspectral microscopy images. It blends up to 16 channels per z-plane on the GPU with per-channel colour and gain, supports z-stacks, linear spectral unmixing with a built-in matrix editor and spectrum inspector, in-browser PICASSO unmixing, virtual H&E and Masson trichrome rendering, display-only denoising and multi-class pixel annotation, and includes a tile generator that converts microscopy TIFFs into Deep Zoom pyramids.",
+  "creators": [
+    {"name": "Huang, Chi Z.", "affiliation": "Department of Biomedical Engineering, University of Rochester", "orcid": "0009-0002-5555-1232"},
+    {"name": "Giacomelli, Michael G.", "affiliation": "Department of Biomedical Engineering, University of Rochester", "orcid": "0000-0002-2570-0770"}
+  ],
+  "license": "mit",
+  "keywords": ["microscopy", "fluorescence", "hyperspectral imaging", "spectral unmixing", "OpenSeadragon", "WebGL", "image viewer", "annotation"],
+  "related_identifiers": [
+    {"identifier": "https://github.com/chuang44-tiff/hyperOpenSeadragon", "relation": "isSupplementTo", "scheme": "url"},
+    {"identifier": "10.1364/OL.564010", "relation": "isSupplementTo", "scheme": "doi"},
+    {"identifier": "10.1364/BOE.573312", "relation": "isSupplementTo", "scheme": "doi"}
+  ]
+}
