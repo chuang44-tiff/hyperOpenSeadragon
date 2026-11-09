@@ -2,6 +2,12 @@
 
 All notable changes to hyperOpenSeadragon. Versions are tagged on GitHub.
 
+## v3.7.3 — 2026-11-09
+
+- The command-line tile generator stops with a clear error on a multi-page TIFF stack instead of silently keeping the first page; pyramidal TIFFs still load (#21).
+- Virtual stains: with a stain gain above 1, two saturated stains render dark instead of faintly lit (#22). Default renders are unchanged.
+- JOSS paper: submission date set.
+
 ## v3.7.2 — 2026-11-09
 
 - README: PICASSO is no longer labelled beta.
