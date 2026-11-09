@@ -166,7 +166,7 @@ hyperOpenSeadragon includes a built-in linear unmixing pipeline for hyperspectra
 
 ## PICASSO Unmixing
 
-PICASSO applies iterative non-negative unmixing on top of linear unmixing (or as a standalone stage). It's currently **beta** — it works well on synthetic and calibrated datasets but quality on arbitrary real-world data varies. Treat as a preview.
+PICASSO applies iterative non-negative unmixing on top of linear unmixing (or as a standalone stage).
 
 To generate a PICASSO matrix from your data, you can generate it directly in the web browser using the built-in optimizer (by clicking the **Generate from current view** button in the PICASSO panel). Alternatively, you can pre-generate it using the [original author's repo](https://github.com/biomicrodev/picasso) and the hyperPICASSO adaptation [3].
 
