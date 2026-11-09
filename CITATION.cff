@@ -1,0 +1,112 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "hyperOpenSeadragon: a browser-based viewer for multi-channel fluorescence and hyperspectral microscopy"
+type: software
+authors:
+  - family-names: Huang
+    given-names: Chi Z.
+    email: chuang44@u.rochester.edu
+    affiliation: "Department of Biomedical Engineering, University of Rochester"
+    orcid: "https://orcid.org/0009-0002-5555-1232"
+  - family-names: Giacomelli
+    given-names: Michael G.
+    affiliation: "Department of Biomedical Engineering, University of Rochester"
+    orcid: "https://orcid.org/0000-0002-2570-0770"
+repository-code: "https://github.com/chuang44-tiff/hyperOpenSeadragon"
+license: MIT
+version: "3.7.1"
+date-released: "2026-11-09"
+keywords:
+  - microscopy
+  - fluorescence
+  - hyperspectral imaging
+  - spectral unmixing
+  - OpenSeadragon
+  - WebGL
+  - image viewer
+  - annotation
+references:
+  - type: article
+    authors:
+      - family-names: Huang
+        given-names: "C. Z."
+      - family-names: Ching-Roa
+        given-names: "V. D."
+      - family-names: Giacomelli
+        given-names: "M. G."
+    title: "hyperPICASSO: adapting the mutual-information-based unmixing technique PICASSO to hyperspectral datasets"
+    journal: "Optics Letters"
+    year: 2025
+    volume: 50
+    issue: 13
+    start: 4386
+    end: 4389
+    doi: 10.1364/OL.564010
+  - type: article
+    authors:
+      - family-names: Huang
+        given-names: "C. Z."
+      - family-names: Ching-Roa
+        given-names: "V. D."
+      - family-names: Heckman
+        given-names: "C. M."
+      - family-names: Ibrahim
+        given-names: "S. F."
+      - family-names: Giacomelli
+        given-names: "M. G."
+    title: "High-throughput hyperspectral fluorescence imaging using a high-speed silicon photomultiplier array"
+    journal: "Biomedical Optics Express"
+    year: 2025
+    volume: 16
+    issue: 10
+    start: 3949
+    end: 3957
+    doi: 10.1364/BOE.573312
+  - type: article
+    authors:
+      - family-names: Seo
+        given-names: "J."
+      - family-names: Sim
+        given-names: "Y."
+      - family-names: Kim
+        given-names: "J."
+      - family-names: Kim
+        given-names: "H."
+      - family-names: Cho
+        given-names: "I."
+      - family-names: Nam
+        given-names: "H."
+      - family-names: Yoon
+        given-names: "Y. G."
+      - family-names: Chang
+        given-names: "J. B."
+    title: "PICASSO allows ultra-multiplexed fluorescence imaging of spatially overlapping proteins without reference spectra measurements"
+    journal: "Nature Communications"
+    year: 2022
+    volume: 13
+    issue: 1
+    start: 2475
+    doi: 10.1038/s41467-022-30168-z
+  - type: article
+    authors:
+      - family-names: Giacomelli
+        given-names: "M. G."
+      - family-names: Husvogt
+        given-names: "L."
+      - family-names: Vardeh
+        given-names: "H."
+      - family-names: Faulkner-Jones
+        given-names: "B. E."
+      - family-names: Hornegger
+        given-names: "J."
+      - family-names: Connolly
+        given-names: "J. L."
+      - family-names: Fujimoto
+        given-names: "J. G."
+    title: "Virtual Hematoxylin and Eosin Transillumination Microscopy Using Epi-Fluorescence Imaging"
+    journal: "PLoS ONE"
+    year: 2016
+    volume: 11
+    issue: 8
+    start: "e0159337"
+    doi: 10.1371/journal.pone.0159337
