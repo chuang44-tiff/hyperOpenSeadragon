@@ -14,7 +14,7 @@ authors:
     orcid: "https://orcid.org/0000-0002-2570-0770"
 repository-code: "https://github.com/chuang44-tiff/hyperOpenSeadragon"
 license: MIT
-version: "3.7.2"
+version: "3.7.3"
 date-released: "2026-11-09"
 keywords:
   - microscopy
