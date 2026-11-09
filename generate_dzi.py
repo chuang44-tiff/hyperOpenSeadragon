@@ -94,6 +94,33 @@ def to_8bit(image):
     return image.cast("uchar")
 
 
+def _reject_page_stack(path, image):
+    """Refuse a multi-page file whose pages are all full size (a channel stack).
+
+    libvips opens page 0 only, so the other pages of a stack would be dropped
+    without a word. A pyramidal TIFF also has several pages, but page 1 is
+    smaller than page 0 and page 0 is the full image, so it is accepted.
+    Only page headers are read. A page that cannot be opened is skipped, so a
+    file whose page 0 loads keeps loading as before.
+    """
+    if "n-pages" not in image.get_fields():
+        return
+    n_pages = image.get("n-pages")
+    for page in range(1, n_pages):
+        try:
+            other = pyvips.Image.new_from_file(path, page=page)
+        except pyvips.Error:
+            continue
+        if (other.width, other.height) == (image.width, image.height):
+            raise ValueError(
+                f"{os.path.basename(path)} has {n_pages} pages and page {page + 1} "
+                f"is full size ({image.width}x{image.height}), so it is a stack of "
+                f"images; this tool reads one image per file and would keep the "
+                f"first page only. Split the stack into one file per channel, or "
+                f"use the web app (dzi_app.py) with the stack as the only file in "
+                f"its z-level folder; it then reads each page as a channel.")
+
+
 def load_channel(path, force_8bit=True):
     """Load a single-channel image, converting to 8-bit if needed."""
     _require_pyvips()
@@ -101,6 +128,7 @@ def load_channel(path, force_8bit=True):
         raise FileNotFoundError(f"Channel image not found: {path}")
 
     image = pyvips.Image.new_from_file(path, access="sequential")
+    _reject_page_stack(path, image)
 
     # Extract first band if image has multiple bands
     if image.bands > 1:
@@ -170,6 +198,7 @@ def load_rgb_tile_source(path, pack_mode, force_8bit=True):
         raise FileNotFoundError(f"Image not found: {path}")
 
     image = pyvips.Image.new_from_file(path, access="sequential")
+    _reject_page_stack(path, image)
     basename = os.path.basename(path)
     target_bands = PACK_MODES[pack_mode]["channels_per_tile"]
 
