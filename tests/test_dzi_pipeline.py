@@ -187,6 +187,99 @@ class PackedPyramidTests(VipsCase):
         self.assertIn('Height="%d"' % H, xml)
 
 
+class MultiPageInputTests(VipsCase):
+    """The CLI loaders refuse a full-size page stack instead of keeping page 0 only."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stack(self, n_pages, bands=1):
+        pages = [(pyvips.Image.black(W, H, bands=bands) + 10 * (i + 1)).cast("uchar")
+                 for i in range(n_pages)]
+        p = os.path.join(self.tmp, "stack%d_%d.tif" % (n_pages, bands))
+        pyvips.Image.arrayjoin(pages, across=1).tiffsave(p, page_height=H)
+        self.assertEqual(pyvips.Image.new_from_file(p).get("n-pages"), n_pages)
+        return p
+
+    def test_channel_stack_is_rejected_with_a_clear_error(self):
+        p = self._stack(3)
+        with _quiet(), self.assertRaises(ValueError) as cm:
+            generate_dzi.load_channel(p)
+        msg = str(cm.exception)
+        self.assertIn("has 3 pages", msg)
+        self.assertIn("dzi_app.py", msg)
+
+    def _mixed_pages(self, sizes):
+        """Write an uncompressed 8-bit TIFF whose pages have the given (w, h) sizes."""
+        import struct
+        out = bytearray(b"II*\x00\x00\x00\x00\x00")
+        prev_link = 4                                  # where the next IFD offset goes
+        for i, (w, h) in enumerate(sizes):
+            data_off = len(out)
+            out += bytes([20 * (i + 1)]) * (w * h)
+            if len(out) % 2:
+                out += b"\x00"
+            ifd_off = len(out)
+            struct.pack_into("<I", out, prev_link, ifd_off)
+            short = lambda tag, v: struct.pack("<HHIH2x", tag, 3, 1, v)
+            long_ = lambda tag, v: struct.pack("<HHII", tag, 4, 1, v)
+            entries = [long_(256, w), long_(257, h), short(258, 8), short(259, 1),
+                       short(262, 1), long_(273, data_off), short(277, 1),
+                       long_(278, h), long_(279, w * h)]
+            out += struct.pack("<H", len(entries)) + b"".join(entries)
+            prev_link = len(out)
+            out += b"\x00\x00\x00\x00"
+        p = os.path.join(self.tmp, "mixed.tif")
+        with open(p, "wb") as f:
+            f.write(out)
+        return p
+
+    def test_full_size_page_after_a_thumbnail_is_still_rejected(self):
+        p = self._mixed_pages([(W, H), (W // 4, H // 4), (W, H)])
+        self.assertEqual(pyvips.Image.new_from_file(p).get("n-pages"), 3)
+        with _quiet(), self.assertRaises(ValueError) as cm:
+            generate_dzi.load_channel(p)
+        self.assertIn("page 3", str(cm.exception))
+
+    def test_full_page_with_only_a_thumbnail_loads(self):
+        p = self._mixed_pages([(W, H), (W // 4, H // 4)])
+        with _quiet():
+            loaded = generate_dzi.load_channel(p)
+        self.assertEqual((loaded.width, loaded.height), (W, H))
+        self.assertEqual(round(loaded.avg()), 20)
+
+    def test_rgb_stack_is_rejected(self):
+        p = self._stack(2, bands=3)
+        with _quiet(), self.assertRaises(ValueError):
+            generate_dzi.load_rgb_tile_source(p, "rgba")
+
+    def test_process_z_level_fails_loudly_on_a_stack(self):
+        out = os.path.join(self.tmp, "out")
+        with _quiet(), self.assertRaises(ValueError):
+            generate_dzi.process_z_level("0.0um", [self._stack(3)], out, "rgba")
+
+    def test_pyramidal_tiff_still_loads_its_full_resolution_page(self):
+        p = os.path.join(self.tmp, "pyramid.tif")
+        img = (pyvips.Image.black(W * 4, H * 4) + 7).cast("uchar")
+        img.tiffsave(p, tile=True, tile_width=16, tile_height=16, pyramid=True)
+        self.assertGreater(pyvips.Image.new_from_file(p).get("n-pages"), 1)
+        with _quiet():
+            loaded = generate_dzi.load_channel(p)
+        self.assertEqual((loaded.width, loaded.height), (W * 4, H * 4))
+        self.assertEqual(round(loaded.avg()), 7)
+
+    def test_single_page_file_is_unchanged(self):
+        p = self._stack(1)
+        with _quiet():
+            loaded = generate_dzi.load_channel(p)
+        self.assertEqual((loaded.width, loaded.height), (W, H))
+        self.assertEqual(round(loaded.avg()), 10)
+
+
 class ValidateUnmixMatrixTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
